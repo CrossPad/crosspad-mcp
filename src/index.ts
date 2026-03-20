@@ -16,11 +16,32 @@ import { crosspadScreenshot } from "./tools/screenshot.js";
 import { crosspadInput, InputAction } from "./tools/input.js";
 import { crosspadSettingsGet, crosspadSettingsSet } from "./tools/settings.js";
 import { crosspadStats } from "./tools/stats.js";
+import type { OnLine } from "./utils/exec.js";
+import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
 
-const server = new McpServer({
-  name: "crosspad",
-  version: "3.1.0",
-});
+const server = new McpServer(
+  {
+    name: "crosspad",
+    version: "4.0.0",
+  },
+  {
+    capabilities: {
+      logging: {},
+    },
+  }
+);
+
+/**
+ * Create an OnLine callback that streams each line to the MCP client
+ * via logging notifications. Build output is "info", errors are "error".
+ */
+function makeStreamLogger(logger: string): OnLine {
+  return (stream, line) => {
+    if (!line.trim()) return; // skip empty lines
+    const level: LoggingLevel = stream === "stderr" ? "warning" : "info";
+    server.server.sendLoggingMessage({ level, logger, data: line }).catch(() => {});
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // BUILD & RUN
@@ -38,7 +59,8 @@ server.tool(
       ),
   },
   async ({ mode }) => {
-    const result = crosspadBuild(mode);
+    const onLine = makeStreamLogger("build");
+    const result = await crosspadBuild(mode, onLine);
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
@@ -83,7 +105,8 @@ server.tool(
       .describe("Max lines of output to return (default: 200)"),
   },
   async ({ timeout_seconds, max_lines }) => {
-    const result = crosspadLog(timeout_seconds, max_lines);
+    const onLine = makeStreamLogger("log");
+    const result = await crosspadLog(timeout_seconds, max_lines, onLine);
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
@@ -108,7 +131,8 @@ server.tool(
       .describe("Just list available tests without running them"),
   },
   async ({ filter, list_only }) => {
-    const result = crosspadTest(filter, list_only);
+    const onLine = makeStreamLogger("test");
+    const result = await crosspadTest(filter, list_only, onLine);
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };

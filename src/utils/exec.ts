@@ -1,5 +1,8 @@
-import { execSync, spawn, SpawnOptions } from "child_process";
+import { execSync, spawn, ChildProcess, SpawnOptions } from "child_process";
 import { VCVARSALL } from "../config.js";
+
+/** Callback invoked for each line of stdout/stderr during streaming exec. */
+export type OnLine = (stream: "stdout" | "stderr", line: string) => void;
 
 let cachedMsvcEnv: Record<string, string> | null = null;
 
@@ -107,6 +110,120 @@ export function runCommand(
       durationMs: Date.now() - start,
     };
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// STREAMING VARIANTS (spawn-based, line-by-line callbacks)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Helper: spawn a process and stream stdout/stderr line-by-line via onLine.
+ * Returns the same ExecResult as the sync variants.
+ */
+function spawnStreaming(
+  cmd: string,
+  cwd: string,
+  env: Record<string, string> | undefined,
+  shell: string | boolean,
+  onLine: OnLine,
+  timeoutMs: number
+): Promise<ExecResult> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const child = spawn(cmd, [], {
+      cwd,
+      env,
+      shell,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let stdoutBuf = "";
+    let stderrBuf = "";
+    let killed = false;
+
+    const timer = setTimeout(() => {
+      killed = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+
+    function flushLines(buf: string, stream: "stdout" | "stderr"): string {
+      const parts = buf.split("\n");
+      // Last part is incomplete — keep it in buffer
+      for (let i = 0; i < parts.length - 1; i++) {
+        const line = parts[i].replace(/\r$/, "");
+        onLine(stream, line);
+      }
+      return parts[parts.length - 1];
+    }
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      stdout += text;
+      stdoutBuf += text;
+      stdoutBuf = flushLines(stdoutBuf, "stdout");
+    });
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderr += text;
+      stderrBuf += text;
+      stderrBuf = flushLines(stderrBuf, "stderr");
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      // Flush remaining partial lines
+      if (stdoutBuf.length > 0) onLine("stdout", stdoutBuf.replace(/\r$/, ""));
+      if (stderrBuf.length > 0) onLine("stderr", stderrBuf.replace(/\r$/, ""));
+
+      resolve({
+        success: killed ? false : code === 0,
+        stdout: normalizeLineEndings(stdout),
+        stderr: normalizeLineEndings(stderr),
+        exitCode: killed ? -1 : (code ?? 1),
+        durationMs: Date.now() - start,
+      });
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({
+        success: false,
+        stdout: normalizeLineEndings(stdout),
+        stderr: normalizeLineEndings(stderr + "\n" + err.message),
+        exitCode: 1,
+        durationMs: Date.now() - start,
+      });
+    });
+  });
+}
+
+/**
+ * Run a command with the MSVC environment, streaming output line-by-line.
+ */
+export function runWithMsvcStream(
+  cmd: string,
+  cwd: string,
+  onLine: OnLine,
+  timeoutMs = 300_000
+): Promise<ExecResult> {
+  const env = getMsvcEnv();
+  return spawnStreaming(cmd, cwd, env, "cmd.exe", onLine, timeoutMs);
+}
+
+/**
+ * Run a command in the default shell, streaming output line-by-line.
+ */
+export function runCommandStream(
+  cmd: string,
+  cwd: string,
+  onLine: OnLine,
+  timeoutMs = 60_000
+): Promise<ExecResult> {
+  return spawnStreaming(cmd, cwd, undefined, true, onLine, timeoutMs);
 }
 
 /** Strip \r from Windows line endings */

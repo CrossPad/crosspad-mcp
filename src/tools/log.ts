@@ -1,6 +1,6 @@
-import { execSync } from "child_process";
 import fs from "fs";
 import { BIN_EXE, CROSSPAD_PC_ROOT } from "../config.js";
+import { runWithMsvcStream, OnLine } from "../utils/exec.js";
 
 export interface LogResult {
   success: boolean;
@@ -15,9 +15,13 @@ export interface LogResult {
 /**
  * Launch main.exe, capture stdout/stderr for up to `timeout_seconds`,
  * then kill the process and return the output.
- * Useful for checking init sequence, error messages, crash logs.
+ * Streams lines in real-time via onLine callback.
  */
-export function crosspadLog(timeoutSeconds: number = 5, maxLines: number = 200): LogResult {
+export async function crosspadLog(
+  timeoutSeconds: number = 5,
+  maxLines: number = 200,
+  onLine?: OnLine
+): Promise<LogResult> {
   if (!fs.existsSync(BIN_EXE)) {
     return {
       success: false,
@@ -30,38 +34,20 @@ export function crosspadLog(timeoutSeconds: number = 5, maxLines: number = 200):
     };
   }
 
-  const start = Date.now();
-  let stdout = "";
-  let stderr = "";
-  let exitCode: number | null = null;
-  let truncated = false;
+  onLine?.("stdout", `[crosspad] Launching ${BIN_EXE} (capturing for ${timeoutSeconds}s)...`);
 
-  try {
-    // Run with timeout — process will be killed after timeout
-    const output = execSync(`"${BIN_EXE}"`, {
-      cwd: CROSSPAD_PC_ROOT,
-      encoding: "utf-8",
-      timeout: timeoutSeconds * 1000,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    stdout = output;
-    exitCode = 0;
-  } catch (err: any) {
-    // Timeout or crash — both give us output
-    stdout = err.stdout?.toString() ?? "";
-    stderr = err.stderr?.toString() ?? "";
-    exitCode = err.status ?? null;
-
-    // If it was a timeout (SIGTERM), that's expected
-    if (err.killed || err.signal === "SIGTERM") {
-      exitCode = null; // Expected termination
-    }
-  }
-
-  const duration = (Date.now() - start) / 1000;
+  const result = await runWithMsvcStream(
+    `"${BIN_EXE}"`,
+    CROSSPAD_PC_ROOT,
+    onLine ?? (() => {}),
+    timeoutSeconds * 1000
+  );
 
   // Truncate to maxLines
+  let stdout = result.stdout;
+  let stderr = result.stderr;
+  let truncated = false;
+
   const stdoutLines = stdout.split("\n");
   if (stdoutLines.length > maxLines) {
     stdout = stdoutLines.slice(0, maxLines).join("\n");
@@ -74,13 +60,16 @@ export function crosspadLog(timeoutSeconds: number = 5, maxLines: number = 200):
     truncated = true;
   }
 
+  // exitCode -1 = killed by timeout (expected)
+  const exitCode = result.exitCode === -1 ? null : result.exitCode;
+
   return {
-    success: exitCode === 0 || exitCode === null, // null = timeout (expected)
+    success: exitCode === 0 || exitCode === null,
     exe_path: BIN_EXE,
     stdout,
     stderr,
     exit_code: exitCode,
-    duration_seconds: Math.round(duration * 10) / 10,
+    duration_seconds: Math.round(result.durationMs / 100) / 10,
     truncated,
   };
 }

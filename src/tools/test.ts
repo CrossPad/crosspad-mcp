@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { CROSSPAD_PC_ROOT, BUILD_DIR, VCPKG_TOOLCHAIN } from "../config.js";
-import { runWithMsvc } from "../utils/exec.js";
+import { CROSSPAD_PC_ROOT, VCPKG_TOOLCHAIN } from "../config.js";
+import { runWithMsvc, runWithMsvcStream, OnLine } from "../utils/exec.js";
 
 export interface TestResult {
   success: boolean;
@@ -15,16 +15,18 @@ export interface TestResult {
 }
 
 const TESTS_DIR = path.join(CROSSPAD_PC_ROOT, "tests");
-const TEST_EXE = path.join(BUILD_DIR, "crosspad_tests.exe");
+const BIN_DIR = path.join(CROSSPAD_PC_ROOT, "bin");
+const TEST_EXE = path.join(BIN_DIR, "crosspad_tests.exe");
 
 /**
  * Build and run the crosspad test suite (Catch2).
  * If tests/ dir doesn't exist, offers to scaffold it.
  */
-export function crosspadTest(
+export async function crosspadTest(
   filter: string = "",
-  listOnly: boolean = false
-): TestResult {
+  listOnly: boolean = false,
+  onLine?: OnLine
+): Promise<TestResult> {
   const startTime = Date.now();
 
   // Check if test infrastructure exists
@@ -41,8 +43,42 @@ export function crosspadTest(
     };
   }
 
+  // Ensure cmake is configured with BUILD_TESTING=ON
+  onLine?.("stdout", "[crosspad] Configuring cmake with BUILD_TESTING=ON...");
+
+  const configCmd = `cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=${VCPKG_TOOLCHAIN} -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON`;
+
+  let configResult;
+  if (onLine) {
+    configResult = await runWithMsvcStream(configCmd, CROSSPAD_PC_ROOT, onLine, 120_000);
+  } else {
+    configResult = runWithMsvc(configCmd, CROSSPAD_PC_ROOT, 120_000);
+  }
+
+  if (!configResult.success) {
+    return {
+      success: false,
+      tests_found: true,
+      build_output: (configResult.stdout + "\n" + configResult.stderr).slice(-3000),
+      test_output: "",
+      passed: 0,
+      failed: 0,
+      errors: parseErrors(configResult.stdout + "\n" + configResult.stderr),
+      duration_seconds: (Date.now() - startTime) / 1000,
+    };
+  }
+
   // Build tests target
-  const buildResult = runWithMsvc("cmake --build build --target crosspad_tests", CROSSPAD_PC_ROOT, 300_000);
+  onLine?.("stdout", "[crosspad] Building test target...");
+
+  const buildCmd = "cmake --build build --target crosspad_tests";
+  let buildResult;
+  if (onLine) {
+    buildResult = await runWithMsvcStream(buildCmd, CROSSPAD_PC_ROOT, onLine, 300_000);
+  } else {
+    buildResult = runWithMsvc(buildCmd, CROSSPAD_PC_ROOT, 300_000);
+  }
+
   if (!buildResult.success) {
     return {
       success: false,
@@ -80,13 +116,21 @@ export function crosspadTest(
     }
   }
 
-  const testResult = runWithMsvc(testCmd, CROSSPAD_PC_ROOT, 120_000);
+  onLine?.("stdout", "[crosspad] Running tests...");
+
+  let testResult;
+  if (onLine) {
+    testResult = await runWithMsvcStream(testCmd, CROSSPAD_PC_ROOT, onLine, 120_000);
+  } else {
+    testResult = runWithMsvc(testCmd, CROSSPAD_PC_ROOT, 120_000);
+  }
+
   const testOutput = testResult.stdout + "\n" + testResult.stderr;
 
   // Parse Catch2 compact output
   const { passed, failed } = parseCatch2Output(testOutput);
 
-  return {
+  const result: TestResult = {
     success: testResult.success,
     tests_found: true,
     build_output: buildResult.stdout.slice(-500),
@@ -96,6 +140,10 @@ export function crosspadTest(
     errors: testResult.success ? [] : parseErrors(testOutput),
     duration_seconds: (Date.now() - startTime) / 1000,
   };
+
+  onLine?.("stdout", `[crosspad] Tests ${result.success ? "PASSED" : "FAILED"}: ${passed} passed, ${failed} failed (${result.duration_seconds.toFixed(1)}s)`);
+
+  return result;
 }
 
 /**

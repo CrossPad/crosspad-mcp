@@ -3,7 +3,7 @@ import path from "path";
 // Resolve crosspad-pc root from env or relative to this file
 export const CROSSPAD_PC_ROOT =
   process.env.CROSSPAD_PC_ROOT ||
-  path.resolve(import.meta.dirname, "..", "..", "..");
+  "C:/Users/Mateusz/GIT/crosspad-pc";
 
 export const REPOS: Record<string, string> = {
   "crosspad-core": "C:/Users/Mateusz/GIT/crosspad-core",

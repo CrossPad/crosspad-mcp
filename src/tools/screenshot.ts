@@ -1,6 +1,9 @@
 /**
  * MCP tool: capture a screenshot from the running CrossPad simulator.
- * Returns base64-encoded BMP image data.
+ * The simulator encodes PNG natively via stb_image_write.
+ *
+ * When saving to file, the simulator writes the PNG directly to disk
+ * (no base64 round-trip over TCP). Otherwise returns inline base64.
  */
 
 import { sendRemoteCommand, isSimulatorRunning } from "../utils/remote-client.js";
@@ -15,19 +18,19 @@ export interface ScreenshotResult {
   format?: string;
   file_path?: string;
   data_base64?: string;
+  size?: number;
   error?: string;
 }
 
 /**
  * Take a screenshot of the simulator window.
- * @param save_to_file If true, save the BMP to disk and return the path instead of base64.
- * @param filename     Custom filename (default: screenshot_<timestamp>.bmp)
+ * @param save_to_file If true, simulator writes PNG directly to disk (fast path).
+ * @param filename     Custom filename (default: screenshot_<timestamp>.png)
  */
 export async function crosspadScreenshot(
   saveToFile: boolean = true,
   filename?: string
 ): Promise<ScreenshotResult> {
-  // Check if simulator is running
   const running = await isSimulatorRunning();
   if (!running) {
     return {
@@ -37,6 +40,35 @@ export async function crosspadScreenshot(
   }
 
   try {
+    if (saveToFile) {
+      // Fast path: simulator writes PNG directly to disk
+      const fname = filename || `screenshot_${Date.now()}.png`;
+      const screenshotsDir = path.join(CROSSPAD_PC_ROOT, "screenshots");
+      if (!fs.existsSync(screenshotsDir)) {
+        fs.mkdirSync(screenshotsDir, { recursive: true });
+      }
+      const filePath = path.join(screenshotsDir, fname).replace(/\\/g, "/");
+
+      const resp = await sendRemoteCommand({ cmd: "screenshot", file: filePath });
+
+      if (!resp.ok) {
+        return {
+          success: false,
+          error: (resp.error as string) || "Screenshot failed",
+        };
+      }
+
+      return {
+        success: true,
+        width: resp.width as number,
+        height: resp.height as number,
+        format: "png",
+        file_path: filePath,
+        size: resp.size as number,
+      };
+    }
+
+    // Inline path: returns base64-encoded PNG
     const resp = await sendRemoteCommand({ cmd: "screenshot" });
 
     if (!resp.ok) {
@@ -46,36 +78,12 @@ export async function crosspadScreenshot(
       };
     }
 
-    const width = resp.width as number;
-    const height = resp.height as number;
-    const b64data = resp.data as string;
-
-    if (saveToFile) {
-      // Save BMP to disk
-      const fname = filename || `screenshot_${Date.now()}.bmp`;
-      const screenshotsDir = path.join(CROSSPAD_PC_ROOT, "screenshots");
-      if (!fs.existsSync(screenshotsDir)) {
-        fs.mkdirSync(screenshotsDir, { recursive: true });
-      }
-      const filePath = path.join(screenshotsDir, fname);
-      const buffer = Buffer.from(b64data, "base64");
-      fs.writeFileSync(filePath, buffer);
-
-      return {
-        success: true,
-        width,
-        height,
-        format: "bmp",
-        file_path: filePath.replace(/\\/g, "/"),
-      };
-    }
-
     return {
       success: true,
-      width,
-      height,
-      format: "bmp",
-      data_base64: b64data,
+      width: resp.width as number,
+      height: resp.height as number,
+      format: "png",
+      data_base64: resp.data as string,
     };
   } catch (err: any) {
     return {
