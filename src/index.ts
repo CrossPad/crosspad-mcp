@@ -16,6 +16,7 @@ import { crosspadScreenshot } from "./tools/screenshot.js";
 import { crosspadInput, InputAction } from "./tools/input.js";
 import { crosspadSettingsGet, crosspadSettingsSet } from "./tools/settings.js";
 import { crosspadStats } from "./tools/stats.js";
+import { crosspadIdfBuild } from "./tools/idf-build.js";
 import type { OnLine } from "./utils/exec.js";
 import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
 
@@ -107,6 +108,30 @@ server.tool(
   async ({ timeout_seconds, max_lines }) => {
     const onLine = makeStreamLogger("log");
     const result = await crosspadLog(timeout_seconds, max_lines, onLine);
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// ESP-IDF BUILD
+// ═══════════════════════════════════════════════════════════════════════
+
+server.tool(
+  "crosspad_idf_build",
+  "Build the crosspad-idf ESP32-S3 firmware using idf.py. Use fullclean after adding new app directories or CMakeLists.txt changes.",
+  {
+    mode: z
+      .enum(["build", "fullclean", "clean"])
+      .default("build")
+      .describe(
+        "build: incremental idf.py build. fullclean: idf.py fullclean + build (required after new app dirs). clean: delete build/ + build."
+      ),
+  },
+  async ({ mode }) => {
+    const onLine = makeStreamLogger("idf-build");
+    const result = await crosspadIdfBuild(mode, onLine);
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
@@ -288,7 +313,7 @@ server.tool(
 
 server.tool(
   "crosspad_screenshot",
-  "Capture a screenshot from the running CrossPad simulator. Saves BMP to screenshots/ dir by default. Requires the simulator to be running (use crosspad_run first).",
+  "Capture a screenshot from the running CrossPad simulator. Saves PNG to screenshots/ dir by default. Requires the simulator to be running (use crosspad_run first).",
   {
     save_to_file: z
       .boolean()
@@ -297,10 +322,14 @@ server.tool(
     filename: z
       .string()
       .optional()
-      .describe("Custom filename (default: screenshot_<timestamp>.bmp)"),
+      .describe("Custom filename (default: screenshot_<timestamp>.png)"),
+    region: z
+      .enum(["full", "lcd"])
+      .default("full")
+      .describe("full: entire simulator window (490x680). lcd: LCD screen only (320x240)."),
   },
-  async ({ save_to_file, filename }) => {
-    const result = await crosspadScreenshot(save_to_file, filename);
+  async ({ save_to_file, filename, region }) => {
+    const result = await crosspadScreenshot(save_to_file, filename, region);
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };

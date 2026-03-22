@@ -1,5 +1,5 @@
 import { execSync, spawn, ChildProcess, SpawnOptions } from "child_process";
-import { VCVARSALL } from "../config.js";
+import { VCVARSALL, IS_WINDOWS, IDF_PATH } from "../config.js";
 
 /** Callback invoked for each line of stdout/stderr during streaming exec. */
 export type OnLine = (stream: "stdout" | "stderr", line: string) => void;
@@ -8,9 +8,12 @@ let cachedMsvcEnv: Record<string, string> | null = null;
 
 /**
  * Capture MSVC environment by running vcvarsall.bat and parsing `set` output.
- * Cached for the lifetime of the server process.
+ * Cached for the lifetime of the server process. Windows-only.
  */
 export function getMsvcEnv(): Record<string, string> {
+  if (!IS_WINDOWS) {
+    return { ...process.env } as Record<string, string>;
+  }
   if (cachedMsvcEnv) return cachedMsvcEnv;
 
   const cmd = `"${VCVARSALL}" x64 >nul 2>&1 && set`;
@@ -224,6 +227,129 @@ export function runCommandStream(
   timeoutMs = 60_000
 ): Promise<ExecResult> {
   return spawnStreaming(cmd, cwd, undefined, true, onLine, timeoutMs);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ESP-IDF ENVIRONMENT
+// ═══════════════════════════════════════════════════════════════════════
+
+let cachedIdfEnv: Record<string, string> | null = null;
+
+/**
+ * Capture ESP-IDF environment by running export.bat and parsing `set` output.
+ * Must unset MSYSTEM to prevent ESP-IDF from rejecting MSYS shells.
+ * Cached for the lifetime of the server process. Windows-only.
+ */
+export function getIdfEnv(): Record<string, string> {
+  if (!IS_WINDOWS) {
+    return { ...process.env } as Record<string, string>;
+  }
+  if (cachedIdfEnv) return cachedIdfEnv;
+
+  const exportBat = `${IDF_PATH}\\export.bat`;
+  const cmd = `set MSYSTEM=&& set PYTHONIOENCODING=utf-8&& call ${exportBat} >nul 2>&1 && set`;
+  const output = execSync(cmd, {
+    shell: "cmd.exe",
+    encoding: "utf-8",
+    timeout: 60_000,
+  });
+
+  const env: Record<string, string> = {};
+  for (const line of output.split("\n")) {
+    const eq = line.indexOf("=");
+    if (eq > 0) {
+      env[line.slice(0, eq)] = line.slice(eq + 1).trimEnd();
+    }
+  }
+
+  cachedIdfEnv = env;
+  return env;
+}
+
+/**
+ * Run a command with the ESP-IDF environment, capturing output.
+ */
+export function runWithIdf(
+  cmd: string,
+  cwd: string,
+  timeoutMs = 600_000
+): ExecResult {
+  const env = getIdfEnv();
+  const start = Date.now();
+
+  try {
+    const stdout = execSync(cmd, {
+      cwd,
+      env,
+      shell: "cmd.exe",
+      encoding: "utf-8",
+      timeout: timeoutMs,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return {
+      success: true,
+      stdout: normalizeLineEndings(stdout),
+      stderr: "",
+      exitCode: 0,
+      durationMs: Date.now() - start,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      stdout: normalizeLineEndings(err.stdout?.toString() ?? ""),
+      stderr: normalizeLineEndings(err.stderr?.toString() ?? ""),
+      exitCode: err.status ?? 1,
+      durationMs: Date.now() - start,
+    };
+  }
+}
+
+/**
+ * Run a command with the ESP-IDF environment, streaming output line-by-line.
+ */
+export function runWithIdfStream(
+  cmd: string,
+  cwd: string,
+  onLine: OnLine,
+  timeoutMs = 600_000
+): Promise<ExecResult> {
+  const env = getIdfEnv();
+  return spawnStreaming(cmd, cwd, env, "cmd.exe", onLine, timeoutMs);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PLATFORM-AGNOSTIC BUILD WRAPPERS
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Run a build command with the appropriate environment for the current platform.
+ * Windows: MSVC env + cmd.exe shell. Unix: default shell.
+ */
+export function runBuild(
+  cmd: string,
+  cwd: string,
+  timeoutMs = 300_000
+): ExecResult {
+  if (IS_WINDOWS) {
+    return runWithMsvc(cmd, cwd, timeoutMs);
+  }
+  return runCommand(cmd, cwd, timeoutMs);
+}
+
+/**
+ * Run a build command with streaming output, platform-aware.
+ * Windows: MSVC env + cmd.exe shell. Unix: default shell.
+ */
+export function runBuildStream(
+  cmd: string,
+  cwd: string,
+  onLine: OnLine,
+  timeoutMs = 300_000
+): Promise<ExecResult> {
+  if (IS_WINDOWS) {
+    return runWithMsvcStream(cmd, cwd, onLine, timeoutMs);
+  }
+  return runCommandStream(cmd, cwd, onLine, timeoutMs);
 }
 
 /** Strip \r from Windows line endings */
