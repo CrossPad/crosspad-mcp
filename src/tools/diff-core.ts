@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { CROSSPAD_PC_ROOT, REPOS } from "../config.js";
+import { CROSSPAD_PC_ROOT } from "../config.js";
 import { runCommand } from "../utils/exec.js";
 import { getSubmodulePin } from "../utils/git.js";
 

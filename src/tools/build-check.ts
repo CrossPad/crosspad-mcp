@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { CROSSPAD_PC_ROOT, BUILD_DIR, BIN_EXE, REPOS } from "../config.js";
+import { CROSSPAD_PC_ROOT, BUILD_DIR, BIN_EXE } from "../config.js";
 import { runCommand } from "../utils/exec.js";
 import { getHead, getSubmodulePin } from "../utils/git.js";
 

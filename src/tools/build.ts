@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { CROSSPAD_PC_ROOT, BUILD_DIR, BIN_EXE, VCPKG_TOOLCHAIN } from "../config.js";
-import { runWithMsvc, runWithMsvcStream, spawnDetached, OnLine } from "../utils/exec.js";
+import { runBuild, runBuildStream, spawnDetached, OnLine } from "../utils/exec.js";
 
 export interface BuildResult {
   success: boolean;
@@ -54,7 +54,7 @@ export async function crosspadBuild(
     onLine?.("stdout", `[crosspad] Configuring: ${mode}...`);
 
     if (onLine) {
-      const configResult = await runWithMsvcStream(configCmd, CROSSPAD_PC_ROOT, onLine, 600_000);
+      const configResult = await runBuildStream(configCmd, CROSSPAD_PC_ROOT, onLine, 600_000);
       if (!configResult.success) {
         const combined = configResult.stdout + "\n" + configResult.stderr;
         return {
@@ -66,7 +66,7 @@ export async function crosspadBuild(
         };
       }
     } else {
-      const configResult = runWithMsvc(configCmd, CROSSPAD_PC_ROOT, 600_000);
+      const configResult = runBuild(configCmd, CROSSPAD_PC_ROOT, 600_000);
       if (!configResult.success) {
         const combined = configResult.stdout + "\n" + configResult.stderr;
         return {
@@ -88,12 +88,12 @@ export async function crosspadBuild(
   let buildSuccess: boolean;
 
   if (onLine) {
-    const buildResult = await runWithMsvcStream("cmake --build build", CROSSPAD_PC_ROOT, onLine, 600_000);
+    const buildResult = await runBuildStream("cmake --build build", CROSSPAD_PC_ROOT, onLine, 600_000);
     buildStdout = buildResult.stdout;
     buildStderr = buildResult.stderr;
     buildSuccess = buildResult.success;
   } else {
-    const buildResult = runWithMsvc("cmake --build build", CROSSPAD_PC_ROOT, 600_000);
+    const buildResult = runBuild("cmake --build build", CROSSPAD_PC_ROOT, 600_000);
     buildStdout = buildResult.stdout;
     buildStderr = buildResult.stderr;
     buildSuccess = buildResult.success;

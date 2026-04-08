@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { CROSSPAD_IDF_ROOT } from "../config.js";
-import { runWithIdf, runWithIdfStream, OnLine } from "../utils/exec.js";
+import { runIdf, runIdfStream, OnLine } from "../utils/exec.js";
 
 export interface IdfBuildResult {
   success: boolean;
@@ -111,10 +111,10 @@ async function runIdfCmd(
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; success: boolean }> {
   if (onLine) {
-    const r = await runWithIdfStream(cmd, CROSSPAD_IDF_ROOT, onLine, timeoutMs);
+    const r = await runIdfStream(cmd, CROSSPAD_IDF_ROOT, onLine, timeoutMs);
     return r;
   }
-  return runWithIdf(cmd, CROSSPAD_IDF_ROOT, timeoutMs);
+  return runIdf(cmd, CROSSPAD_IDF_ROOT, timeoutMs);
 }
 
 export async function crosspadIdfBuild(

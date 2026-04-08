@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { CROSSPAD_PC_ROOT, VCPKG_TOOLCHAIN } from "../config.js";
-import { runWithMsvc, runWithMsvcStream, OnLine } from "../utils/exec.js";
+import { CROSSPAD_PC_ROOT, VCPKG_TOOLCHAIN, IS_WINDOWS } from "../config.js";
+import { runBuild, runBuildStream, OnLine } from "../utils/exec.js";
 
 export interface TestResult {
   success: boolean;
@@ -16,7 +16,8 @@ export interface TestResult {
 
 const TESTS_DIR = path.join(CROSSPAD_PC_ROOT, "tests");
 const BIN_DIR = path.join(CROSSPAD_PC_ROOT, "bin");
-const TEST_EXE = path.join(BIN_DIR, "crosspad_tests.exe");
+const EXE_EXT = IS_WINDOWS ? ".exe" : "";
+const TEST_EXE = path.join(BIN_DIR, `crosspad_tests${EXE_EXT}`);
 
 /**
  * Build and run the crosspad test suite (Catch2).
@@ -50,9 +51,9 @@ export async function crosspadTest(
 
   let configResult;
   if (onLine) {
-    configResult = await runWithMsvcStream(configCmd, CROSSPAD_PC_ROOT, onLine, 120_000);
+    configResult = await runBuildStream(configCmd, CROSSPAD_PC_ROOT, onLine, 120_000);
   } else {
-    configResult = runWithMsvc(configCmd, CROSSPAD_PC_ROOT, 120_000);
+    configResult = runBuild(configCmd, CROSSPAD_PC_ROOT, 120_000);
   }
 
   if (!configResult.success) {
@@ -74,9 +75,9 @@ export async function crosspadTest(
   const buildCmd = "cmake --build build --target crosspad_tests";
   let buildResult;
   if (onLine) {
-    buildResult = await runWithMsvcStream(buildCmd, CROSSPAD_PC_ROOT, onLine, 300_000);
+    buildResult = await runBuildStream(buildCmd, CROSSPAD_PC_ROOT, onLine, 300_000);
   } else {
-    buildResult = runWithMsvc(buildCmd, CROSSPAD_PC_ROOT, 300_000);
+    buildResult = runBuild(buildCmd, CROSSPAD_PC_ROOT, 300_000);
   }
 
   if (!buildResult.success) {
@@ -120,9 +121,9 @@ export async function crosspadTest(
 
   let testResult;
   if (onLine) {
-    testResult = await runWithMsvcStream(testCmd, CROSSPAD_PC_ROOT, onLine, 120_000);
+    testResult = await runBuildStream(testCmd, CROSSPAD_PC_ROOT, onLine, 120_000);
   } else {
-    testResult = runWithMsvc(testCmd, CROSSPAD_PC_ROOT, 120_000);
+    testResult = runBuild(testCmd, CROSSPAD_PC_ROOT, 120_000);
   }
 
   const testOutput = testResult.stdout + "\n" + testResult.stderr;

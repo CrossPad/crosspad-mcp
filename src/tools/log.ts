@@ -1,6 +1,6 @@
 import fs from "fs";
 import { BIN_EXE, CROSSPAD_PC_ROOT } from "../config.js";
-import { runWithMsvcStream, OnLine } from "../utils/exec.js";
+import { runCommandStream, OnLine } from "../utils/exec.js";
 
 export interface LogResult {
   success: boolean;
@@ -36,7 +36,7 @@ export async function crosspadLog(
 
   onLine?.("stdout", `[crosspad] Launching ${BIN_EXE} (capturing for ${timeoutSeconds}s)...`);
 
-  const result = await runWithMsvcStream(
+  const result = await runCommandStream(
     `"${BIN_EXE}"`,
     CROSSPAD_PC_ROOT,
     onLine ?? (() => {}),

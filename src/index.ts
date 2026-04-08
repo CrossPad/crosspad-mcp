@@ -3,468 +3,302 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+
+// Tool implementations
 import { crosspadBuild, crosspadRun } from "./tools/build.js";
-import { crosspadReposStatus } from "./tools/repos.js";
-import { crosspadScaffoldApp } from "./tools/scaffold.js";
-import { crosspadInterfaces, crosspadApps } from "./tools/architecture.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
-import { crosspadSearchSymbols } from "./tools/symbols.js";
-import { crosspadDiffCore } from "./tools/diff-core.js";
 import { crosspadLog } from "./tools/log.js";
+import { crosspadIdfBuild } from "./tools/idf-build.js";
 import { crosspadTest, crosspadTestScaffold } from "./tools/test.js";
+import { crosspadReposStatus } from "./tools/repos.js";
+import { crosspadDiffCore } from "./tools/diff-core.js";
+import { crosspadSearchSymbols } from "./tools/symbols.js";
+import { crosspadInterfaces, crosspadApps } from "./tools/architecture.js";
+import { crosspadScaffoldApp } from "./tools/scaffold.js";
 import { crosspadScreenshot } from "./tools/screenshot.js";
 import { crosspadInput, InputAction } from "./tools/input.js";
-import { crosspadSettingsGet, crosspadSettingsSet } from "./tools/settings.js";
 import { crosspadStats } from "./tools/stats.js";
-import { crosspadIdfBuild } from "./tools/idf-build.js";
+import { crosspadSettingsGet, crosspadSettingsSet } from "./tools/settings.js";
+import {
+  crosspadAppList,
+  crosspadAppInstall,
+  crosspadAppRemove,
+  crosspadAppUpdate,
+  crosspadAppSync,
+} from "./tools/app-manager.js";
+
 import type { OnLine } from "./utils/exec.js";
 import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
 
 const server = new McpServer(
-  {
-    name: "crosspad",
-    version: "4.0.0",
-  },
-  {
-    capabilities: {
-      logging: {},
-    },
-  }
+  { name: "crosspad", version: "5.0.0" },
+  { capabilities: { logging: {} } }
 );
 
-/**
- * Create an OnLine callback that streams each line to the MCP client
- * via logging notifications. Build output is "info", errors are "error".
- */
 function makeStreamLogger(logger: string): OnLine {
   return (stream, line) => {
-    if (!line.trim()) return; // skip empty lines
+    if (!line.trim()) return;
     const level: LoggingLevel = stream === "stderr" ? "warning" : "info";
     server.server.sendLoggingMessage({ level, logger, data: line }).catch(() => {});
   };
 }
 
+function jsonResponse(data: unknown) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+}
+
 // ═══════════════════════════════════════════════════════════════════════
-// BUILD & RUN
+// TOOL 1: crosspad_build
 // ═══════════════════════════════════════════════════════════════════════
 
 server.tool(
   "crosspad_build",
-  "Build crosspad-pc simulator (incremental, clean, or reconfigure)",
+  "Build, run, or check the CrossPad PC simulator or ESP-IDF firmware.",
   {
-    mode: z
-      .enum(["incremental", "clean", "reconfigure"])
-      .default("incremental")
-      .describe(
-        "incremental: just cmake --build. clean: delete build dir + full rebuild. reconfigure: cmake configure + build (use after adding new source files)"
-      ),
+    action: z.enum(["pc", "pc_run", "pc_check", "pc_log", "idf"])
+      .describe("pc: build simulator. pc_run: launch exe. pc_check: build health check. pc_log: capture stdout. idf: build ESP-IDF firmware."),
+    mode: z.enum(["incremental", "clean", "reconfigure", "fullclean"]).default("incremental")
+      .describe("Build mode (pc: incremental/clean/reconfigure, idf: build/fullclean/clean)").optional(),
+    timeout_seconds: z.number().default(5).optional()
+      .describe("pc_log: capture duration in seconds"),
+    max_lines: z.number().default(200).optional()
+      .describe("pc_log: max output lines"),
   },
-  async ({ mode }) => {
+  async ({ action, mode, timeout_seconds, max_lines }) => {
     const onLine = makeStreamLogger("build");
-    const result = await crosspadBuild(mode, onLine);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
 
-server.tool(
-  "crosspad_run",
-  "Launch the crosspad-pc simulator (bin/main.exe). Returns immediately with PID.",
-  {},
-  async () => {
-    const result = crosspadRun();
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "crosspad_build_check",
-  "Quick health check: is the build up to date? Detects stale exe, new source files needing reconfigure, submodule drift, dirty working trees. Use before build to know what mode to use.",
-  {},
-  async () => {
-    const result = crosspadBuildCheck();
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "crosspad_log",
-  "Launch main.exe, capture stdout/stderr for a few seconds, then kill it. Great for checking init sequence, crash messages, or runtime errors without leaving the process running.",
-  {
-    timeout_seconds: z
-      .number()
-      .default(5)
-      .describe("How long to let the process run before killing it (default: 5)"),
-    max_lines: z
-      .number()
-      .default(200)
-      .describe("Max lines of output to return (default: 200)"),
-  },
-  async ({ timeout_seconds, max_lines }) => {
-    const onLine = makeStreamLogger("log");
-    const result = await crosspadLog(timeout_seconds, max_lines, onLine);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
+    switch (action) {
+      case "pc": {
+        const m = (mode === "fullclean" ? "clean" : mode ?? "incremental") as "incremental" | "clean" | "reconfigure";
+        return jsonResponse(await crosspadBuild(m, onLine));
+      }
+      case "pc_run":
+        return jsonResponse(crosspadRun());
+      case "pc_check":
+        return jsonResponse(crosspadBuildCheck());
+      case "pc_log":
+        return jsonResponse(await crosspadLog(timeout_seconds ?? 5, max_lines ?? 200, onLine));
+      case "idf": {
+        const m = (mode === "reconfigure" ? "build" : mode ?? "build") as "build" | "fullclean" | "clean";
+        return jsonResponse(await crosspadIdfBuild(m, onLine));
+      }
+    }
   }
 );
 
 // ═══════════════════════════════════════════════════════════════════════
-// ESP-IDF BUILD
-// ═══════════════════════════════════════════════════════════════════════
-
-server.tool(
-  "crosspad_idf_build",
-  "Build the crosspad-idf ESP32-S3 firmware using idf.py. Use fullclean after adding new app directories or CMakeLists.txt changes.",
-  {
-    mode: z
-      .enum(["build", "fullclean", "clean"])
-      .default("build")
-      .describe(
-        "build: incremental idf.py build. fullclean: idf.py fullclean + build (required after new app dirs). clean: delete build/ + build."
-      ),
-  },
-  async ({ mode }) => {
-    const onLine = makeStreamLogger("idf-build");
-    const result = await crosspadIdfBuild(mode, onLine);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-// ═══════════════════════════════════════════════════════════════════════
-// TEST
+// TOOL 2: crosspad_test
 // ═══════════════════════════════════════════════════════════════════════
 
 server.tool(
   "crosspad_test",
-  "Build and run the Catch2 test suite. If no tests/ dir exists, tells you to scaffold. Supports filtering by test name.",
+  "Run Catch2 tests or scaffold test infrastructure for crosspad-pc.",
   {
-    filter: z
-      .string()
-      .default("")
-      .describe("Catch2 test name filter (e.g. '[core]' or 'PadManager')"),
-    list_only: z
-      .boolean()
-      .default(false)
-      .describe("Just list available tests without running them"),
+    action: z.enum(["run", "scaffold"])
+      .describe("run: build + run tests. scaffold: generate test boilerplate."),
+    filter: z.string().default("").optional()
+      .describe("Catch2 test name filter (e.g. '[core]')"),
+    list_only: z.boolean().default(false).optional()
+      .describe("List tests without running"),
   },
-  async ({ filter, list_only }) => {
+  async ({ action, filter, list_only }) => {
+    if (action === "scaffold") {
+      return jsonResponse(crosspadTestScaffold());
+    }
     const onLine = makeStreamLogger("test");
-    const result = await crosspadTest(filter, list_only, onLine);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "crosspad_test_scaffold",
-  "Generate test infrastructure: tests/CMakeLists.txt (Catch2 v3), sample test file, and CMake patch instructions. Returns file contents — does NOT write to disk.",
-  {},
-  async () => {
-    const result = crosspadTestScaffold();
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
+    return jsonResponse(await crosspadTest(filter ?? "", list_only ?? false, onLine));
   }
 );
 
 // ═══════════════════════════════════════════════════════════════════════
-// REPOS & SUBMODULES
+// TOOL 3: crosspad_sim
 // ═══════════════════════════════════════════════════════════════════════
 
 server.tool(
-  "crosspad_repos_status",
-  "Show git status across all CrossPad repos (crosspad-core, crosspad-gui, crosspad-pc, ESP32-S3, 2playerCrosspad). Detects dev-mode vs submodule-mode and checks submodule pin sync.",
-  {},
-  async () => {
-    const result = crosspadReposStatus();
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "crosspad_diff_core",
-  "Show what changed in crosspad-core and/or crosspad-gui relative to the pinned submodule commit. Shows commits ahead/behind, changed files, uncommitted changes. Essential for dev-mode workflows.",
+  "crosspad_sim",
+  "Interact with the running simulator: screenshots, input, stats, settings.",
   {
-    submodule: z
-      .enum(["crosspad-core", "crosspad-gui", "both"])
-      .default("both")
-      .describe("Which submodule(s) to diff"),
+    action: z.enum(["screenshot", "input", "stats", "settings_get", "settings_set"])
+      .describe("screenshot: capture PNG. input: send event. stats: runtime diagnostics. settings_get/set: read/write settings."),
+    // screenshot params
+    region: z.enum(["full", "lcd"]).default("full").optional()
+      .describe("screenshot: full window or LCD only"),
+    filename: z.string().optional()
+      .describe("screenshot: custom filename"),
+    save_to_file: z.boolean().default(true).optional()
+      .describe("screenshot: save to disk (default) or return base64"),
+    // input params
+    input_action: z.enum(["click", "pad_press", "pad_release", "encoder_rotate", "encoder_press", "encoder_release", "key"]).optional()
+      .describe("input: event type"),
+    x: z.number().optional().describe("input click: X coordinate"),
+    y: z.number().optional().describe("input click: Y coordinate"),
+    pad: z.number().optional().describe("input pad: index 0-15"),
+    velocity: z.number().optional().describe("input pad_press: velocity 0-127"),
+    delta: z.number().optional().describe("input encoder_rotate: rotation delta"),
+    keycode: z.number().optional().describe("input key: SDL keycode"),
+    // settings params
+    category: z.string().default("all").optional()
+      .describe("settings_get: all/display/keypad/vibration/wireless/audio/system"),
+    key: z.string().optional()
+      .describe("settings_set: dotted key name (e.g. 'lcd_brightness')"),
+    value: z.number().optional()
+      .describe("settings_set: numeric value"),
   },
-  async ({ submodule }) => {
-    const result = crosspadDiffCore(submodule);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
+  async ({ action, region, filename, save_to_file, input_action, x, y, pad, velocity, delta, keycode, category, key, value }) => {
+    switch (action) {
+      case "screenshot":
+        return jsonResponse(await crosspadScreenshot(save_to_file ?? true, filename));
+
+      case "input": {
+        if (!input_action) {
+          return jsonResponse({ success: false, error: "input_action is required for action=input" });
+        }
+        let input: InputAction;
+        switch (input_action) {
+          case "click": input = { action: "click", x: x ?? 0, y: y ?? 0 }; break;
+          case "pad_press": input = { action: "pad_press", pad: pad ?? 0, velocity: velocity ?? 127 }; break;
+          case "pad_release": input = { action: "pad_release", pad: pad ?? 0 }; break;
+          case "encoder_rotate": input = { action: "encoder_rotate", delta: delta ?? 1 }; break;
+          case "encoder_press": input = { action: "encoder_press" }; break;
+          case "encoder_release": input = { action: "encoder_release" }; break;
+          case "key": input = { action: "key", keycode: keycode ?? 0 }; break;
+        }
+        return jsonResponse(await crosspadInput(input));
+      }
+
+      case "stats":
+        return jsonResponse(await crosspadStats());
+
+      case "settings_get":
+        return jsonResponse(await crosspadSettingsGet(category ?? "all"));
+
+      case "settings_set": {
+        if (!key || value === undefined) {
+          return jsonResponse({ success: false, error: "key and value required for settings_set" });
+        }
+        return jsonResponse(await crosspadSettingsSet(key, value));
+      }
+    }
   }
 );
 
 // ═══════════════════════════════════════════════════════════════════════
-// CODE & ARCHITECTURE
+// TOOL 4: crosspad_repo
 // ═══════════════════════════════════════════════════════════════════════
 
 server.tool(
-  "crosspad_search_symbols",
-  "Search for classes, functions, macros, enums across all CrossPad repos. Faster than manual grep — uses git grep under the hood.",
+  "crosspad_repo",
+  "Git status and submodule diffs across all CrossPad repos.",
   {
-    query: z.string().describe("Symbol name or substring to search for"),
-    kind: z
-      .enum(["class", "function", "macro", "enum", "typedef", "all"])
-      .default("all")
-      .describe("Filter by symbol kind"),
-    repos: z
-      .array(z.string())
-      .default(["all"])
-      .describe('Repo names to search: "crosspad-core", "crosspad-pc", "ESP32-S3", etc. or ["all"]'),
-    max_results: z
-      .number()
-      .default(50)
-      .describe("Max results to return"),
+    action: z.enum(["status", "diff"])
+      .describe("status: git status all repos. diff: submodule drift analysis."),
+    submodule: z.enum(["crosspad-core", "crosspad-gui", "both"]).default("both").optional()
+      .describe("diff: which submodule to analyze"),
   },
-  async ({ query, kind, repos, max_results }) => {
-    const result = crosspadSearchSymbols(query, kind, repos, max_results);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
+  async ({ action, submodule }) => {
+    switch (action) {
+      case "status":
+        return jsonResponse(crosspadReposStatus());
+      case "diff":
+        return jsonResponse(crosspadDiffCore(submodule ?? "both"));
+    }
   }
 );
 
+// ═══════════════════════════════════════════════════════════════════════
+// TOOL 5: crosspad_code
+// ═══════════════════════════════════════════════════════════════════════
+
 server.tool(
-  "crosspad_scaffold_app",
-  "Generate boilerplate for a new CrossPad app (cpp, hpp, CMakeLists.txt, optional pad logic). Returns file contents for Claude to write — does NOT create files on disk.",
+  "crosspad_code",
+  "Search symbols, query interfaces, list registered apps, or scaffold new apps across CrossPad repos.",
   {
-    name: z
-      .string()
-      .describe("PascalCase app name, e.g. 'Metronome'"),
-    display_name: z
-      .string()
-      .optional()
-      .describe("Human-readable name (defaults to name)"),
-    has_pad_logic: z
-      .boolean()
-      .default(false)
-      .describe("Generate IPadLogicHandler stub"),
-    icon: z
-      .string()
-      .default("CrossPad_Logo_110w.png")
-      .describe("Icon filename"),
+    action: z.enum(["search", "interfaces", "apps", "scaffold"])
+      .describe("search: find classes/functions/macros. interfaces: query crosspad-core interfaces. apps: list REGISTER_APP registrations. scaffold: generate app boilerplate."),
+    // search params
+    query: z.string().optional()
+      .describe("search: symbol name. interfaces: 'list', 'implementations <Name>', or 'capabilities'."),
+    kind: z.enum(["class", "function", "macro", "enum", "typedef", "all"]).default("all").optional()
+      .describe("search: filter by symbol kind"),
+    repos: z.array(z.string()).default(["all"]).optional()
+      .describe("search: repo names to scan, or ['all']"),
+    max_results: z.number().default(50).optional()
+      .describe("search: result cap"),
+    // apps params
+    platform: z.enum(["pc", "idf", "arduino", "all"]).default("all").optional()
+      .describe("apps: platform to scan"),
+    // scaffold params
+    name: z.string().optional()
+      .describe("scaffold: PascalCase app name"),
+    display_name: z.string().optional()
+      .describe("scaffold: human-readable name"),
+    has_pad_logic: z.boolean().default(false).optional()
+      .describe("scaffold: generate IPadLogicHandler stub"),
+    icon: z.string().default("CrossPad_Logo_110w.png").optional()
+      .describe("scaffold: icon filename"),
   },
-  async ({ name, display_name, has_pad_logic, icon }) => {
-    const result = crosspadScaffoldApp({
-      name,
-      display_name,
-      has_pad_logic,
-      icon,
-    });
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
+  async ({ action, query, kind, repos, max_results, platform, name, display_name, has_pad_logic, icon }) => {
+    switch (action) {
+      case "search": {
+        if (!query) return jsonResponse({ error: "query is required for action=search" });
+        return jsonResponse(crosspadSearchSymbols(query, kind ?? "all", repos ?? ["all"], max_results ?? 50));
+      }
+      case "interfaces": {
+        return jsonResponse(crosspadInterfaces(query ?? "list"));
+      }
+      case "apps":
+        return jsonResponse(crosspadApps(platform ?? "all"));
+      case "scaffold": {
+        if (!name) return jsonResponse({ error: "name is required for action=scaffold" });
+        return jsonResponse(crosspadScaffoldApp({ name, display_name, has_pad_logic: has_pad_logic ?? false, icon: icon ?? "CrossPad_Logo_110w.png" }));
+      }
+    }
   }
 );
 
-server.tool(
-  "crosspad_interfaces",
-  'Query crosspad-core interfaces and their implementations across all platforms. Use query="list" to list all interfaces, "implementations <InterfaceName>" to find implementations, or "capabilities" to show platform capability flags.',
-  {
-    query: z
-      .string()
-      .describe(
-        '"list", "implementations <InterfaceName>", or "capabilities"'
-      ),
-  },
-  async ({ query }) => {
-    const result = crosspadInterfaces(query);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
+// ═══════════════════════════════════════════════════════════════════════
+// TOOL 6: crosspad_apps
+// ═══════════════════════════════════════════════════════════════════════
 
 server.tool(
   "crosspad_apps",
-  "List all registered CrossPad apps (found via REGISTER_APP macro or _register_*_app functions).",
+  "Manage CrossPad app packages: list, install, remove, update from the crosspad-apps registry.",
   {
-    platform: z
-      .enum(["pc", "esp32", "2player", "all"])
-      .default("pc")
-      .describe("Which platform to scan"),
+    action: z.enum(["list", "install", "remove", "update", "sync"])
+      .describe("list: available apps. install: add app submodule. remove: remove app. update: update app(s). sync: sync manifest."),
+    app_name: z.string().optional()
+      .describe("install/remove/update: app ID from registry"),
+    ref: z.string().default("main").optional()
+      .describe("install: git ref (branch/tag/commit)"),
+    force: z.boolean().default(false).optional()
+      .describe("install: install even if incompatible"),
+    update_all: z.boolean().default(false).optional()
+      .describe("update: update all installed apps"),
+    show_all: z.boolean().default(false).optional()
+      .describe("list: include incompatible apps"),
   },
-  async ({ platform }) => {
-    const result = crosspadApps(platform);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-// ═══════════════════════════════════════════════════════════════════════
-// SIMULATOR INTERACTION (requires running simulator with remote control)
-// ═══════════════════════════════════════════════════════════════════════
-
-server.tool(
-  "crosspad_screenshot",
-  "Capture a screenshot from the running CrossPad simulator. Saves PNG to screenshots/ dir by default. Requires the simulator to be running (use crosspad_run first).",
-  {
-    save_to_file: z
-      .boolean()
-      .default(true)
-      .describe("Save to disk (default: true). If false, returns base64 data inline."),
-    filename: z
-      .string()
-      .optional()
-      .describe("Custom filename (default: screenshot_<timestamp>.png)"),
-    region: z
-      .enum(["full", "lcd"])
-      .default("full")
-      .describe("full: entire simulator window (490x680). lcd: LCD screen only (320x240)."),
-  },
-  async ({ save_to_file, filename, region }) => {
-    const result = await crosspadScreenshot(save_to_file, filename, region);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "crosspad_input",
-  `Send input events to the running CrossPad simulator. Requires simulator to be running.
-
-Actions:
-  click {x, y}           — mouse click at window coordinates (490x680 window)
-  pad_press {pad, vel}    — press pad 0-15 with velocity 0-127
-  pad_release {pad}       — release pad 0-15
-  encoder_rotate {delta}  — rotate encoder (positive=CW, negative=CCW)
-  encoder_press           — press encoder button
-  encoder_release         — release encoder button
-  key {keycode}           — SDL keycode (e.g. 13=Enter, 27=Escape)
-
-LCD area is centered at roughly x=85..405, y=20..260 within the 490x680 window.`,
-  {
-    action: z
-      .enum(["click", "pad_press", "pad_release", "encoder_rotate", "encoder_press", "encoder_release", "key"])
-      .describe("Input action type"),
-    x: z.number().optional().describe("X coordinate for click"),
-    y: z.number().optional().describe("Y coordinate for click"),
-    pad: z.number().optional().describe("Pad index 0-15 for pad_press/pad_release"),
-    velocity: z.number().optional().describe("Velocity 0-127 for pad_press (default: 127)"),
-    delta: z.number().optional().describe("Rotation delta for encoder_rotate"),
-    keycode: z.number().optional().describe("SDL keycode for key action"),
-  },
-  async ({ action, x, y, pad, velocity, delta, keycode }) => {
-    let input: InputAction;
+  async ({ action, app_name, ref, force, update_all, show_all }) => {
+    const onLine = makeStreamLogger("app-manager");
 
     switch (action) {
-      case "click":
-        input = { action: "click", x: x ?? 0, y: y ?? 0 };
-        break;
-      case "pad_press":
-        input = { action: "pad_press", pad: pad ?? 0, velocity: velocity ?? 127 };
-        break;
-      case "pad_release":
-        input = { action: "pad_release", pad: pad ?? 0 };
-        break;
-      case "encoder_rotate":
-        input = { action: "encoder_rotate", delta: delta ?? 1 };
-        break;
-      case "encoder_press":
-        input = { action: "encoder_press" };
-        break;
-      case "encoder_release":
-        input = { action: "encoder_release" };
-        break;
-      case "key":
-        input = { action: "key", keycode: keycode ?? 0 };
-        break;
-      default:
-        return {
-          content: [{ type: "text", text: JSON.stringify({ success: false, error: "Unknown action" }) }],
-        };
-    }
+      case "list":
+        return jsonResponse(crosspadAppList(show_all ?? false));
 
-    const result = await crosspadInput(input);
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "crosspad_stats",
-  `Query runtime statistics from the running simulator. Returns:
-- Platform capabilities (active flags)
-- Pad state (16 pads: pressed, playing, note, channel, RGB color)
-- Active/registered pad logic handlers
-- Registered apps list
-- Heap stats (SRAM/PSRAM free/total)
-- Settings summary (brightness, theme, kit, audio engine)`,
-  {},
-  async () => {
-    const result = await crosspadStats();
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-    };
-  }
-);
-
-server.tool(
-  "crosspad_settings",
-  `Read or write CrossPad settings on the running simulator.
-
-Read: action="get", category="all"|"display"|"keypad"|"vibration"|"wireless"|"audio"|"system"
-Write: action="set", key="<setting_key>", value=<number> (booleans: 0/1)
-
-Writable keys:
-  lcd_brightness (0-255), rgb_brightness (0-255), theme_color (0-255), perf_stats_flags (bitmask)
-  kit (0-255), audio_engine (0/1)
-  keypad.enable, keypad.inactive_lights, keypad.eco_mode, keypad.send_stm/ble/usb/cc (0/1)
-  vibration.enable, vibration.on_touch, vibration.in_min/max, vibration.out_min/max (0-255)
-  master_fx.mute (0/1), master_fx.in_volume, master_fx.out_volume (0-100)
-
-Changes are auto-saved to ~/.crosspad/preferences.json.`,
-  {
-    action: z
-      .enum(["get", "set"])
-      .describe("Read or write settings"),
-    category: z
-      .string()
-      .default("all")
-      .describe("For get: all, display, keypad, vibration, wireless, audio, system"),
-    key: z
-      .string()
-      .optional()
-      .describe("For set: dotted key name (e.g. 'lcd_brightness', 'keypad.eco_mode')"),
-    value: z
-      .number()
-      .optional()
-      .describe("For set: numeric value (booleans: 0=false, 1=true)"),
-  },
-  async ({ action, category, key, value }) => {
-    if (action === "get") {
-      const result = await crosspadSettingsGet(category);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
-    } else {
-      if (!key || value === undefined) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ success: false, error: "key and value required for set" }) }],
-        };
+      case "install": {
+        if (!app_name) return jsonResponse({ success: false, error: "app_name required" });
+        return jsonResponse(await crosspadAppInstall(app_name, ref ?? "main", force ?? false, onLine));
       }
-      const result = await crosspadSettingsSet(key, value);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+
+      case "remove": {
+        if (!app_name) return jsonResponse({ success: false, error: "app_name required" });
+        return jsonResponse(await crosspadAppRemove(app_name, onLine));
+      }
+
+      case "update":
+        return jsonResponse(await crosspadAppUpdate(app_name, update_all ?? false, onLine));
+
+      case "sync":
+        return jsonResponse(await crosspadAppSync(onLine));
     }
   }
 );

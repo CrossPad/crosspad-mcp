@@ -1,5 +1,5 @@
 import fs from "fs";
-import { REPOS } from "../config.js";
+import { getRepos } from "../config.js";
 import { runCommand } from "../utils/exec.js";
 
 export interface SymbolResult {
@@ -62,9 +62,10 @@ export function crosspadSearchSymbols(
 ): SymbolSearchResult {
   const results: SymbolResult[] = [];
 
+  const allRepos = getRepos();
   const targetRepos = repos.includes("all")
-    ? Object.entries(REPOS)
-    : Object.entries(REPOS).filter(([name]) => repos.includes(name));
+    ? Object.entries(allRepos)
+    : Object.entries(allRepos).filter(([name]) => repos.includes(name));
 
   const pattern = buildPattern(escapeForRegex(query), kind);
   if (!pattern) {
@@ -74,7 +75,7 @@ export function crosspadSearchSymbols(
   for (const [repoName, repoPath] of targetRepos) {
     if (!fs.existsSync(repoPath)) continue;
 
-    const grepCmd = `git grep -n -E "${escapeForShell(pattern)}" -- "*.hpp" "*.h" "*.cpp" "*.c"`;
+    const grepCmd = `git grep --recurse-submodules -n -E "${escapeForShell(pattern)}" -- "*.hpp" "*.h" "*.cpp" "*.c"`;
     const result = runCommand(grepCmd, repoPath, 30_000);
 
     if (!result.success && result.stdout.length === 0) continue;

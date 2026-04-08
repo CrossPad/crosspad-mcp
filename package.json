@@ -1,12 +1,33 @@
 {
   "name": "crosspad-mcp-server",
-  "version": "4.0.0",
-  "description": "MCP development server for CrossPad",
+  "version": "5.0.1",
+  "description": "MCP development server for CrossPad — build, test, manage apps, interact with simulator",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "crosspad-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "keywords": [
+    "mcp",
+    "crosspad",
+    "esp32",
+    "esp-idf",
+    "model-context-protocol",
+    "claude",
+    "embedded",
+    "music-controller"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CrossPad/crosspad-mcp.git"
+  },
+  "license": "MIT",
   "scripts": {
     "build": "tsc",
-    "prepare": "tsc",
+    "prepublishOnly": "tsc",
     "dev": "tsc --watch"
   },
   "dependencies": {

@@ -1,8 +1,12 @@
-import { execSync, spawn, ChildProcess, SpawnOptions } from "child_process";
+import { execSync, spawn, SpawnOptions } from "child_process";
 import { VCVARSALL, IS_WINDOWS, IDF_PATH } from "../config.js";
 
 /** Callback invoked for each line of stdout/stderr during streaming exec. */
 export type OnLine = (stream: "stdout" | "stderr", line: string) => void;
+
+// ═══════════════════════════════════════════════════════════════════════
+// MSVC ENVIRONMENT (Windows-only)
+// ═══════════════════════════════════════════════════════════════════════
 
 let cachedMsvcEnv: Record<string, string> | null = null;
 
@@ -35,6 +39,10 @@ export function getMsvcEnv(): Record<string, string> {
   return env;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// COMMON TYPES
+// ═══════════════════════════════════════════════════════════════════════
+
 export interface ExecResult {
   success: boolean;
   stdout: string;
@@ -43,8 +51,12 @@ export interface ExecResult {
   durationMs: number;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// SYNC COMMAND EXECUTION
+// ═══════════════════════════════════════════════════════════════════════
+
 /**
- * Run a command with the MSVC environment, capturing output.
+ * Run a command with the MSVC environment, capturing output. Windows-only.
  */
 export function runWithMsvc(
   cmd: string,
@@ -154,7 +166,6 @@ function spawnStreaming(
 
     function flushLines(buf: string, stream: "stdout" | "stderr"): string {
       const parts = buf.split("\n");
-      // Last part is incomplete — keep it in buffer
       for (let i = 0; i < parts.length - 1; i++) {
         const line = parts[i].replace(/\r$/, "");
         onLine(stream, line);
@@ -178,7 +189,6 @@ function spawnStreaming(
 
     child.on("close", (code) => {
       clearTimeout(timer);
-      // Flush remaining partial lines
       if (stdoutBuf.length > 0) onLine("stdout", stdoutBuf.replace(/\r$/, ""));
       if (stderrBuf.length > 0) onLine("stderr", stderrBuf.replace(/\r$/, ""));
 
@@ -236,35 +246,56 @@ export function runCommandStream(
 let cachedIdfEnv: Record<string, string> | null = null;
 
 /**
- * Capture ESP-IDF environment by running export.bat and parsing `set` output.
- * Must unset MSYSTEM to prevent ESP-IDF from rejecting MSYS shells.
- * Cached for the lifetime of the server process. Windows-only.
+ * Capture ESP-IDF environment. Cached for the lifetime of the server process.
+ * - Windows: runs export.bat and parses `set` output
+ * - Linux/Mac: sources export.sh and captures env via null-delimited output
  */
 export function getIdfEnv(): Record<string, string> {
-  if (!IS_WINDOWS) {
-    return { ...process.env } as Record<string, string>;
-  }
   if (cachedIdfEnv) return cachedIdfEnv;
 
-  const exportBat = `${IDF_PATH}\\export.bat`;
-  const cmd = `set MSYSTEM=&& set PYTHONIOENCODING=utf-8&& call ${exportBat} >nul 2>&1 && set`;
+  if (IS_WINDOWS) {
+    const exportBat = `${IDF_PATH}\\export.bat`;
+    const cmd = `set MSYSTEM=&& set PYTHONIOENCODING=utf-8&& call "${exportBat}" >nul 2>&1 && set`;
+    const output = execSync(cmd, {
+      shell: "cmd.exe",
+      encoding: "utf-8",
+      timeout: 60_000,
+    });
+
+    const env: Record<string, string> = {};
+    for (const line of output.split("\n")) {
+      const eq = line.indexOf("=");
+      if (eq > 0) {
+        env[line.slice(0, eq)] = line.slice(eq + 1).trimEnd();
+      }
+    }
+    cachedIdfEnv = env;
+    return env;
+  }
+
+  // Linux/Mac: source export.sh and capture environment
+  const exportSh = `${IDF_PATH}/export.sh`;
+  const cmd = `bash -c '. "${exportSh}" >/dev/null 2>&1 && env -0'`;
   const output = execSync(cmd, {
-    shell: "cmd.exe",
     encoding: "utf-8",
     timeout: 60_000,
+    env: { ...process.env, IDF_PATH },
   });
 
   const env: Record<string, string> = {};
-  for (const line of output.split("\n")) {
-    const eq = line.indexOf("=");
+  for (const entry of output.split("\0")) {
+    if (!entry) continue;
+    const eq = entry.indexOf("=");
     if (eq > 0) {
-      env[line.slice(0, eq)] = line.slice(eq + 1).trimEnd();
+      env[entry.slice(0, eq)] = entry.slice(eq + 1);
     }
   }
 
   cachedIdfEnv = env;
   return env;
 }
+
+const IDF_SHELL = IS_WINDOWS ? "cmd.exe" : "/bin/bash";
 
 /**
  * Run a command with the ESP-IDF environment, capturing output.
@@ -281,7 +312,7 @@ export function runWithIdf(
     const stdout = execSync(cmd, {
       cwd,
       env,
-      shell: "cmd.exe",
+      shell: IDF_SHELL,
       encoding: "utf-8",
       timeout: timeoutMs,
       stdio: ["pipe", "pipe", "pipe"],
@@ -314,7 +345,7 @@ export function runWithIdfStream(
   timeoutMs = 600_000
 ): Promise<ExecResult> {
   const env = getIdfEnv();
-  return spawnStreaming(cmd, cwd, env, "cmd.exe", onLine, timeoutMs);
+  return spawnStreaming(cmd, cwd, env, IDF_SHELL, onLine, timeoutMs);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -350,6 +381,29 @@ export function runBuildStream(
     return runWithMsvcStream(cmd, cwd, onLine, timeoutMs);
   }
   return runCommandStream(cmd, cwd, onLine, timeoutMs);
+}
+
+/**
+ * Run a command with the ESP-IDF environment, platform-aware.
+ */
+export function runIdf(
+  cmd: string,
+  cwd: string,
+  timeoutMs = 600_000
+): ExecResult {
+  return runWithIdf(cmd, cwd, timeoutMs);
+}
+
+/**
+ * Run a command with the ESP-IDF environment, streaming, platform-aware.
+ */
+export function runIdfStream(
+  cmd: string,
+  cwd: string,
+  onLine: OnLine,
+  timeoutMs = 600_000
+): Promise<ExecResult> {
+  return runWithIdfStream(cmd, cwd, onLine, timeoutMs);
 }
 
 /** Strip \r from Windows line endings */

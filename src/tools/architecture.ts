@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { REPOS } from "../config.js";
+import { getRepos, resolveCrosspadCore } from "../config.js";
 import { runCommand } from "../utils/exec.js";
 
 // --- crosspad_interfaces ---
@@ -17,7 +17,10 @@ export interface ImplementationInfo {
 }
 
 function findInterfaces(): InterfaceInfo[] {
-  const coreInclude = path.join(REPOS["crosspad-core"], "include", "crosspad");
+  const corePath = resolveCrosspadCore();
+  if (!corePath) return [];
+
+  const coreInclude = path.join(corePath, "include", "crosspad");
   const results: InterfaceInfo[] = [];
 
   function scan(dir: string) {
@@ -27,7 +30,6 @@ function findInterfaces(): InterfaceInfo[] {
       if (entry.isDirectory()) {
         scan(fullPath);
       } else if (entry.name.startsWith("I") && entry.name.endsWith(".hpp")) {
-        // Extract class name from file
         const content = fs.readFileSync(fullPath, "utf-8");
         const match = content.match(/class\s+(I[A-Z]\w+)\b/);
         if (match) {
@@ -47,20 +49,20 @@ function findInterfaces(): InterfaceInfo[] {
 function findImplementations(interfaceName: string): ImplementationInfo[] {
   const results: ImplementationInfo[] = [];
   const pattern = `class\\s+\\w+.*:\\s*(public\\s+)?.*${interfaceName}`;
+  const repos = getRepos();
 
   const platformMap: Record<string, string> = {
     "crosspad-core": "shared",
     "crosspad-gui": "gui",
     "crosspad-pc": "PC",
-    "ESP32-S3": "ESP32-S3",
+    "ESP32-S3": "arduino",
     "2playerCrosspad": "2player",
+    "platform-idf": "idf",
   };
 
-  for (const [name, repoPath] of Object.entries(REPOS)) {
-    if (!fs.existsSync(repoPath)) continue;
-
+  for (const [name, repoPath] of Object.entries(repos)) {
     const result = runCommand(
-      `git grep -n -E "${pattern}" -- "*.hpp" "*.cpp" "*.h"`,
+      `git grep --recurse-submodules -n -E "${pattern}" -- "*.hpp" "*.cpp" "*.h"`,
       repoPath
     );
 
@@ -74,7 +76,6 @@ function findImplementations(interfaceName: string): ImplementationInfo[] {
       const filePart = line.slice(0, colonIdx);
       const codePart = line.slice(colonIdx + 1);
 
-      // Extract the line number and code
       const lineNumMatch = codePart.match(/^(\d+):(.*)/);
       const code = lineNumMatch ? lineNumMatch[2] : codePart;
 
@@ -98,40 +99,37 @@ interface CapabilityInfo {
 }
 
 function queryCapabilities(): CapabilityInfo {
-  const capsFile = path.join(
-    REPOS["crosspad-core"],
-    "include",
-    "crosspad",
-    "platform",
-    "PlatformCapabilities.hpp"
-  );
-
-  // Parse enum flags
+  const corePath = resolveCrosspadCore();
   const flags: string[] = [];
-  if (fs.existsSync(capsFile)) {
-    const content = fs.readFileSync(capsFile, "utf-8");
-    const enumMatch = content.match(/enum\s+class\s+Capability[^{]*\{([^}]+)\}/s);
-    if (enumMatch) {
-      for (const line of enumMatch[1].split("\n")) {
-        const flagMatch = line.match(/\b(\w+)\s*=/);
-        if (flagMatch && flagMatch[1] !== "None" && flagMatch[1] !== "All") {
-          flags.push(flagMatch[1]);
+
+  if (corePath) {
+    const capsFile = path.join(corePath, "include", "crosspad", "platform", "PlatformCapabilities.hpp");
+    if (fs.existsSync(capsFile)) {
+      const content = fs.readFileSync(capsFile, "utf-8");
+      const enumMatch = content.match(/enum\s+class\s+Capability[^{]*\{([^}]+)\}/s);
+      if (enumMatch) {
+        for (const line of enumMatch[1].split("\n")) {
+          const flagMatch = line.match(/\b(\w+)\s*=/);
+          if (flagMatch && flagMatch[1] !== "None" && flagMatch[1] !== "All") {
+            flags.push(flagMatch[1]);
+          }
         }
       }
     }
   }
 
-  // Find which platforms set which caps
-  const platforms: Record<string, string[]> = {};
+  const repos = getRepos();
   const platformMap: Record<string, string> = {
     "crosspad-pc": "PC",
-    "ESP32-S3": "ESP32-S3",
+    "ESP32-S3": "arduino",
+    "platform-idf": "idf",
     "2playerCrosspad": "2player",
   };
 
-  for (const [name, repoPath] of Object.entries(REPOS)) {
+  const platforms: Record<string, string[]> = {};
+
+  for (const [name, repoPath] of Object.entries(repos)) {
     if (!platformMap[name]) continue;
-    if (!fs.existsSync(repoPath)) continue;
 
     const result = runCommand(
       `git grep -h "addPlatformCapability\\|setPlatformCapabilities" -- "*.cpp" "*.hpp" "*.h"`,
@@ -198,21 +196,34 @@ export interface AppInfo {
 }
 
 export function crosspadApps(
-  platform: "pc" | "esp32" | "2player" | "all"
+  platform: "pc" | "idf" | "arduino" | "all"
 ): AppInfo[] {
   const results: AppInfo[] = [];
+  const repos = getRepos();
 
-  const targets: [string, string][] = [];
-  if (platform === "pc" || platform === "all") targets.push(["PC", REPOS["crosspad-pc"]]);
-  if (platform === "esp32" || platform === "all") targets.push(["ESP32-S3", REPOS["ESP32-S3"]]);
-  if (platform === "2player" || platform === "all") targets.push(["2player", REPOS["2playerCrosspad"]]);
+  const targets: [string, string, string[]][] = [];
+  // [platformLabel, repoPath, searchDirs]
+
+  if (platform === "pc" || platform === "all") {
+    if (repos["crosspad-pc"]) {
+      targets.push(["PC", repos["crosspad-pc"], []]);
+    }
+  }
+  if (platform === "arduino" || platform === "all") {
+    if (repos["ESP32-S3"]) {
+      targets.push(["arduino", repos["ESP32-S3"], []]);
+    }
+  }
+  if (platform === "idf" || platform === "all") {
+    if (repos["platform-idf"]) {
+      targets.push(["idf", repos["platform-idf"], []]);
+    }
+  }
 
   for (const [platName, repoPath] of targets) {
-    if (!fs.existsSync(repoPath)) continue;
-
     // Search for REGISTER_APP and _register_*_app patterns
     const result = runCommand(
-      `git grep -n -E "REGISTER_APP\\(|void _register_\\w+_app\\(\\)" -- "*.cpp"`,
+      `git grep --recurse-submodules -n -E "REGISTER_APP\\(|void _register_\\w+_app\\(\\)" -- "*.cpp"`,
       repoPath
     );
 

@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { REPOS, CROSSPAD_PC_ROOT } from "../config.js";
+import { getRepos, CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT } from "../config.js";
 import { getRepoStatus, getSubmodulePin, getHead, RepoStatus } from "../utils/git.js";
 
 export interface SubmoduleSync {
@@ -15,13 +15,11 @@ export interface ReposStatusResult {
   submodule_sync: Record<string, SubmoduleSync>;
 }
 
-function detectMode(): "dev-mode" | "submodule-mode" | "unknown" {
-  const corePath = path.join(CROSSPAD_PC_ROOT, "crosspad-core");
+function detectMode(rootPath: string): "dev-mode" | "submodule-mode" | "unknown" {
+  const corePath = path.join(rootPath, "crosspad-core");
   try {
     const stat = fs.lstatSync(corePath);
-    // Windows junctions report as symlinks in Node.js
     if (stat.isSymbolicLink()) return "dev-mode";
-    // Check for .git file (submodule) or .git dir
     const gitPath = path.join(corePath, ".git");
     if (fs.existsSync(gitPath)) return "submodule-mode";
     return "unknown";
@@ -32,20 +30,11 @@ function detectMode(): "dev-mode" | "submodule-mode" | "unknown" {
 
 export function crosspadReposStatus(): ReposStatusResult {
   const repos: RepoStatus[] = [];
+  const discovered = getRepos();
 
-  for (const [name, repoPath] of Object.entries(REPOS)) {
+  for (const [name, repoPath] of Object.entries(discovered)) {
     try {
-      if (fs.existsSync(repoPath)) {
-        repos.push(getRepoStatus(name, repoPath));
-      } else {
-        repos.push({
-          name,
-          path: repoPath,
-          branch: "",
-          head: "",
-          dirtyFiles: [`(repo not found at ${repoPath})`],
-        });
-      }
+      repos.push(getRepoStatus(name, repoPath));
     } catch (err: any) {
       repos.push({
         name,
@@ -57,18 +46,44 @@ export function crosspadReposStatus(): ReposStatusResult {
     }
   }
 
-  const mode = detectMode();
+  const mode = fs.existsSync(CROSSPAD_PC_ROOT)
+    ? detectMode(CROSSPAD_PC_ROOT)
+    : "unknown";
 
-  // Submodule sync info
+  // Submodule sync info — check both crosspad-pc and platform-idf
   const submoduleSync: Record<string, SubmoduleSync> = {};
-  for (const sub of ["crosspad-core", "crosspad-gui"]) {
-    const pinned = getSubmodulePin(CROSSPAD_PC_ROOT, sub);
-    const localHead = REPOS[sub] ? getHead(REPOS[sub]) : null;
-    submoduleSync[sub] = {
-      pinned,
-      local_head: localHead,
-      in_sync: pinned !== null && localHead !== null && localHead.startsWith(pinned),
-    };
+
+  const parentRepos = [
+    { name: "crosspad-pc", root: CROSSPAD_PC_ROOT },
+    { name: "platform-idf", root: CROSSPAD_IDF_ROOT },
+  ];
+
+  for (const parent of parentRepos) {
+    if (!fs.existsSync(parent.root)) continue;
+
+    for (const sub of ["crosspad-core", "crosspad-gui"]) {
+      const subPath = path.join(parent.root, sub.includes("/") ? sub : `components/${sub}`);
+      // crosspad-pc has crosspad-core at root, platform-idf has it in components/
+      const actualSubPath = fs.existsSync(path.join(parent.root, sub))
+        ? sub
+        : `components/${sub}`;
+
+      const pinned = getSubmodulePin(parent.root, actualSubPath);
+      if (pinned === null) continue; // not a submodule in this repo
+
+      let localHead: string | null = null;
+      const fullSubPath = path.join(parent.root, actualSubPath);
+      if (fs.existsSync(fullSubPath)) {
+        localHead = getHead(fullSubPath);
+      }
+
+      const key = `${parent.name}/${sub}`;
+      submoduleSync[key] = {
+        pinned,
+        local_head: localHead,
+        in_sync: pinned !== null && localHead !== null && localHead.startsWith(pinned.slice(0, 7)),
+      };
+    }
   }
 
   return { repos, crosspad_pc_mode: mode, submodule_sync: submoduleSync };
