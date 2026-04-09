@@ -23,7 +23,8 @@ export interface SymbolSearchResult {
  * Build a regex pattern that matches definition lines containing the query.
  * Each kind has a specific pattern that only matches declarations/definitions.
  */
-function buildPattern(query: string, kind: string): string {
+/** @internal exported for testing */
+export function buildPattern(query: string, kind: string): string {
   const q = query; // Already escaped by caller
   const patterns: string[] = [];
 
@@ -135,16 +136,19 @@ export function crosspadSearchSymbols(
   };
 }
 
-function escapeForShell(s: string): string {
+/** @internal exported for testing */
+export function escapeForShell(s: string): string {
   // Only escape shell metacharacters, NOT backslashes (needed for regex \s \w etc.)
   return s.replace(/["`$]/g, "\\$&");
 }
 
-function escapeForRegex(s: string): string {
+/** @internal exported for testing */
+export function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function classifyDefinition(line: string): SymbolResult["kind"] | null {
+/** @internal exported for testing */
+export function classifyDefinition(line: string): SymbolResult["kind"] | null {
   if (/^\s*#define\s+/.test(line)) return "macro";
   if (/^\s*enum\s+/.test(line)) return "enum";
   if (/^\s*(typedef|using)\s+/.test(line)) return "typedef";
@@ -157,7 +161,8 @@ function classifyDefinition(line: string): SymbolResult["kind"] | null {
   return null;
 }
 
-function extractSymbolName(line: string, kind: SymbolResult["kind"]): string | null {
+/** @internal exported for testing */
+export function extractSymbolName(line: string, kind: SymbolResult["kind"]): string | null {
   switch (kind) {
     case "class": {
       const m = line.match(/(?:class|struct)\s+(\w+)/);

@@ -237,7 +237,8 @@ endif()
   return { files, cmake_patch: cmakePatch };
 }
 
-function parseCatch2Output(output: string): { passed: number; failed: number } {
+/** @internal exported for testing */
+export function parseCatch2Output(output: string): { passed: number; failed: number } {
   // Catch2 compact reporter: "Passed X test(s)" / "Failed X test(s)"
   const passedMatch = output.match(/(\d+)\s+assertion[s]?\s+.*passed/i) ||
                       output.match(/All tests passed\s*\((\d+)/i);
@@ -250,7 +251,8 @@ function parseCatch2Output(output: string): { passed: number; failed: number } {
   };
 }
 
-function parseErrors(output: string): string[] {
+/** @internal exported for testing */
+export function parseErrors(output: string): string[] {
   const errors: string[] = [];
   for (const line of output.split("\n")) {
     if (/\berror\b/i.test(line) && !line.includes("error(s)")) {

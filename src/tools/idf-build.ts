@@ -17,7 +17,8 @@ export interface IdfBuildResult {
  * listed in the auto-generated app_registry_init.cpp. This means CMake hasn't
  * seen them yet (file(GLOB) only runs at configure time).
  */
-function detectUnregisteredApps(): string[] {
+/** @internal exported for testing */
+export function detectUnregisteredApps(): string[] {
   const appsDir = path.join(CROSSPAD_IDF_ROOT, "main", "app");
   const registryFile = path.join(appsDir, "app_registry_init.cpp");
 
@@ -71,7 +72,8 @@ function detectUnregisteredApps(): string[] {
   return unregistered;
 }
 
-function parseErrors(output: string): string[] {
+/** @internal exported for testing */
+export function parseErrors(output: string): string[] {
   const errors: string[] = [];
   for (const line of output.split("\n")) {
     const trimmed = line.trim();
@@ -89,7 +91,8 @@ function parseErrors(output: string): string[] {
   return errors.slice(0, 30);
 }
 
-function parseWarnings(output: string): string[] {
+/** @internal exported for testing */
+export function parseWarnings(output: string): string[] {
   const warnings: string[] = [];
   for (const line of output.split("\n")) {
     const trimmed = line.trim();
@@ -101,7 +104,8 @@ function parseWarnings(output: string): string[] {
   return warnings.slice(0, 20);
 }
 
-function getTail(output: string, n: number): string[] {
+/** @internal exported for testing */
+export function getTail(output: string, n: number): string[] {
   return output.split("\n").filter(l => l.trim()).slice(-n);
 }
 

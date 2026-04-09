@@ -8,10 +8,13 @@ MCP (Model Context Protocol) server that gives Claude Code full control over the
 claude mcp add crosspad -- npx -y crosspad-mcp-server
 ```
 
-Or with a custom repos directory:
+Or with custom repo paths:
 
 ```bash
-claude mcp add crosspad --env CROSSPAD_GIT_DIR=/path/to/your/GIT -- npx -y crosspad-mcp-server
+claude mcp add crosspad \
+  --env CROSSPAD_IDF_ROOT=/path/to/platform-idf \
+  --env CROSSPAD_PC_ROOT=/path/to/crosspad-pc \
+  -- npx -y crosspad-mcp-server
 ```
 
 That's it. Restart Claude Code and the tools are available.
@@ -28,7 +31,8 @@ Add to your repo root — Claude Code picks it up automatically:
       "command": "npx",
       "args": ["-y", "crosspad-mcp-server"],
       "env": {
-        "CROSSPAD_GIT_DIR": "/path/to/your/GIT"
+        "CROSSPAD_IDF_ROOT": "/path/to/platform-idf",
+        "CROSSPAD_PC_ROOT": "/path/to/crosspad-pc"
       }
     }
   }
@@ -46,7 +50,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
       "command": "npx",
       "args": ["-y", "crosspad-mcp-server"],
       "env": {
-        "CROSSPAD_GIT_DIR": "/path/to/your/GIT"
+        "CROSSPAD_IDF_ROOT": "/path/to/platform-idf"
       }
     }
   }
@@ -98,30 +102,35 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 | `apps` | List REGISTER_APP registrations per platform |
 | `scaffold` | Generate new app boilerplate (cpp, hpp, CMakeLists.txt) |
 
-### `crosspad_apps` — App package manager
+### `crosspad_apps` — App package manager (multi-platform)
 
 | Action | What it does |
 |--------|-------------|
-| `list` | Available apps from the crosspad-apps registry |
-| `install` | Install app as git submodule |
-| `remove` | Remove app submodule |
-| `update` | Update one or all installed apps |
-| `sync` | Sync manifest with existing submodules |
+| `list` | Available apps from registry + where installed (idf/pc/arduino) |
+| `install` | Install app as git submodule (requires `platform` param) |
+| `remove` | Remove app submodule (requires `platform` param) |
+| `update` | Update one or all installed apps (requires `platform` param) |
+| `sync` | Sync manifest with existing submodules (requires `platform` param) |
+
+`list` aggregates `apps.json` from all detected repos. Mutations (`install`, `remove`, `update`, `sync`) target a specific platform via the `platform` parameter (`idf`, `pc`, or `arduino`).
 
 ## Configuration
 
-All paths auto-detected. Override via env vars if needed:
+Each repo path is individually configurable via env vars. If not set, falls back to `$CROSSPAD_GIT_DIR/<repo-name>` (flat layout).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CROSSPAD_GIT_DIR` | `~/GIT` | Base directory containing CrossPad repos |
+| `CROSSPAD_GIT_DIR` | `~/GIT` | Base directory (flat layout fallback) |
 | `CROSSPAD_PC_ROOT` | `$GIT_DIR/crosspad-pc` | PC simulator repo |
 | `CROSSPAD_IDF_ROOT` | `$GIT_DIR/platform-idf` | ESP-IDF platform repo |
+| `CROSSPAD_ARDUINO_ROOT` | `$GIT_DIR/ESP32-S3` | Arduino platform repo |
+| `CROSSPAD_CORE_ROOT` | `$GIT_DIR/crosspad-core` | crosspad-core (standalone) |
+| `CROSSPAD_GUI_ROOT` | `$GIT_DIR/crosspad-gui` | crosspad-gui (standalone) |
 | `IDF_PATH` | auto-detected (`~/esp/esp-idf`) | ESP-IDF SDK path |
 | `VCPKG_ROOT` | `~/vcpkg` (Linux) / `C:/vcpkg` (Win) | vcpkg installation |
 | `VCVARSALL` | VS2022 default | MSVC vcvarsall.bat (Windows only) |
 
-Repos are discovered dynamically — only repos that exist on disk appear in status/search results.
+Repos are discovered dynamically — only repos that exist on disk appear in tool results. No flat directory structure is assumed when env vars are set.
 
 ## How it works
 
@@ -131,7 +140,7 @@ Repos are discovered dynamically — only repos that exist on disk appear in sta
 
 **Streaming** — long-running tools (build, test, log) emit output line-by-line via MCP logging, so Claude sees progress in real-time.
 
-**App manager** — delegates to the Python-based `crosspad_app_manager.py` from [crosspad-apps](https://github.com/CrossPad/crosspad-apps). Reads registry JSON directly for listing, uses Python subprocess for install/remove/update.
+**App manager** — reads registry JSON directly for listing (aggregated across all repos). Mutations delegate to `app_manager.py` (at `tools/` for IDF, `scripts/` for PC/Arduino) from [crosspad-apps](https://github.com/CrossPad/crosspad-apps).
 
 ## Development
 
@@ -139,20 +148,23 @@ Repos are discovered dynamically — only repos that exist on disk appear in sta
 git clone https://github.com/CrossPad/crosspad-mcp.git
 cd crosspad-mcp
 npm install
-npm run dev    # watch mode
-npm run build  # one-shot build
+npm run dev      # watch mode
+npm run build    # one-shot build
+npm test         # run unit tests
+npm run test:watch  # tests in watch mode
 ```
 
 ```
 src/
   index.ts              — 6 tool registrations with action dispatch
-  config.ts             — env-agnostic paths, dynamic repo discovery
+  config.ts             — per-repo env vars, dynamic discovery, IDF/MSVC paths
+  config.test.ts        — config unit tests (fs mocking)
   utils/
     exec.ts             — platform-aware command execution (MSVC/IDF/shell)
     git.ts              — repo status, submodule pins
     remote-client.ts    — TCP client for simulator (localhost:19840)
   tools/
-    app-manager.ts      — crosspad_apps (Python subprocess)
+    app-manager.ts      — crosspad_apps: multi-platform registry + Python subprocess
     architecture.ts     — interfaces, REGISTER_APP scan
     build.ts            — PC build + run
     build-check.ts      — build health check
@@ -167,6 +179,7 @@ src/
     stats.ts            — simulator runtime stats
     symbols.ts          — cross-repo symbol search
     test.ts             — Catch2 test runner
+    *.test.ts           — unit tests for each module
 ```
 
 ## License

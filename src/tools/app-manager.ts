@@ -1,12 +1,17 @@
 /**
  * MCP tool: manage CrossPad app packages via the crosspad-apps registry.
- * - list: reads registry + manifest JSON directly (no Python needed)
+ * - list: reads registry + manifest JSON from ALL detected repos (no Python needed)
  * - install/remove/update/sync: delegates to app_manager.py via Python subprocess
+ *
+ * Each platform repo has app_manager.py at a different path:
+ *   platform-idf  → tools/app_manager.py
+ *   crosspad-pc   → scripts/app_manager.py
+ *   ESP32-S3      → scripts/app_manager.py
  */
 
 import fs from "fs";
 import path from "path";
-import { CROSSPAD_IDF_ROOT } from "../config.js";
+import { CROSSPAD_IDF_ROOT, CROSSPAD_PC_ROOT, getRepos } from "../config.js";
 import { runCommand, runCommandStream, OnLine } from "../utils/exec.js";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -35,7 +40,6 @@ interface InstalledEntry {
 
 export interface AppListResult {
   success: boolean;
-  platform: string;
   apps: Array<{
     id: string;
     name: string;
@@ -43,9 +47,11 @@ export interface AppListResult {
     description: string;
     category: string;
     platforms: string[];
-    installed: boolean;
-    installed_version?: string;
-    installed_ref?: string;
+    installed_in: Array<{
+      platform: string;
+      version: string;
+      ref: string;
+    }>;
     compatible: boolean;
   }>;
   installed_count: number;
@@ -56,39 +62,78 @@ export interface AppListResult {
 export interface AppActionResult {
   success: boolean;
   action: string;
+  platform: string;
   app_name?: string;
   output: string;
   error?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// PLATFORM REGISTRY — maps repo names to platform labels and paths
+// ═══════════════════════════════════════════════════════════════════════
+
+interface PlatformInfo {
+  label: string;
+  root: string;
+  scriptDir: string; // relative path to app_manager.py's directory
+  platformId: string; // platform ID used in registry ("esp-idf", "arduino", "pc")
+}
+
+/** @internal exported for testing */
+export function getAvailablePlatforms(): PlatformInfo[] {
+  const repos = getRepos();
+  const platforms: PlatformInfo[] = [];
+
+  if (repos["platform-idf"]) {
+    platforms.push({
+      label: "idf",
+      root: repos["platform-idf"],
+      scriptDir: "tools",
+      platformId: "esp-idf",
+    });
+  }
+  if (repos["crosspad-pc"]) {
+    platforms.push({
+      label: "pc",
+      root: repos["crosspad-pc"],
+      scriptDir: "scripts",
+      platformId: "pc",
+    });
+  }
+  if (repos["ESP32-S3"]) {
+    platforms.push({
+      label: "arduino",
+      root: repos["ESP32-S3"],
+      scriptDir: "scripts",
+      platformId: "arduino",
+    });
+  }
+
+  return platforms;
+}
+
+function resolvePlatform(platform: string): PlatformInfo | null {
+  return getAvailablePlatforms().find((p) => p.label === platform) ?? null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════
 
-const PLATFORM = "esp-idf";
+function loadRegistryJsonFrom(repoRoot: string): Record<string, AppEntry> | null {
+  const registryPath = path.join(repoRoot, "app-registry.json");
+  if (!fs.existsSync(registryPath)) return null;
 
-function loadRegistryJson(): Record<string, AppEntry> | null {
-  // Try local cache first, then cached registry
-  const candidates = [
-    path.join(CROSSPAD_IDF_ROOT, "app-registry.json"),
-  ];
-
-  for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      try {
-        const data = JSON.parse(fs.readFileSync(p, "utf-8"));
-        return data.apps ?? {};
-      } catch {
-        continue;
-      }
-    }
+  try {
+    const data = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
+    return data.apps ?? {};
+  } catch {
+    return null;
   }
-
-  return null;
 }
 
-function loadManifest(): Record<string, InstalledEntry> {
-  const manifestPath = path.join(CROSSPAD_IDF_ROOT, "apps.json");
+function loadManifestFrom(repoRoot: string): Record<string, InstalledEntry> {
+  const manifestPath = path.join(repoRoot, "apps.json");
   if (!fs.existsSync(manifestPath)) return {};
 
   try {
@@ -99,18 +144,19 @@ function loadManifest(): Record<string, InstalledEntry> {
   }
 }
 
-function isCompatible(app: AppEntry): boolean {
-  return app.platforms.includes(PLATFORM);
+/** @internal exported for testing */
+export function isCompatible(app: AppEntry, platformId: string): boolean {
+  return app.platforms.includes(platformId);
 }
 
 /**
  * Build a Python command that invokes app_manager.py's AppManager class.
  */
-function buildPythonCmd(method: string, args: string = ""): string {
-  const toolsDir = path.join(CROSSPAD_IDF_ROOT, "tools").replace(/\\/g, "/");
-  const projectDir = CROSSPAD_IDF_ROOT.replace(/\\/g, "/");
+/** @internal exported for testing */
+export function buildPythonCmd(projectRoot: string, scriptDir: string, method: string, args: string = ""): string {
+  const toolsDir = path.join(projectRoot, scriptDir).replace(/\\/g, "/");
+  const projectDir = projectRoot.replace(/\\/g, "/");
 
-  // Inline Python script that imports and calls AppManager
   const script = [
     `import sys, os`,
     `sys.path.insert(0, '${toolsDir}')`,
@@ -123,34 +169,40 @@ function buildPythonCmd(method: string, args: string = ""): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// LIST — reads JSON directly, fast, no Python dependency
+// LIST — reads JSON from ALL repos, aggregates installation status
 // ═══════════════════════════════════════════════════════════════════════
 
 export function crosspadAppList(showAll: boolean = false): AppListResult {
-  if (!fs.existsSync(CROSSPAD_IDF_ROOT)) {
+  const platforms = getAvailablePlatforms();
+
+  if (platforms.length === 0) {
     return {
       success: false,
-      platform: PLATFORM,
       apps: [],
       installed_count: 0,
       total_count: 0,
-      error: `platform-idf not found at ${CROSSPAD_IDF_ROOT}`,
+      error: "No CrossPad repos found on disk.",
     };
   }
 
-  // Try to refresh registry if stale or missing
-  let apps = loadRegistryJson();
-  if (!apps) {
-    // Try fetching via Python (which downloads registry on first use)
-    const refreshCmd = buildPythonCmd("_load_registry");
-    runCommand(refreshCmd, CROSSPAD_IDF_ROOT, 30_000);
-    apps = loadRegistryJson();
+  // Load registry from first repo that has it
+  let registry: Record<string, AppEntry> | null = null;
+  for (const plat of platforms) {
+    registry = loadRegistryJsonFrom(plat.root);
+    if (registry) break;
   }
 
-  if (!apps) {
+  if (!registry) {
+    // Try refreshing via Python on the first available platform
+    const plat = platforms[0];
+    const refreshCmd = buildPythonCmd(plat.root, plat.scriptDir, "_load_registry");
+    runCommand(refreshCmd, plat.root, 30_000);
+    registry = loadRegistryJsonFrom(plat.root);
+  }
+
+  if (!registry) {
     return {
       success: false,
-      platform: PLATFORM,
       apps: [],
       installed_count: 0,
       total_count: 0,
@@ -158,14 +210,35 @@ export function crosspadAppList(showAll: boolean = false): AppListResult {
     };
   }
 
-  const manifest = loadManifest();
+  // Load manifests from ALL repos
+  const manifests: Array<{ platform: string; platformId: string; installed: Record<string, InstalledEntry> }> = [];
+  for (const plat of platforms) {
+    const installed = loadManifestFrom(plat.root);
+    if (Object.keys(installed).length > 0) {
+      manifests.push({ platform: plat.label, platformId: plat.platformId, installed });
+    }
+  }
+
   const result: AppListResult["apps"] = [];
 
-  for (const [id, app] of Object.entries(apps)) {
-    const compatible = isCompatible(app);
+  for (const [id, app] of Object.entries(registry)) {
+    // Check where this app is installed
+    const installedIn: AppListResult["apps"][0]["installed_in"] = [];
+    for (const m of manifests) {
+      const entry = m.installed[id];
+      if (entry) {
+        installedIn.push({
+          platform: m.platform,
+          version: entry.version,
+          ref: entry.ref,
+        });
+      }
+    }
+
+    // Compatible = supported on at least one detected platform
+    const compatible = platforms.some((p) => app.platforms.includes(p.platformId));
     if (!showAll && !compatible) continue;
 
-    const installed = manifest[id];
     result.push({
       id,
       name: app.name,
@@ -173,94 +246,122 @@ export function crosspadAppList(showAll: boolean = false): AppListResult {
       description: app.description,
       category: app.category,
       platforms: app.platforms,
-      installed: !!installed,
-      installed_version: installed?.version,
-      installed_ref: installed?.ref,
+      installed_in: installedIn,
       compatible,
     });
   }
 
-  const installedCount = result.filter((a) => a.installed).length;
+  const installedCount = result.filter((a) => a.installed_in.length > 0).length;
 
   return {
     success: true,
-    platform: PLATFORM,
     apps: result,
     installed_count: installedCount,
-    total_count: Object.keys(apps).length,
+    total_count: Object.keys(registry).length,
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// INSTALL / REMOVE / UPDATE / SYNC — delegates to Python
+// INSTALL / REMOVE / UPDATE / SYNC — delegates to Python per platform
 // ═══════════════════════════════════════════════════════════════════════
 
-export async function crosspadAppInstall(
-  appName: string,
-  ref: string = "main",
-  force: boolean = false,
-  onLine?: OnLine
-): Promise<AppActionResult> {
-  const forceArg = force ? ", force=True" : "";
-  const cmd = buildPythonCmd("install", `'${appName}', ref='${ref}'${forceArg}`);
+function requirePlatform(platform: string): { info: PlatformInfo } | { error: AppActionResult } {
+  const info = resolvePlatform(platform);
+  if (!info) {
+    const available = getAvailablePlatforms().map((p) => p.label);
+    return {
+      error: {
+        success: false,
+        action: "",
+        platform,
+        output: "",
+        error: `Unknown platform "${platform}". Available: ${available.join(", ")}`,
+      },
+    };
+  }
+  return { info };
+}
 
-  onLine?.("stdout", `[app-manager] Installing ${appName} (ref=${ref})...`);
+async function runPythonAction(
+  info: PlatformInfo,
+  action: string,
+  method: string,
+  args: string,
+  appName: string | undefined,
+  onLine: OnLine | undefined,
+  timeoutMs: number,
+): Promise<AppActionResult> {
+  const cmd = buildPythonCmd(info.root, info.scriptDir, method, args);
 
   if (onLine) {
-    const result = await runCommandStream(cmd, CROSSPAD_IDF_ROOT, onLine, 120_000);
+    const result = await runCommandStream(cmd, info.root, onLine, timeoutMs);
     return {
       success: result.success,
-      action: "install",
+      action,
+      platform: info.label,
       app_name: appName,
       output: result.stdout,
       error: result.success ? undefined : result.stderr || result.stdout,
     };
   }
 
-  const result = runCommand(cmd, CROSSPAD_IDF_ROOT, 120_000);
+  const result = runCommand(cmd, info.root, timeoutMs);
   return {
     success: result.success,
-    action: "install",
+    action,
+    platform: info.label,
     app_name: appName,
     output: result.stdout,
     error: result.success ? undefined : result.stderr || result.stdout,
   };
+}
+
+export async function crosspadAppInstall(
+  appName: string,
+  platform: string,
+  ref: string = "main",
+  force: boolean = false,
+  onLine?: OnLine,
+): Promise<AppActionResult> {
+  const resolved = requirePlatform(platform);
+  if ("error" in resolved) return { ...resolved.error, action: "install" };
+
+  const forceArg = force ? ", force=True" : "";
+  onLine?.("stdout", `[app-manager] Installing ${appName} on ${platform} (ref=${ref})...`);
+
+  return runPythonAction(
+    resolved.info, "install",
+    "install", `'${appName}', ref='${ref}'${forceArg}`,
+    appName, onLine, 120_000,
+  );
 }
 
 export async function crosspadAppRemove(
   appName: string,
-  onLine?: OnLine
+  platform: string,
+  onLine?: OnLine,
 ): Promise<AppActionResult> {
-  const cmd = buildPythonCmd("remove", `'${appName}'`);
+  const resolved = requirePlatform(platform);
+  if ("error" in resolved) return { ...resolved.error, action: "remove" };
 
-  onLine?.("stdout", `[app-manager] Removing ${appName}...`);
+  onLine?.("stdout", `[app-manager] Removing ${appName} from ${platform}...`);
 
-  if (onLine) {
-    const result = await runCommandStream(cmd, CROSSPAD_IDF_ROOT, onLine, 60_000);
-    return {
-      success: result.success,
-      action: "remove",
-      app_name: appName,
-      output: result.stdout,
-      error: result.success ? undefined : result.stderr || result.stdout,
-    };
-  }
-
-  const result = runCommand(cmd, CROSSPAD_IDF_ROOT, 60_000);
-  return {
-    success: result.success,
-    action: "remove",
-    app_name: appName,
-    output: result.stdout,
-    error: result.success ? undefined : result.stderr || result.stdout,
-  };
+  return runPythonAction(
+    resolved.info, "remove",
+    "remove", `'${appName}'`,
+    appName, onLine, 60_000,
+  );
 }
 
 export async function crosspadAppUpdate(
+  platform: string,
   appName?: string,
   updateAll: boolean = false,
-  onLine?: OnLine
+  onLine?: OnLine,
 ): Promise<AppActionResult> {
+  const resolved = requirePlatform(platform);
+  if ("error" in resolved) return { ...resolved.error, action: "update" };
+
   let args: string;
   if (updateAll) {
     args = "update_all=True";
@@ -270,58 +371,32 @@ export async function crosspadAppUpdate(
     return {
       success: false,
       action: "update",
+      platform,
       output: "",
       error: "Specify app_name or set update_all=true",
     };
   }
 
-  const cmd = buildPythonCmd("update", args);
   const label = updateAll ? "all apps" : appName!;
-  onLine?.("stdout", `[app-manager] Updating ${label}...`);
+  onLine?.("stdout", `[app-manager] Updating ${label} on ${platform}...`);
 
-  if (onLine) {
-    const result = await runCommandStream(cmd, CROSSPAD_IDF_ROOT, onLine, 120_000);
-    return {
-      success: result.success,
-      action: "update",
-      app_name: appName,
-      output: result.stdout,
-      error: result.success ? undefined : result.stderr || result.stdout,
-    };
-  }
-
-  const result = runCommand(cmd, CROSSPAD_IDF_ROOT, 120_000);
-  return {
-    success: result.success,
-    action: "update",
-    app_name: appName,
-    output: result.stdout,
-    error: result.success ? undefined : result.stderr || result.stdout,
-  };
+  return runPythonAction(
+    resolved.info, "update", "update", args,
+    appName, onLine, 120_000,
+  );
 }
 
 export async function crosspadAppSync(
-  onLine?: OnLine
+  platform: string,
+  onLine?: OnLine,
 ): Promise<AppActionResult> {
-  const cmd = buildPythonCmd("sync");
+  const resolved = requirePlatform(platform);
+  if ("error" in resolved) return { ...resolved.error, action: "sync" };
 
-  onLine?.("stdout", "[app-manager] Syncing manifest...");
+  onLine?.("stdout", `[app-manager] Syncing manifest on ${platform}...`);
 
-  if (onLine) {
-    const result = await runCommandStream(cmd, CROSSPAD_IDF_ROOT, onLine, 60_000);
-    return {
-      success: result.success,
-      action: "sync",
-      output: result.stdout,
-      error: result.success ? undefined : result.stderr || result.stdout,
-    };
-  }
-
-  const result = runCommand(cmd, CROSSPAD_IDF_ROOT, 60_000);
-  return {
-    success: result.success,
-    action: "sync",
-    output: result.stdout,
-    error: result.success ? undefined : result.stderr || result.stdout,
-  };
+  return runPythonAction(
+    resolved.info, "sync", "sync", "",
+    undefined, onLine, 60_000,
+  );
 }

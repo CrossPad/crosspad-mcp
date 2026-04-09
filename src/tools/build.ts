@@ -11,7 +11,8 @@ export interface BuildResult {
   output_path: string;
 }
 
-function parseErrors(output: string): string[] {
+/** @internal exported for testing */
+export function parseErrors(output: string): string[] {
   const errors: string[] = [];
   for (const line of output.split("\n")) {
     if (/\berror\b/i.test(line) && !line.includes("error(s)")) {
@@ -21,7 +22,8 @@ function parseErrors(output: string): string[] {
   return errors.slice(0, 20); // Cap at 20 errors
 }
 
-function countWarnings(output: string): number {
+/** @internal exported for testing */
+export function countWarnings(output: string): number {
   let count = 0;
   for (const line of output.split("\n")) {
     if (/\bwarning\b/i.test(line) && !line.includes("warning(s)")) {

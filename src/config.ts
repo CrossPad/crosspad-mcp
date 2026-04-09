@@ -6,16 +6,31 @@ export const IS_WINDOWS = process.platform === "win32";
 export const IS_MAC = process.platform === "darwin";
 
 // ═══════════════════════════════════════════════════════════════════════
-// BASE PATHS — all overridable via env vars
+// BASE PATH — only used as fallback when per-repo env vars are not set
 // ═══════════════════════════════════════════════════════════════════════
 
 const GIT_DIR = process.env.CROSSPAD_GIT_DIR || path.join(os.homedir(), "GIT");
+
+// ═══════════════════════════════════════════════════════════════════════
+// PER-REPO PATHS — each overridable via its own env var
+// Env var takes priority → then flat layout ($GIT_DIR/<name>)
+// ═══════════════════════════════════════════════════════════════════════
 
 export const CROSSPAD_PC_ROOT =
   process.env.CROSSPAD_PC_ROOT || path.join(GIT_DIR, "crosspad-pc");
 
 export const CROSSPAD_IDF_ROOT =
   process.env.CROSSPAD_IDF_ROOT || path.join(GIT_DIR, "platform-idf");
+
+const CROSSPAD_ARDUINO_ROOT =
+  process.env.CROSSPAD_ARDUINO_ROOT || path.join(GIT_DIR, "ESP32-S3");
+
+const CROSSPAD_CORE_ROOT =
+  process.env.CROSSPAD_CORE_ROOT || path.join(GIT_DIR, "crosspad-core");
+
+const CROSSPAD_GUI_ROOT =
+  process.env.CROSSPAD_GUI_ROOT || path.join(GIT_DIR, "crosspad-gui");
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // ESP-IDF SDK PATH — fallback chain
@@ -24,7 +39,6 @@ export const CROSSPAD_IDF_ROOT =
 function findIdfPath(): string {
   if (process.env.IDF_PATH) return process.env.IDF_PATH;
 
-  // Try common paths
   const candidates = [
     path.join(os.homedir(), "esp", "esp-idf"),
     path.join(os.homedir(), "esp", "v5.5.4", "esp-idf"),
@@ -35,7 +49,6 @@ function findIdfPath(): string {
     if (fs.existsSync(p)) return p;
   }
 
-  // Last resort — return the most common default even if missing
   return path.join(os.homedir(), "esp", "esp-idf");
 }
 
@@ -63,17 +76,16 @@ const EXE_EXT = IS_WINDOWS ? ".exe" : "";
 export const BIN_EXE = path.join(CROSSPAD_PC_ROOT, "bin", `main${EXE_EXT}`);
 
 // ═══════════════════════════════════════════════════════════════════════
-// REPOS — dynamic discovery, cached
+// REPOS — dynamic discovery from per-repo paths, cached
 // ═══════════════════════════════════════════════════════════════════════
 
-/** Known repo candidates: name → expected path */
+/** Maps repo name → resolved path (from env vars or flat layout default) */
 const REPO_CANDIDATES: Record<string, string> = {
-  "crosspad-core": path.join(GIT_DIR, "crosspad-core"),
-  "crosspad-gui": path.join(GIT_DIR, "crosspad-gui"),
+  "crosspad-core": CROSSPAD_CORE_ROOT,
+  "crosspad-gui": CROSSPAD_GUI_ROOT,
   "crosspad-pc": CROSSPAD_PC_ROOT,
   "platform-idf": CROSSPAD_IDF_ROOT,
-  "ESP32-S3": path.join(GIT_DIR, "ESP32-S3"),
-  "2playerCrosspad": path.join(GIT_DIR, "2playerCrosspad"),
+  "ESP32-S3": CROSSPAD_ARDUINO_ROOT,
 };
 
 let cachedRepos: Record<string, string> | null = null;
@@ -93,7 +105,7 @@ export function getRepos(): Record<string, string> {
   return found;
 }
 
-// Legacy compat — some tool files still import REPOS directly
+// Legacy compat
 export const REPOS = REPO_CANDIDATES;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -103,8 +115,8 @@ export const REPOS = REPO_CANDIDATES;
 let cachedCrosspadCorePath: string | null | undefined = undefined;
 
 /**
- * Resolve the crosspad-core include path. Checks:
- * 1. Standalone repo at $GIT_DIR/crosspad-core
+ * Resolve the crosspad-core path. Checks:
+ * 1. Standalone repo ($CROSSPAD_CORE_ROOT or $GIT_DIR/crosspad-core)
  * 2. Submodule inside platform-idf: $IDF_ROOT/components/crosspad-core
  * 3. Submodule inside crosspad-pc: $PC_ROOT/crosspad-core
  * Returns null if not found anywhere.
@@ -113,7 +125,7 @@ export function resolveCrosspadCore(): string | null {
   if (cachedCrosspadCorePath !== undefined) return cachedCrosspadCorePath;
 
   const candidates = [
-    path.join(GIT_DIR, "crosspad-core"),
+    CROSSPAD_CORE_ROOT,
     path.join(CROSSPAD_IDF_ROOT, "components", "crosspad-core"),
     path.join(CROSSPAD_PC_ROOT, "crosspad-core"),
   ];

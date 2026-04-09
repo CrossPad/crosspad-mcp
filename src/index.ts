@@ -262,10 +262,12 @@ server.tool(
 
 server.tool(
   "crosspad_apps",
-  "Manage CrossPad app packages: list, install, remove, update from the crosspad-apps registry.",
+  "Manage CrossPad app packages: list, install, remove, update from the crosspad-apps registry. List aggregates status across all detected repos (idf, pc, arduino).",
   {
     action: z.enum(["list", "install", "remove", "update", "sync"])
-      .describe("list: available apps. install: add app submodule. remove: remove app. update: update app(s). sync: sync manifest."),
+      .describe("list: available apps + where installed. install: add app submodule. remove: remove app. update: update app(s). sync: sync manifest."),
+    platform: z.enum(["idf", "pc", "arduino"]).optional()
+      .describe("install/remove/update/sync: target platform repo (required for mutations)"),
     app_name: z.string().optional()
       .describe("install/remove/update: app ID from registry"),
     ref: z.string().default("main").optional()
@@ -277,7 +279,7 @@ server.tool(
     show_all: z.boolean().default(false).optional()
       .describe("list: include incompatible apps"),
   },
-  async ({ action, app_name, ref, force, update_all, show_all }) => {
+  async ({ action, platform, app_name, ref, force, update_all, show_all }) => {
     const onLine = makeStreamLogger("app-manager");
 
     switch (action) {
@@ -286,19 +288,25 @@ server.tool(
 
       case "install": {
         if (!app_name) return jsonResponse({ success: false, error: "app_name required" });
-        return jsonResponse(await crosspadAppInstall(app_name, ref ?? "main", force ?? false, onLine));
+        if (!platform) return jsonResponse({ success: false, error: "platform required for install (idf, pc, or arduino)" });
+        return jsonResponse(await crosspadAppInstall(app_name, platform, ref ?? "main", force ?? false, onLine));
       }
 
       case "remove": {
         if (!app_name) return jsonResponse({ success: false, error: "app_name required" });
-        return jsonResponse(await crosspadAppRemove(app_name, onLine));
+        if (!platform) return jsonResponse({ success: false, error: "platform required for remove (idf, pc, or arduino)" });
+        return jsonResponse(await crosspadAppRemove(app_name, platform, onLine));
       }
 
-      case "update":
-        return jsonResponse(await crosspadAppUpdate(app_name, update_all ?? false, onLine));
+      case "update": {
+        if (!platform) return jsonResponse({ success: false, error: "platform required for update (idf, pc, or arduino)" });
+        return jsonResponse(await crosspadAppUpdate(platform, app_name, update_all ?? false, onLine));
+      }
 
-      case "sync":
-        return jsonResponse(await crosspadAppSync(onLine));
+      case "sync": {
+        if (!platform) return jsonResponse({ success: false, error: "platform required for sync (idf, pc, or arduino)" });
+        return jsonResponse(await crosspadAppSync(platform, onLine));
+      }
     }
   }
 );

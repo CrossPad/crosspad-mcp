@@ -56,7 +56,6 @@ function findImplementations(interfaceName: string): ImplementationInfo[] {
     "crosspad-gui": "gui",
     "crosspad-pc": "PC",
     "ESP32-S3": "arduino",
-    "2playerCrosspad": "2player",
     "platform-idf": "idf",
   };
 
@@ -123,7 +122,6 @@ function queryCapabilities(): CapabilityInfo {
     "crosspad-pc": "PC",
     "ESP32-S3": "arduino",
     "platform-idf": "idf",
-    "2playerCrosspad": "2player",
   };
 
   const platforms: Record<string, string[]> = {};
