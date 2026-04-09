@@ -14,9 +14,13 @@ import { crosspadBuild, crosspadRun } from "./tools/build.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
 import { crosspadLog } from "./tools/log.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
+import { crosspadIdfFlash, crosspadIdfOta } from "./tools/idf-flash.js";
+import { crosspadIdfMonitor } from "./tools/idf-monitor.js";
+import { listDevices } from "./utils/device.js";
 import { crosspadTest, crosspadTestScaffold } from "./tools/test.js";
 import { crosspadReposStatus } from "./tools/repos.js";
 import { crosspadDiffCore } from "./tools/diff-core.js";
+import { crosspadSubmoduleUpdate, crosspadCommit } from "./tools/repo-actions.js";
 import { crosspadSearchSymbols } from "./tools/symbols.js";
 import { crosspadInterfaces, crosspadApps } from "./tools/architecture.js";
 import { crosspadScaffoldApp } from "./tools/scaffold.js";
@@ -24,6 +28,7 @@ import { crosspadScreenshot } from "./tools/screenshot.js";
 import { crosspadInput, InputAction } from "./tools/input.js";
 import { crosspadStats } from "./tools/stats.js";
 import { crosspadSettingsGet, crosspadSettingsSet } from "./tools/settings.js";
+import { crosspadMidiSend, MidiEventType } from "./tools/midi.js";
 import {
   crosspadAppList,
   crosspadAppInstall,
@@ -58,18 +63,24 @@ function jsonResponse(data: unknown) {
 
 server.tool(
   "crosspad_build",
-  "Build, run, or check the CrossPad PC simulator or ESP-IDF firmware.",
+  "Build, run, flash, or monitor CrossPad — PC simulator and ESP-IDF firmware. Supports multiple connected devices.",
   {
-    action: z.enum(["pc", "pc_run", "pc_check", "pc_log", "idf"])
-      .describe("pc: build simulator. pc_run: launch exe. pc_check: build health check. pc_log: capture stdout. idf: build ESP-IDF firmware."),
+    action: z.enum(["pc", "pc_run", "pc_check", "pc_log", "idf", "idf_flash", "idf_ota", "idf_monitor", "devices"])
+      .describe("pc: build simulator. pc_run: launch exe. pc_check: build health check. pc_log: capture stdout. idf: build ESP-IDF firmware. idf_flash: flash via UART. idf_ota: flash via OTA CDC. idf_monitor: capture serial logs. devices: list connected CrossPad devices."),
     mode: z.enum(["incremental", "clean", "reconfigure", "fullclean"]).default("incremental")
       .describe("Build mode (pc: incremental/clean/reconfigure, idf: build/fullclean/clean)").optional(),
+    port: z.string().optional()
+      .describe("idf_flash/idf_ota/idf_monitor: serial port (auto-detect if omitted, required when multiple devices connected)"),
+    firmware_path: z.string().optional()
+      .describe("idf_ota: custom firmware binary path (default: build/CrossPad.bin)"),
     timeout_seconds: z.number().default(5).optional()
-      .describe("pc_log: capture duration in seconds"),
+      .describe("pc_log/idf_monitor: capture duration in seconds"),
     max_lines: z.number().default(200).optional()
-      .describe("pc_log: max output lines"),
+      .describe("pc_log/idf_monitor: max output lines"),
+    filter: z.string().optional()
+      .describe("idf_monitor: only return lines containing this string"),
   },
-  async ({ action, mode, timeout_seconds, max_lines }) => {
+  async ({ action, mode, port, firmware_path, timeout_seconds, max_lines, filter }) => {
     const onLine = makeStreamLogger("build");
 
     switch (action) {
@@ -87,6 +98,14 @@ server.tool(
         const m = (mode === "reconfigure" ? "build" : mode ?? "build") as "build" | "fullclean" | "clean";
         return jsonResponse(await crosspadIdfBuild(m, onLine));
       }
+      case "idf_flash":
+        return jsonResponse(await crosspadIdfFlash(port, onLine));
+      case "idf_ota":
+        return jsonResponse(await crosspadIdfOta(port, firmware_path, onLine));
+      case "idf_monitor":
+        return jsonResponse(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine));
+      case "devices":
+        return jsonResponse(listDevices());
     }
   }
 );
@@ -121,10 +140,10 @@ server.tool(
 
 server.tool(
   "crosspad_sim",
-  "Interact with the running simulator: screenshots, input, stats, settings.",
+  "Interact with the running simulator: screenshots, input, MIDI, stats, settings.",
   {
-    action: z.enum(["screenshot", "input", "stats", "settings_get", "settings_set"])
-      .describe("screenshot: capture PNG. input: send event. stats: runtime diagnostics. settings_get/set: read/write settings."),
+    action: z.enum(["screenshot", "input", "midi_send", "stats", "settings_get", "settings_set"])
+      .describe("screenshot: capture PNG. input: send event. midi_send: send MIDI to simulator. stats: runtime diagnostics. settings_get/set: read/write settings."),
     // screenshot params
     region: z.enum(["full", "lcd"]).default("full").optional()
       .describe("screenshot: full window or LCD only"),
@@ -141,6 +160,17 @@ server.tool(
     velocity: z.number().optional().describe("input pad_press: velocity 0-127"),
     delta: z.number().optional().describe("input encoder_rotate: rotation delta"),
     keycode: z.number().optional().describe("input key: SDL keycode"),
+    // midi params
+    midi_type: z.enum(["note_on", "note_off", "cc", "program_change"]).optional()
+      .describe("midi_send: MIDI event type"),
+    channel: z.number().default(0).optional()
+      .describe("midi_send: MIDI channel 0-15"),
+    note: z.number().optional()
+      .describe("midi_send: note number 0-127 (note_on/note_off)"),
+    cc_num: z.number().optional()
+      .describe("midi_send: CC number 0-127 (cc)"),
+    midi_value: z.number().optional()
+      .describe("midi_send: value 0-127 (cc value or program number)"),
     // settings params
     category: z.string().default("all").optional()
       .describe("settings_get: all/display/keypad/vibration/wireless/audio/system"),
@@ -149,7 +179,7 @@ server.tool(
     value: z.number().optional()
       .describe("settings_set: numeric value"),
   },
-  async ({ action, region, filename, save_to_file, input_action, x, y, pad, velocity, delta, keycode, category, key, value }) => {
+  async ({ action, region, filename, save_to_file, input_action, x, y, pad, velocity, delta, keycode, midi_type, channel, note, cc_num, midi_value, category, key, value }) => {
     switch (action) {
       case "screenshot": {
         const result = await crosspadScreenshot(save_to_file ?? true, filename);
@@ -190,6 +220,21 @@ server.tool(
         return jsonResponse(await crosspadInput(input));
       }
 
+      case "midi_send": {
+        if (!midi_type) {
+          return jsonResponse({ success: false, error: "midi_type is required for action=midi_send" });
+        }
+        return jsonResponse(await crosspadMidiSend({
+          type: midi_type as MidiEventType,
+          channel: channel ?? 0,
+          note,
+          velocity,
+          cc_num,
+          value: midi_value,
+          program: midi_value,
+        }));
+      }
+
       case "stats":
         return jsonResponse(await crosspadStats());
 
@@ -212,19 +257,45 @@ server.tool(
 
 server.tool(
   "crosspad_repo",
-  "Git status and submodule diffs across all CrossPad repos.",
+  "Git status, submodule diffs, submodule updates, and commits across CrossPad repos.",
   {
-    action: z.enum(["status", "diff"])
-      .describe("status: git status all repos. diff: submodule drift analysis."),
-    submodule: z.enum(["crosspad-core", "crosspad-gui", "both"]).default("both").optional()
-      .describe("diff: which submodule to analyze"),
+    action: z.enum(["status", "diff", "submodule_update", "commit"])
+      .describe("status: git status all repos. diff: submodule drift. submodule_update: pull latest submodule. commit: commit staged changes."),
+    submodule: z.enum(["crosspad-core", "crosspad-gui", "crosspad-instructions", "crosspad-sampler", "both"]).default("both").optional()
+      .describe("diff/submodule_update: which submodule"),
+    repo: z.string().optional()
+      .describe("submodule_update/commit: target repo (idf, pc, arduino, core, gui, or full name)"),
+    branch: z.string().default("main").optional()
+      .describe("submodule_update: remote branch to checkout (default: main)"),
+    message: z.string().optional()
+      .describe("commit: commit message"),
+    files: z.array(z.string()).optional()
+      .describe("commit: specific files to stage+commit (omit to commit what's staged)"),
   },
-  async ({ action, submodule }) => {
+  async ({ action, submodule, repo, branch, message, files }) => {
     switch (action) {
       case "status":
         return jsonResponse(crosspadReposStatus());
       case "diff":
-        return jsonResponse(crosspadDiffCore(submodule ?? "both"));
+        return jsonResponse(crosspadDiffCore(submodule === "both" ? "both" : submodule as "crosspad-core" | "crosspad-gui" ?? "both"));
+      case "submodule_update": {
+        if (!submodule || submodule === "both") {
+          return jsonResponse({ error: "Specify a single submodule (e.g. crosspad-core)" });
+        }
+        if (!repo) {
+          return jsonResponse({ error: "repo is required for submodule_update (e.g. idf, pc, arduino)" });
+        }
+        return jsonResponse(crosspadSubmoduleUpdate(submodule, repo, branch ?? "main"));
+      }
+      case "commit": {
+        if (!repo) {
+          return jsonResponse({ error: "repo is required for commit" });
+        }
+        if (!message) {
+          return jsonResponse({ error: "message is required for commit" });
+        }
+        return jsonResponse(crosspadCommit(repo, message, files));
+      }
     }
   }
 );
@@ -248,6 +319,8 @@ server.tool(
       .describe("search: repo names to scan, or ['all']"),
     max_results: z.number().default(50).optional()
       .describe("search: result cap"),
+    context_lines: z.number().default(0).optional()
+      .describe("search: lines of surrounding context (0-10, like grep -C)"),
     // apps params
     platform: z.enum(["pc", "idf", "arduino", "all"]).default("all").optional()
       .describe("apps: platform to scan"),
@@ -261,11 +334,11 @@ server.tool(
     icon: z.string().default("CrossPad_Logo_110w.png").optional()
       .describe("scaffold: icon filename"),
   },
-  async ({ action, query, kind, repos, max_results, platform, name, display_name, has_pad_logic, icon }) => {
+  async ({ action, query, kind, repos, max_results, context_lines, platform, name, display_name, has_pad_logic, icon }) => {
     switch (action) {
       case "search": {
         if (!query) return jsonResponse({ error: "query is required for action=search" });
-        return jsonResponse(crosspadSearchSymbols(query, kind ?? "all", repos ?? ["all"], max_results ?? 50));
+        return jsonResponse(crosspadSearchSymbols(query, kind ?? "all", repos ?? ["all"], max_results ?? 50, context_lines ?? 0));
       }
       case "interfaces": {
         return jsonResponse(crosspadInterfaces(query ?? "list"));

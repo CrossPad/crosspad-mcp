@@ -8,6 +8,7 @@ export interface SymbolResult {
   file: string;
   line: number;
   context: string;
+  surrounding?: string[];
   repo: string;
 }
 
@@ -59,7 +60,8 @@ export function crosspadSearchSymbols(
   query: string,
   kind: string = "all",
   repos: string[] = ["all"],
-  maxResults: number = 50
+  maxResults: number = 50,
+  contextLines: number = 0,
 ): SymbolSearchResult {
   const results: SymbolResult[] = [];
 
@@ -73,55 +75,117 @@ export function crosspadSearchSymbols(
     return { query, kind_filter: kind, results: [], total_matches: 0, truncated: false };
   }
 
+  const clampedContext = Math.min(Math.max(contextLines, 0), 10);
+  const useContext = clampedContext > 0;
+
   for (const [repoName, repoPath] of targetRepos) {
     if (!fs.existsSync(repoPath)) continue;
 
-    const grepCmd = `git grep --recurse-submodules -n -E "${escapeForShell(pattern)}" -- "*.hpp" "*.h" "*.cpp" "*.c"`;
+    const contextFlag = useContext ? `-C ${clampedContext}` : "";
+    const grepCmd = `git grep --recurse-submodules -n ${contextFlag} -E "${escapeForShell(pattern)}" -- "*.hpp" "*.h" "*.cpp" "*.c"`;
     const result = runCommand(grepCmd, repoPath, 30_000);
 
     if (!result.success && result.stdout.length === 0) continue;
 
-    for (const line of result.stdout.split("\n")) {
-      if (!line.trim()) continue;
+    if (useContext) {
+      // Context mode: output has `--` separators between groups
+      const blocks = result.stdout.split(/^--$/m);
+      for (const block of blocks) {
+        const blockLines = block.split("\n").filter((l) => l.trim());
+        if (blockLines.length === 0) continue;
 
-      const match = line.match(/^([^:]+):(\d+):(.*)$/);
-      if (!match) continue;
+        // Find the matching line (has line number, not `-` context separator)
+        let matchFile = "";
+        let matchLine = 0;
+        let matchContent = "";
+        const surrounding: string[] = [];
 
-      const [, file, lineStr, content] = match;
-      const lineNum = parseInt(lineStr, 10);
-      const trimmedContent = content.trim();
+        for (const bline of blockLines) {
+          // Match line format: file:123:content (colon separator for match)
+          const matchResult = bline.match(/^([^:]+):(\d+):(.*)$/);
+          // Context line format: file-123-content (dash separator)
+          const contextResult = bline.match(/^([^-]+)-(\d+)-(.*)$/);
 
-      // Skip forward declarations (class Foo;)
-      if (/^\s*(class|struct)\s+\w+\s*;/.test(trimmedContent)) continue;
-      // Skip includes
-      if (/^\s*#include/.test(trimmedContent)) continue;
-      // Skip comments
-      if (/^\s*(\/\/|\/\*|\*)/.test(trimmedContent)) continue;
+          if (matchResult && !matchFile) {
+            matchFile = matchResult[1];
+            matchLine = parseInt(matchResult[2], 10);
+            matchContent = matchResult[3].trim();
+          }
 
-      const detectedKind = classifyDefinition(trimmedContent);
-      if (!detectedKind) continue;
-      if (kind !== "all" && detectedKind !== kind) continue;
+          if (matchResult || contextResult) {
+            const content = matchResult ? matchResult[3] : contextResult![3];
+            surrounding.push(content);
+          }
+        }
 
-      const symbolName = extractSymbolName(trimmedContent, detectedKind);
-      if (!symbolName) continue;
+        if (!matchFile || !matchContent) continue;
 
-      // Symbol name must contain query
-      if (!symbolName.toLowerCase().includes(query.toLowerCase())) continue;
+        // Apply same filters as non-context mode
+        if (/^\s*(class|struct)\s+\w+\s*;/.test(matchContent)) continue;
+        if (/^\s*#include/.test(matchContent)) continue;
+        if (/^\s*(\/\/|\/\*|\*)/.test(matchContent)) continue;
 
-      // Deduplicate by symbol+file
-      const key = `${symbolName}:${file}`;
-      if (results.some((r) => `${r.symbol}:${r.file.split("/").pop()}` === key)) continue;
+        const detectedKind = classifyDefinition(matchContent);
+        if (!detectedKind) continue;
+        if (kind !== "all" && detectedKind !== kind) continue;
 
-      results.push({
-        symbol: symbolName,
-        kind: detectedKind,
-        file: `${repoPath}/${file}`.replace(/\\/g, "/"),
-        line: lineNum,
-        context: trimmedContent.slice(0, 150),
-        repo: repoName,
-      });
+        const symbolName = extractSymbolName(matchContent, detectedKind);
+        if (!symbolName) continue;
+        if (!symbolName.toLowerCase().includes(query.toLowerCase())) continue;
 
-      if (results.length >= maxResults) break;
+        const key = `${symbolName}:${matchFile}`;
+        if (results.some((r) => `${r.symbol}:${r.file.split("/").pop()}` === key)) continue;
+
+        results.push({
+          symbol: symbolName,
+          kind: detectedKind,
+          file: `${repoPath}/${matchFile}`.replace(/\\/g, "/"),
+          line: matchLine,
+          context: matchContent.slice(0, 150),
+          surrounding,
+          repo: repoName,
+        });
+
+        if (results.length >= maxResults) break;
+      }
+    } else {
+      // Standard mode (no context)
+      for (const line of result.stdout.split("\n")) {
+        if (!line.trim()) continue;
+
+        const match = line.match(/^([^:]+):(\d+):(.*)$/);
+        if (!match) continue;
+
+        const [, file, lineStr, content] = match;
+        const lineNum = parseInt(lineStr, 10);
+        const trimmedContent = content.trim();
+
+        if (/^\s*(class|struct)\s+\w+\s*;/.test(trimmedContent)) continue;
+        if (/^\s*#include/.test(trimmedContent)) continue;
+        if (/^\s*(\/\/|\/\*|\*)/.test(trimmedContent)) continue;
+
+        const detectedKind = classifyDefinition(trimmedContent);
+        if (!detectedKind) continue;
+        if (kind !== "all" && detectedKind !== kind) continue;
+
+        const symbolName = extractSymbolName(trimmedContent, detectedKind);
+        if (!symbolName) continue;
+        if (!symbolName.toLowerCase().includes(query.toLowerCase())) continue;
+
+        const key = `${symbolName}:${file}`;
+        if (results.some((r) => `${r.symbol}:${r.file.split("/").pop()}` === key)) continue;
+
+        results.push({
+          symbol: symbolName,
+          kind: detectedKind,
+          file: `${repoPath}/${file}`.replace(/\\/g, "/"),
+          line: lineNum,
+          context: trimmedContent.slice(0, 150),
+          repo: repoName,
+        });
+
+        if (results.length >= maxResults) break;
+      }
     }
 
     if (results.length >= maxResults) break;
