@@ -15,11 +15,34 @@ export interface RemoteResponse {
   [key: string]: unknown;
 }
 
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 500;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Send a JSON command to the running simulator and return the response.
+ * Retries up to MAX_RETRIES times on timeout errors (simulator may be loading).
  * Opens a fresh TCP connection per call (simple, stateless).
  */
-export function sendRemoteCommand(command: Record<string, unknown>): Promise<RemoteResponse> {
+export async function sendRemoteCommand(command: Record<string, unknown>): Promise<RemoteResponse> {
+  let lastError: Error | undefined;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await sendRemoteCommandOnce(command);
+    } catch (err: any) {
+      lastError = err;
+      // Only retry on timeout, not on connection refused (simulator not running)
+      if (err.message?.includes("Connection refused")) throw err;
+      if (attempt < MAX_RETRIES) await delay(RETRY_DELAY_MS * attempt);
+    }
+  }
+  throw lastError!;
+}
+
+function sendRemoteCommandOnce(command: Record<string, unknown>): Promise<RemoteResponse> {
   return new Promise((resolve, reject) => {
     const socket = new Socket();
     let buffer = "";

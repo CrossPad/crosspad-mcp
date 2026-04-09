@@ -4,6 +4,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import fs from "fs";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const { version } = require("../package.json");
+
 // Tool implementations
 import { crosspadBuild, crosspadRun } from "./tools/build.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
@@ -31,7 +36,7 @@ import type { OnLine } from "./utils/exec.js";
 import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
 
 const server = new McpServer(
-  { name: "crosspad", version: "5.0.0" },
+  { name: "crosspad", version },
   { capabilities: { logging: {} } }
 );
 
@@ -146,8 +151,27 @@ server.tool(
   },
   async ({ action, region, filename, save_to_file, input_action, x, y, pad, velocity, delta, keycode, category, key, value }) => {
     switch (action) {
-      case "screenshot":
-        return jsonResponse(await crosspadScreenshot(save_to_file ?? true, filename));
+      case "screenshot": {
+        const result = await crosspadScreenshot(save_to_file ?? true, filename);
+        if (result.success) {
+          let imageData: string | undefined = result.data_base64;
+          // Read from file if saved to disk
+          if (!imageData && result.file_path) {
+            try {
+              imageData = fs.readFileSync(result.file_path).toString("base64");
+            } catch { /* fall through to JSON response */ }
+          }
+          if (imageData) {
+            return {
+              content: [
+                { type: "image" as const, data: imageData, mimeType: "image/png" },
+                { type: "text" as const, text: JSON.stringify({ success: true, width: result.width, height: result.height, format: result.format, file_path: result.file_path }, null, 2) },
+              ],
+            };
+          }
+        }
+        return jsonResponse(result);
+      }
 
       case "input": {
         if (!input_action) {

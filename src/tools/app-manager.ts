@@ -11,6 +11,7 @@
 
 import fs from "fs";
 import path from "path";
+import { execSync } from "child_process";
 import { CROSSPAD_IDF_ROOT, CROSSPAD_PC_ROOT, getRepos } from "../config.js";
 import { runCommand, runCommandStream, OnLine } from "../utils/exec.js";
 
@@ -120,13 +121,24 @@ function resolvePlatform(platform: string): PlatformInfo | null {
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════
 
+const REGISTRY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let _registryCache: { data: Record<string, AppEntry>; timestamp: number; source: string } | null = null;
+
 function loadRegistryJsonFrom(repoRoot: string): Record<string, AppEntry> | null {
   const registryPath = path.join(repoRoot, "app-registry.json");
+
+  // Return cached if fresh and from same source
+  if (_registryCache && _registryCache.source === registryPath && Date.now() - _registryCache.timestamp < REGISTRY_CACHE_TTL_MS) {
+    return _registryCache.data;
+  }
+
   if (!fs.existsSync(registryPath)) return null;
 
   try {
     const data = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
-    return data.apps ?? {};
+    const apps = data.apps ?? {};
+    _registryCache = { data: apps, timestamp: Date.now(), source: registryPath };
+    return apps;
   } catch {
     return null;
   }
@@ -282,6 +294,30 @@ function requirePlatform(platform: string): { info: PlatformInfo } | { error: Ap
   return { info };
 }
 
+let _pythonOk: boolean | null = null;
+
+function isPythonAvailable(): boolean {
+  if (_pythonOk !== null) return _pythonOk;
+  try {
+    execSync("python3 --version", { stdio: "ignore", timeout: 5000 });
+    _pythonOk = true;
+  } catch {
+    _pythonOk = false;
+  }
+  return _pythonOk;
+}
+
+function validatePythonSetup(info: PlatformInfo): string | null {
+  if (!isPythonAvailable()) {
+    return "python3 is not installed or not in PATH. Install Python 3 to use app management.";
+  }
+  const scriptPath = path.join(info.root, info.scriptDir, "app_manager.py");
+  if (!fs.existsSync(scriptPath)) {
+    return `app_manager.py not found at ${scriptPath}. Run 'idf.py app-list' first to bootstrap the script.`;
+  }
+  return null;
+}
+
 async function runPythonAction(
   info: PlatformInfo,
   action: string,
@@ -291,6 +327,18 @@ async function runPythonAction(
   onLine: OnLine | undefined,
   timeoutMs: number,
 ): Promise<AppActionResult> {
+  const validationError = validatePythonSetup(info);
+  if (validationError) {
+    return {
+      success: false,
+      action,
+      platform: info.label,
+      app_name: appName,
+      output: "",
+      error: validationError,
+    };
+  }
+
   const cmd = buildPythonCmd(info.root, info.scriptDir, method, args);
 
   if (onLine) {
