@@ -1,6 +1,6 @@
 {
   "name": "crosspad-mcp-server",
-  "version": "5.0.1",
+  "version": "5.1.0",
   "description": "MCP development server for CrossPad — build, test, manage apps, interact with simulator",
   "type": "module",
   "main": "dist/index.js",
