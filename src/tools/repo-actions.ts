@@ -262,83 +262,87 @@ export function crosspadCommit(
     }
   }
 
-  // Stage specific files if provided — use --pathspec-from-file to avoid
-  // shell-quoting issues (paths with spaces, quotes, backslashes).
-  if (files && files.length > 0) {
-    const pathspecFile = path.join(
-      os.tmpdir(),
-      `crosspad-pathspec-${process.pid}-${Date.now()}.txt`,
-    );
-    fs.writeFileSync(pathspecFile, files.join("\n"), "utf-8");
-    const addResult = runCommand(
-      `git add --pathspec-from-file="${pathspecFile}"`,
-      resolvedRepo.root,
-      10_000,
-    );
-    try { fs.unlinkSync(pathspecFile); } catch { /* ignore */ }
-    if (!addResult.success) {
+  // Use a private 0700 scratch dir for pathspec + commit-message tempfiles.
+  // Default umask leaves files in os.tmpdir() world-readable on multi-user
+  // hosts; mkdtemp creates a 0700 dir, and we write files with mode 0600.
+  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "crosspad-"));
+  const cleanup = () => {
+    try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  };
+
+  try {
+    // Stage specific files if provided — use --pathspec-from-file to avoid
+    // shell-quoting issues (paths with spaces, quotes, backslashes).
+    if (files && files.length > 0) {
+      const pathspecFile = path.join(scratchDir, "pathspec");
+      fs.writeFileSync(pathspecFile, files.join("\n"), { encoding: "utf-8", mode: 0o600 });
+      const addResult = runCommand(
+        `git add --pathspec-from-file="${pathspecFile}"`,
+        resolvedRepo.root,
+        10_000,
+      );
+      if (!addResult.success) {
+        return {
+          success: false,
+          repo: resolvedRepo.name,
+          commit_hash: null,
+          message,
+          files_committed: [],
+          error: `git add failed: ${addResult.stderr}`,
+        };
+      }
+    }
+
+    // Check something is staged
+    const diffResult = runCommand("git diff --cached --name-only", resolvedRepo.root);
+    const stagedFiles = diffResult.success
+      ? diffResult.stdout.trim().split("\n").filter((l) => l.length > 0)
+      : [];
+
+    if (stagedFiles.length === 0) {
       return {
         success: false,
         repo: resolvedRepo.name,
         commit_hash: null,
         message,
         files_committed: [],
-        error: `git add failed: ${addResult.stderr}`,
+        error: "Nothing staged to commit. Stage files first or specify files parameter.",
       };
     }
-  }
 
-  // Check something is staged
-  const diffResult = runCommand("git diff --cached --name-only", resolvedRepo.root);
-  const stagedFiles = diffResult.success
-    ? diffResult.stdout.trim().split("\n").filter((l) => l.length > 0)
-    : [];
+    // Commit via tempfile to avoid shell-quoting issues (newlines, quotes,
+    // backticks) on both bash and Windows cmd.
+    const msgFile = path.join(scratchDir, "commit.msg");
+    fs.writeFileSync(msgFile, message, { encoding: "utf-8", mode: 0o600 });
+    const commitResult = runCommand(
+      `git commit -F "${msgFile}"`,
+      resolvedRepo.root,
+      30_000,
+    );
 
-  if (stagedFiles.length === 0) {
+    if (!commitResult.success) {
+      return {
+        success: false,
+        repo: resolvedRepo.name,
+        commit_hash: null,
+        message,
+        files_committed: stagedFiles,
+        error: `git commit failed: ${commitResult.stderr || commitResult.stdout}`,
+      };
+    }
+
+    // Get the new commit hash
+    const hashResult = runCommand("git rev-parse HEAD", resolvedRepo.root);
+    const commitHash = hashResult.success ? hashResult.stdout.trim() : null;
+
     return {
-      success: false,
+      success: true,
       repo: resolvedRepo.name,
-      commit_hash: null,
-      message,
-      files_committed: [],
-      error: "Nothing staged to commit. Stage files first or specify files parameter.",
-    };
-  }
-
-  // Commit via tempfile to avoid shell-quoting issues (newlines, quotes,
-  // backticks) on both bash and Windows cmd.
-  const msgFile = path.join(
-    os.tmpdir(),
-    `crosspad-commit-${process.pid}-${Date.now()}.msg`,
-  );
-  fs.writeFileSync(msgFile, message, "utf-8");
-  const commitResult = runCommand(
-    `git commit -F "${msgFile}"`,
-    resolvedRepo.root,
-    30_000,
-  );
-  try { fs.unlinkSync(msgFile); } catch { /* ignore */ }
-
-  if (!commitResult.success) {
-    return {
-      success: false,
-      repo: resolvedRepo.name,
-      commit_hash: null,
+      commit_hash: commitHash,
       message,
       files_committed: stagedFiles,
-      error: `git commit failed: ${commitResult.stderr || commitResult.stdout}`,
     };
+  } finally {
+    cleanup();
   }
-
-  // Get the new commit hash
-  const hashResult = runCommand("git rev-parse HEAD", resolvedRepo.root);
-  const commitHash = hashResult.success ? hashResult.stdout.trim() : null;
-
-  return {
-    success: true,
-    repo: resolvedRepo.name,
-    commit_hash: commitHash,
-    message,
-    files_committed: stagedFiles,
-  };
 }
