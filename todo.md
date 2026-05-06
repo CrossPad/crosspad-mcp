@@ -3,7 +3,7 @@
 Review krytyczny z perspektywy zgodności z MCP spec, security i idiomatyki protokołu.
 Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 
-**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (`fedae5c`, outputSchema + structuredContent) + runda 6 (`ca07999`, TCP zod / envelope cleanup / registry resources) + runda 7 (uncommitted — v8.0.0 platform-axis unification: 30 → 26 tools).
+**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (`fedae5c`, outputSchema + structuredContent) + runda 6 (`ca07999`, TCP zod / envelope cleanup / registry resources) + runda 7 (`27e4e72`, v8.0.0 platform-axis unification: 30 → 28 tools) + runda 8 (uncommitted — symbol resource template + HTTP transport).
 
 ---
 
@@ -20,7 +20,15 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 
 ---
 
-## Co dało runda 7 (uncommitted, v8.0.0)
+## Co dało runda 8 (uncommitted)
+
+- **MCP-native code search resource (#25):** `ResourceTemplate("crosspad://symbols/{repo}/{symbol}", { list: undefined })` zarejestrowany. `<repo>` accepts repo name (crosspad-core, crosspad-pc, etc.) lub `all`. Read callback wywołuje `crosspadSearchSymbols(symbol, "all", [repo], 50, 0)`. listCallback = `undefined` (nie da się sensownie wyliczyć wszystkich symboli) — clients muszą skonstruować konkretny URI. Tool `crosspad_search_symbols` zostaje dla substring/wildcard.
+- **HTTP transport (#26):** `--http <port>` flag w main(). `StreamableHTTPServerTransport` w stateful mode (sessionIdGenerator → randomUUID). Endpoint `/mcp` (POST/GET/DELETE), 404 na innych ścieżkach. Smoke OK: `initialize` zwraca `Mcp-Session-Id`, kolejne wywołania z headerem działają.
+- **Smoke verify (stdio):** 28 tools, 7 static resources, 1 resourceTemplate, `resources/read crosspad://symbols/all/CrossPad` zwraca prawidłowy JSON envelope.
+- **Smoke verify (HTTP):** `curl POST /mcp initialize` zwraca SSE event z `serverInfo.name=crosspad`, `tools/list` i `resources/templates/list` działają z session id.
+- README: dodana sekcja **Transport**, dopisane apps registry/installed + symbols template w resources table.
+
+## Co dało runda 7 (`27e4e72`, v8.0.0)
 
 **Platform-axis unification (#8) — breaking, intentional.** Net: 30 → 28 tools.
 
@@ -278,13 +286,14 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 - **Problem:** Hardcoded `-DCMAKE_BUILD_TYPE=Debug`.
 - **Fix:** Param `build_type: z.enum(["Debug","Release","RelWithDebInfo"])` default `Debug`.
 
-### [ ] 25. Bardziej "MCP-native" code search
+### [x] 25. Bardziej "MCP-native" code search ✅ runda 8
 - **Idea:** Zamiast `crosspad_search_symbols` zwracać JSON, eksponować jako `resources` z URI `crosspad://symbols/<repo>/<symbol>` — LLM nawiguje, nie filtruje.
+- **Done:** `ResourceTemplate` `crosspad://symbols/{repo}/{symbol}` (listCallback undefined). Tool `crosspad_search_symbols` zostaje dla substring/wildcard.
 
-### [ ] 26. HTTP/SSE transport opcjonalnie
-- **Plik:** [src/index.ts:626](src/index.ts#L626)
+### [x] 26. HTTP/SSE transport opcjonalnie ✅ runda 8
+- **Plik:** [src/index.ts](src/index.ts)
 - **Problem:** Tylko stdio. Dla embedded dev OK, ale ogranicza remote dev box.
-- **Fix:** CLI flag `--http :PORT` z `HttpServerTransport`. Optional.
+- **Fix:** CLI flag `--http <port>` z `StreamableHTTPServerTransport`. Stateful (sessionIdGenerator). Endpoint `/mcp`.
 
 ---
 
@@ -296,7 +305,5 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 4. **Konsolidacja** 41 → ~25 tools (input + midi do discriminatedUnion) → poz. 7. ✅
 5. **Progress notifications** zamiast logging dla build/test/flash + cancellation → poz. 4, 5. ✅
 
-Pozostałe (deferred — wymagają większego refaktoru lub mają niski ROI):
-- Resources/Prompts expansion (poz. 6) — workspace done; reszta (registry, manifesty, prompts) odłożona.
-- HTTP/SSE transport (poz. 26) — niche, stdio jest ok dla embedded dev.
-- MCP-native code search jako resources (poz. 25) — niespójne z innymi tool-based searches.
+Pozostałe (deferred):
+- Prompts expansion (poz. 6 — pozostała część) — odłożone, na razie polegamy na server `instructions` + resources.

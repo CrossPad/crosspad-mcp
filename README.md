@@ -125,6 +125,9 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | URI | Purpose |
 |-----|---------|
 | `crosspad://workspace` | JSON snapshot: detected repos, branches, HEADs, dirty counts, PC simulator running status. Loadable without a tool call — clients (e.g. Claude Code) can pin it as session context. |
+| `crosspad://apps/registry/<platform>` | Raw `app-registry.json` per detected platform (pc / idf / esp32-s3). |
+| `crosspad://apps/installed/<platform>` | Raw `apps.json` (installed manifest) per detected platform. |
+| `crosspad://symbols/{repo}/{symbol}` | Resource template — resolves a single symbol's definitions in `<repo>` (or `all`). MCP-native alternative to `crosspad_search_symbols` for known symbol+repo pairs. |
 
 ### Migration: v7 → v8
 
@@ -178,6 +181,21 @@ Each repo path is individually configurable via env vars. If not set, falls back
 | `CROSSPAD_REMOTE_HOST` | `127.0.0.1` | TCP host for simulator remote control |
 
 Repos are discovered dynamically — only repos that exist on disk appear in tool results. No flat directory structure is assumed when env vars are set.
+
+## Transport
+
+**stdio (default)** — `npx crosspad-mcp-server`. Standard MCP transport for Claude Code / Claude Desktop / IDE plugins.
+
+**HTTP (`--http <port>`)** — `npx crosspad-mcp-server --http 3000`. Exposes a Streamable HTTP endpoint at `http://localhost:<port>/mcp` for remote dev boxes or browser-based MCP clients. Stateful sessions (`Mcp-Session-Id` header echoed after `initialize`). One transport, multi-session multiplexed internally.
+
+```bash
+# Minimal HTTP smoke test:
+npx crosspad-mcp-server --http 3000
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"x","version":"0"}}}'
+```
 
 ## How it works
 

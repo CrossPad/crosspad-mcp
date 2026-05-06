@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
@@ -1160,10 +1160,98 @@ import path from "path";
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
-// START
+// RESOURCES — code navigation via URI templates (MCP-native)
+// crosspad://symbols/{repo}/{symbol} — resolve a single symbol's definitions
+// in a single repo without spending a tool call. Repo "all" searches every
+// detected repo. listCallback is undefined (cannot enumerate every symbol);
+// clients must construct concrete URIs.
 // ═══════════════════════════════════════════════════════════════════════
 
+server.registerResource(
+  "crosspad-symbol",
+  new ResourceTemplate("crosspad://symbols/{repo}/{symbol}", { list: undefined }),
+  {
+    description: "Resolve a single symbol by repo+name. URI: crosspad://symbols/<repo>/<symbol>. <repo> is one of: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, or 'all'. Returns JSON with matching definition(s) (class/function/macro/enum/typedef). For substring/wildcard search, use the crosspad_search_symbols tool.",
+    mimeType: "application/json",
+  },
+  async (uri, variables) => {
+    const repo = decodeURIComponent(String(Array.isArray(variables.repo) ? variables.repo[0] : variables.repo ?? "")).trim();
+    const symbol = decodeURIComponent(String(Array.isArray(variables.symbol) ? variables.symbol[0] : variables.symbol ?? "")).trim();
+    if (!repo || !symbol) {
+      return {
+        contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify({ error: "URI must be crosspad://symbols/<repo>/<symbol>" }, null, 2) }],
+      };
+    }
+    const reposScope = repo === "all" ? ["all"] : [repo];
+    const result = crosspadSearchSymbols(symbol, "all", reposScope, 50, 0);
+    return {
+      contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(result, null, 2) }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// START — stdio (default) or HTTP (--http <port>)
+// HTTP transport is opt-in via CLI flag for remote dev boxes / browsers.
+// Stateful sessions: each initialize gets a session ID; subsequent requests
+// must echo it. Single shared transport multiplexes sessions internally.
+// ═══════════════════════════════════════════════════════════════════════
+
+function parseHttpPort(argv: string[]): number | null {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--http") {
+      const next = argv[i + 1];
+      if (!next) return 3000;
+      const n = parseInt(next, 10);
+      return Number.isFinite(n) && n > 0 && n < 65536 ? n : NaN as unknown as number;
+    }
+    if (a.startsWith("--http=")) {
+      const n = parseInt(a.slice("--http=".length), 10);
+      return Number.isFinite(n) && n > 0 && n < 65536 ? n : NaN as unknown as number;
+    }
+  }
+  return null;
+}
+
 async function main() {
+  const httpPort = parseHttpPort(process.argv.slice(2));
+  if (httpPort !== null) {
+    if (Number.isNaN(httpPort)) {
+      console.error("Invalid --http port (must be 1..65535)");
+      process.exit(1);
+    }
+    const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
+    const { createServer } = await import("http");
+    const { randomUUID } = await import("crypto");
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+    await server.connect(transport);
+
+    const httpServer = createServer((req, res) => {
+      const pathname = (req.url ?? "/").split("?")[0];
+      if (pathname !== "/mcp") {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Not Found — MCP endpoint is at /mcp");
+        return;
+      }
+      transport.handleRequest(req, res).catch((e) => {
+        console.error("MCP HTTP request failed:", e);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "text/plain" });
+          res.end("Internal error");
+        }
+      });
+    });
+
+    httpServer.listen(httpPort, () => {
+      console.error(`crosspad-mcp HTTP transport listening on http://localhost:${httpPort}/mcp`);
+    });
+    return;
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
