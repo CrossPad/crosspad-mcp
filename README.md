@@ -57,7 +57,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 }
 ```
 
-## Tools (41)
+## Tools (30) + 1 resource
 
 Each tool is focused on a single action. Strict schema validation (ranges on MIDI/pad values, enums on platforms/repos) catches bad inputs before execution.
 
@@ -66,13 +66,13 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | Tool | Purpose |
 |------|---------|
 | `crosspad_build_pc` | Build PC simulator (`mode`: incremental/clean/reconfigure) |
-| `crosspad_run_pc` | Launch simulator, return PID |
+| `crosspad_run_pc` | Launch simulator, return PID + post-spawn TCP readiness probe |
+| `crosspad_kill_pc` | Stop running simulator (SIGTERM by exe name match) |
 | `crosspad_check_pc` | Health check: stale exe, new sources, submodule drift |
-| `crosspad_log_pc` | Run exe, capture stdout for N seconds, kill |
 | `crosspad_build_idf` | Build ESP-IDF firmware (`mode`: build/fullclean/clean) |
 | `crosspad_flash_uart` | UART flash (`idf.py flash`, requires bootloader mode) |
 | `crosspad_flash_ota` | OTA flash via USB CDC (no bootloader needed) |
-| `crosspad_log_idf` | Capture serial logs from connected device |
+| `crosspad_log` | Capture logs (`target`: pc=spawn binary / idf=read serial) |
 | `crosspad_devices` | List USB serial devices, flag CrossPads |
 
 ### Tests
@@ -80,20 +80,14 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | Tool | Purpose |
 |------|---------|
 | `crosspad_test_run` | Build + run Catch2 suite (`filter`, `list_only`) |
-| `crosspad_test_scaffold` | Return Catch2 boilerplate file contents |
 
 ### Simulator interaction
 
 | Tool | Purpose |
 |------|---------|
 | `crosspad_screenshot` | PNG screenshot (file_path by default; `return_inline` for base64) |
-| `crosspad_pad_press` / `crosspad_pad_release` | Press/release a pad (0-15) |
-| `crosspad_encoder_rotate` / `crosspad_encoder_press` / `crosspad_encoder_release` | Encoder events |
-| `crosspad_click` | Click at (x, y) |
-| `crosspad_key` | Send SDL keycode |
-| `crosspad_midi_note_on` / `crosspad_midi_note_off` | MIDI notes (channel 0-15, note 0-127, velocity 0-127) |
-| `crosspad_midi_cc` | MIDI CC (channel, cc_num 0-127, value 0-127) |
-| `crosspad_midi_program_change` | Program change |
+| `crosspad_input` | All input events: pad_press/release, encoder_*, click, key (`action` field) |
+| `crosspad_midi` | All MIDI events: note_on/off, cc, program_change (`type` field) |
 | `crosspad_stats` | Runtime state: pads, capabilities, heap, apps |
 | `crosspad_settings_get` / `crosspad_settings_set` | Read/write settings |
 
@@ -115,7 +109,6 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | `crosspad_interface_implementations` | Find implementations of a given interface |
 | `crosspad_capabilities` | Capability flags + per-platform sets |
 | `crosspad_list_apps_source` | Apps registered via `REGISTER_APP()` macro |
-| `crosspad_scaffold_app` | Generate new app boilerplate (PascalCase name) |
 
 ### App package manager (crosspad-apps registry)
 
@@ -127,7 +120,28 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | `crosspad_apps_update` | Update one (`app_name`) or all (`update_all`) apps |
 | `crosspad_apps_sync` | Rebuild manifest from disk state |
 
-All tools return a uniform envelope: `{ "success": boolean, ...data, "error"?: string }`.
+### Resources
+
+| URI | Purpose |
+|-----|---------|
+| `crosspad://workspace` | JSON snapshot: detected repos, branches, HEADs, dirty counts, PC simulator running status. Loadable without a tool call — clients (e.g. Claude Code) can pin it as session context. |
+
+### Migration: v6 → v7
+
+Tools removed (logic moved to docs): `crosspad_scaffold_app`, `crosspad_test_scaffold`.
+Tools consolidated:
+
+| Old (v6) | New (v7) |
+|---|---|
+| `crosspad_pad_press`, `crosspad_pad_release`, `crosspad_encoder_rotate`, `crosspad_encoder_press`, `crosspad_encoder_release`, `crosspad_click`, `crosspad_key` | `crosspad_input` with `action` field |
+| `crosspad_midi_note_on`, `crosspad_midi_note_off`, `crosspad_midi_cc`, `crosspad_midi_program_change` | `crosspad_midi` with `type` field |
+| `crosspad_log_pc`, `crosspad_log_idf` | `crosspad_log` with `target` field |
+
+Net: 42 tools → 30 tools + 1 resource. Mostly internal — clients don't pick obsolete names because they query `tools/list` on connect.
+
+All tools return a uniform envelope: `{ "success": boolean, ...data, "error"?: string }`. On failure the result also has the MCP-protocol `isError: true` flag set so clients can route errors distinctly from successful calls.
+
+Each tool carries [MCP annotations](https://modelcontextprotocol.io/specification) (`readOnlyHint`, `destructiveHint`, `openWorldHint`) — clients use these for confirmation prompts. Read-only tools (status, search, list) skip the prompt; destructive tools (commit, flash, build_idf clean, apps_install) trigger one.
 
 ## Configuration
 
@@ -144,6 +158,8 @@ Each repo path is individually configurable via env vars. If not set, falls back
 | `IDF_PATH` | auto-detected (`~/esp/esp-idf`) | ESP-IDF SDK path |
 | `VCPKG_ROOT` | `~/vcpkg` (Linux) / `C:/vcpkg` (Win) | vcpkg installation |
 | `VCVARSALL` | VS2022 default | MSVC vcvarsall.bat (Windows only) |
+| `CROSSPAD_REMOTE_PORT` | `19840` | TCP port for simulator remote control |
+| `CROSSPAD_REMOTE_HOST` | `127.0.0.1` | TCP host for simulator remote control |
 
 Repos are discovered dynamically — only repos that exist on disk appear in tool results. No flat directory structure is assumed when env vars are set.
 

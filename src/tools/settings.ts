@@ -3,6 +3,13 @@
  */
 
 import { sendRemoteCommand, isSimulatorRunning } from "../utils/remote-client.js";
+import { z } from "zod";
+
+const SettingsSetResponseSchema = z.object({
+  ok: z.literal(true),
+  key: z.string(),
+  value: z.number(),
+});
 
 export interface SettingsGetResult {
   success: boolean;
@@ -61,7 +68,11 @@ export async function crosspadSettingsSet(
     if (!resp.ok) {
       return { success: false, error: (resp.error as string) || "settings_set failed" };
     }
-    return { success: true, key: resp.key as string, value: resp.value as number };
+    const parsed = SettingsSetResponseSchema.safeParse(resp);
+    if (!parsed.success) {
+      return { success: false, error: `Simulator returned malformed settings_set response: ${parsed.error.message}` };
+    }
+    return { success: true, key: parsed.data.key, value: parsed.data.value };
   } catch (err: any) {
     return { success: false, error: err.message };
   }

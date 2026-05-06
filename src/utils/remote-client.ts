@@ -5,8 +5,13 @@
 
 import { Socket } from "net";
 
-const REMOTE_PORT = 19840;
-const REMOTE_HOST = "127.0.0.1";
+const REMOTE_PORT = (() => {
+  const raw = process.env.CROSSPAD_REMOTE_PORT;
+  if (!raw) return 19840;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 && n < 65536 ? n : 19840;
+})();
+const REMOTE_HOST = process.env.CROSSPAD_REMOTE_HOST || "127.0.0.1";
 const CONNECT_TIMEOUT = 3000;
 const RESPONSE_TIMEOUT = 15000;
 

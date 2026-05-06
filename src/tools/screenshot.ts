@@ -9,7 +9,23 @@
 import { sendRemoteCommand, isSimulatorRunning } from "../utils/remote-client.js";
 import fs from "fs";
 import path from "path";
+import { z } from "zod";
 import { CROSSPAD_PC_ROOT } from "../config.js";
+
+// Validate the simulator's screenshot response — sim is in-process C++ but
+// could ship malformed data after a crash. Better an error than NaN width.
+const ScreenshotFileResponseSchema = z.object({
+  ok: z.literal(true),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  size: z.number().int().nonnegative().optional(),
+});
+const ScreenshotInlineResponseSchema = z.object({
+  ok: z.literal(true),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  data: z.string().min(1),
+});
 
 export interface ScreenshotResult {
   success: boolean;
@@ -64,13 +80,21 @@ export async function crosspadScreenshot(
         };
       }
 
+      const parsed = ScreenshotFileResponseSchema.safeParse(resp);
+      if (!parsed.success) {
+        return {
+          success: false,
+          error: `Simulator returned malformed screenshot response: ${parsed.error.message}`,
+        };
+      }
+
       return {
         success: true,
-        width: resp.width as number,
-        height: resp.height as number,
+        width: parsed.data.width,
+        height: parsed.data.height,
         format: "png",
         file_path: filePath,
-        size: resp.size as number,
+        size: parsed.data.size,
       };
     }
 
@@ -84,12 +108,20 @@ export async function crosspadScreenshot(
       };
     }
 
+    const parsed = ScreenshotInlineResponseSchema.safeParse(resp);
+    if (!parsed.success) {
+      return {
+        success: false,
+        error: `Simulator returned malformed screenshot response: ${parsed.error.message}`,
+      };
+    }
+
     return {
       success: true,
-      width: resp.width as number,
-      height: resp.height as number,
+      width: parsed.data.width,
+      height: parsed.data.height,
       format: "png",
-      data_base64: resp.data as string,
+      data_base64: parsed.data.data,
     };
   } catch (err: any) {
     return {

@@ -43,21 +43,55 @@ Build: 0 error(s), 2 warning(s)
 });
 
 describe("countWarnings (PC build)", () => {
-  it("counts warning lines", () => {
+  it("counts compiler warnings (GCC/Clang style)", () => {
     const output = `
-src/a.cpp:1: warning: implicit conversion
-src/b.cpp:2: warning: unused variable
+src/a.cpp:1:5: warning: implicit conversion
+src/b.cpp:2:10: warning: unused variable
 Build: 2 warning(s)
 `;
-    // "2 warning(s)" is excluded, so only 2 actual warnings
+    // "2 warning(s)" excluded, only real diagnostics counted
     expect(countWarnings(output)).toBe(2);
+  });
+
+  it("counts MSVC warnings", () => {
+    const output = `main.cpp(42): warning C4244: conversion from 'double' to 'int'`;
+    expect(countWarnings(output)).toBe(1);
   });
 
   it("returns 0 for clean output", () => {
     expect(countWarnings("Building...\nDone.")).toBe(0);
   });
 
-  it("is case-insensitive", () => {
-    expect(countWarnings("WARNING: something\nWarning: other")).toBe(2);
+  it("ignores bare 'warning' keyword without compiler-diagnostic context", () => {
+    // Old loose matcher counted these — now we require :line:col: or (line):
+    expect(countWarnings("WARNING: cmake found something\nNote: warning is expected"))
+      .toBe(0);
+  });
+});
+
+describe("parseErrors regression — false positives", () => {
+  it("ignores 'error' as a substring in unrelated cmake/ninja output", () => {
+    const output = `
+-- Configuring done
+-- Found error handling library at /usr/lib
+[42/100] Building CXX object src/error_handler.cpp.o
+Generated error_codes.h
+`;
+    expect(parseErrors(output)).toHaveLength(0);
+  });
+
+  it("captures linker undefined reference", () => {
+    const output = `/usr/bin/ld: undefined reference to 'foo()'`;
+    expect(parseErrors(output)).toHaveLength(1);
+  });
+
+  it("captures CMake Error", () => {
+    const output = `CMake Error at CMakeLists.txt:42 (find_package): could not find Foo`;
+    expect(parseErrors(output)).toHaveLength(1);
+  });
+
+  it("captures Ninja FAILED marker", () => {
+    const output = `[42/100] Building foo.o\nFAILED: foo.o\nclang: ...`;
+    expect(parseErrors(output)).toHaveLength(1);
   });
 });

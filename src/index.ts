@@ -8,20 +8,19 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
-import { crosspadBuild, crosspadRun } from "./tools/build.js";
+import { crosspadBuild, crosspadRun, crosspadKill } from "./tools/build.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
 import { crosspadLog } from "./tools/log.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
 import { crosspadIdfFlash, crosspadIdfOta } from "./tools/idf-flash.js";
 import { crosspadIdfMonitor } from "./tools/idf-monitor.js";
 import { listDevices } from "./utils/device.js";
-import { crosspadTest, crosspadTestScaffold } from "./tools/test.js";
+import { crosspadTest } from "./tools/test.js";
 import { crosspadReposStatus } from "./tools/repos.js";
 import { crosspadDiffCore } from "./tools/diff-core.js";
 import { crosspadSubmoduleUpdate, crosspadCommit } from "./tools/repo-actions.js";
 import { crosspadSearchSymbols } from "./tools/symbols.js";
 import { crosspadInterfaces, crosspadApps } from "./tools/architecture.js";
-import { crosspadScaffoldApp } from "./tools/scaffold.js";
 import { crosspadScreenshot } from "./tools/screenshot.js";
 import { crosspadInput } from "./tools/input.js";
 import { crosspadStats } from "./tools/stats.js";
@@ -38,9 +37,33 @@ import {
 import type { OnLine } from "./utils/exec.js";
 import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
 
+// Server instructions — MCP clients prepend these to the LLM system prompt.
+// This is the *primary* mechanism by which a Claude session "knows" to pick
+// crosspad_* tools when working inside any CrossPad repo. CLAUDE.md and memory
+// alone proved insufficient; these instructions are loaded by the protocol
+// itself before the user's first message and survive context compaction.
+const SERVER_INSTRUCTIONS = `
+You have access to the CrossPad MCP server, which exposes purpose-built tools for the CrossPad embedded music controller monorepo (repos: crosspad-pc, platform-idf, ESP32-S3, crosspad-core, crosspad-gui, plus app submodules).
+
+WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, prefer the crosspad_* tools over raw shell equivalents:
+
+- Inspecting code  → crosspad_search_symbols (NOT \`grep -r\`); crosspad_list_interfaces; crosspad_interface_implementations.
+- Repo state       → crosspad_repo_status (NOT \`git status\` across N repos); crosspad_repo_diff for submodule drift.
+- Building PC sim  → crosspad_check_pc → crosspad_build_pc (NOT raw cmake/ninja). Then crosspad_run_pc; crosspad_kill_pc when done.
+- Building firmware→ crosspad_build_idf (NOT raw \`idf.py build\`); crosspad_flash_uart or crosspad_flash_ota.
+- Tests            → crosspad_test_run (NOT raw catch2 binary).
+- Sim interaction  → crosspad_screenshot, crosspad_input, crosspad_midi, crosspad_stats, crosspad_settings_get/set.
+- Apps (registry)  → crosspad_apps_list / install / remove / update / sync (NOT manual submodule git ops).
+- Commits          → crosspad_commit (NOT raw \`git commit\`) — handles multi-repo paths and refuses on merge conflicts.
+
+WHY: these tools resolve repos dynamically from env vars, parse build output into structured errors[], stream progress, and refuse unsafe operations. Manual shell equivalents will work but lose this scaffolding and frequently break across the 5 repos.
+
+DISCOVERY: if unsure whether a repo is detected, check the \`crosspad://workspace\` resource — it lists detected repos, current branches, dirty counts, and sim status.
+`.trim();
+
 const server = new McpServer(
   { name: "crosspad", version },
-  { capabilities: { logging: {} } }
+  { capabilities: { logging: {}, resources: {} }, instructions: SERVER_INSTRUCTIONS }
 );
 
 function makeStreamLogger(logger: string): OnLine {
@@ -142,7 +165,7 @@ const ANN_SIDE_EFFECT = { readOnlyHint: false, destructiveHint: false } as const
 
 server.tool(
   "crosspad_build_pc",
-  "Build the CrossPad PC simulator (CMake + Ninja). Returns errors[], warnings_count, output_path. Streams progress lines.",
+  "Build the CrossPad PC simulator (CMake + Ninja). PREFER THIS over running raw `cmake --build build` — it picks the right MSVC env on Windows, parses errors[], warnings_count, output_path, and streams progress. Returns structured result.",
   {
     mode: z.enum(["incremental", "clean", "reconfigure"])
       .default("incremental")
@@ -171,8 +194,22 @@ server.tool(
     if (result.pid === null) {
       return err(`Binary not found: ${result.exe_path}. Run crosspad_build_pc first.`, { exe_path: result.exe_path });
     }
-    return ok({ pid: result.pid, exe_path: result.exe_path });
+    if (result.responsive === false) {
+      return err(
+        `Simulator process started (pid=${result.pid}) but TCP control port did not respond within 3s. Process may have crashed during startup.`,
+        { pid: result.pid, exe_path: result.exe_path, responsive: false },
+      );
+    }
+    return ok({ pid: result.pid, exe_path: result.exe_path, responsive: result.responsive });
   }
+);
+
+server.tool(
+  "crosspad_kill_pc",
+  "Stop the running PC simulator. Sends SIGTERM to processes named 'CrossPad'. Returns the killed PIDs and whether the TCP control port stopped responding.",
+  {},
+  ANN_DESTRUCTIVE,
+  async () => jsonResponse(envelope({ ...(await crosspadKill()) }))
 );
 
 server.tool(
@@ -183,19 +220,6 @@ server.tool(
   async () => jsonResponse(envelope({ ...crosspadBuildCheck() }))
 );
 
-server.tool(
-  "crosspad_log_pc",
-  "Run the PC simulator binary, capture stdout+stderr for N seconds, kill it. Use to inspect startup logs without leaving the simulator running.",
-  {
-    timeout_seconds: TimeoutSec.default(5),
-    max_lines: MaxLines.default(200),
-  },
-  ANN_SIDE_EFFECT,
-  async ({ timeout_seconds, max_lines }) => {
-    const onLine = makeStreamLogger("log_pc");
-    return jsonResponse(envelope({ ...(await crosspadLog(timeout_seconds, max_lines, onLine)) }));
-  }
-);
 
 // ═══════════════════════════════════════════════════════════════════════
 // BUILD — ESP-IDF firmware
@@ -203,7 +227,7 @@ server.tool(
 
 server.tool(
   "crosspad_build_idf",
-  "Build CrossPad firmware for ESP32-S3 via idf.py. Auto-detects unregistered apps and escalates to fullclean when needed. Returns errors[], warnings[], tail.",
+  "Build CrossPad firmware for ESP32-S3 via idf.py. PREFER THIS over running raw `idf.py build` — it sources the IDF env automatically, auto-detects unregistered apps and escalates to fullclean when needed, and parses errors[], warnings[], tail into structured output.",
   {
     mode: z.enum(["build", "fullclean", "clean"])
       .default("build")
@@ -245,19 +269,31 @@ server.tool(
 );
 
 server.tool(
-  "crosspad_log_idf",
-  "Capture serial logs from a connected CrossPad device for N seconds. Uses pyserial (no TTY required).",
+  "crosspad_log",
+  "Capture logs from PC simulator (target='pc': spawn binary, capture stdout/stderr, kill) or connected ESP32-S3 device (target='idf': read serial via pyserial, no TTY needed). Consolidated tool — replaces crosspad_log_pc and crosspad_log_idf in v6.",
   {
-    port: Port.optional(),
-    timeout_seconds: TimeoutSec.default(10),
-    max_lines: MaxLines.default(500),
+    target: z.enum(["pc", "idf"]).describe("'pc' = run + capture sim binary; 'idf' = read serial from connected device."),
+    port: Port.optional().describe("Serial port (idf only). Auto-detected if omitted; required when multiple devices connected."),
+    timeout_seconds: TimeoutSec.optional().describe("Capture duration. Defaults: 5s for pc, 10s for idf."),
+    max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 for pc, 500 for idf."),
     filter: z.string().optional()
-      .describe("Case-insensitive substring filter. Only lines containing this string are returned."),
+      .describe("Case-insensitive substring filter (idf only). Only lines containing this string are returned."),
   },
   ANN_READ_ONLY,
-  async ({ port, timeout_seconds, max_lines, filter }) => {
+  async ({ target, port, timeout_seconds, max_lines, filter }) => {
+    if (target === "pc") {
+      if (port) return err("Field 'port' is not used when target='pc'.");
+      if (filter) return err("Field 'filter' is not used when target='pc'.");
+      const onLine = makeStreamLogger("log_pc");
+      return jsonResponse(envelope({
+        ...(await crosspadLog(timeout_seconds ?? 5, max_lines ?? 200, onLine)),
+      }));
+    }
+    // target === "idf"
     const onLine = makeStreamLogger("log_idf");
-    return jsonResponse(envelope({ ...(await crosspadIdfMonitor(port, timeout_seconds, max_lines, filter, onLine)) }));
+    return jsonResponse(envelope({
+      ...(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine)),
+    }));
   }
 );
 
@@ -275,7 +311,7 @@ server.tool(
 
 server.tool(
   "crosspad_test_run",
-  "Build and run the Catch2 test suite for crosspad-pc. Returns passed/failed counts + errors. Configures cmake with BUILD_TESTING=ON automatically.",
+  "Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
   {
     filter: z.string().default("")
       .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Empty = run all."),
@@ -287,14 +323,6 @@ server.tool(
     const onLine = makeStreamLogger("test");
     return jsonResponse(envelope({ ...(await crosspadTest(filter, list_only, onLine)) }));
   }
-);
-
-server.tool(
-  "crosspad_test_scaffold",
-  "Generate Catch2 test infrastructure (tests/CMakeLists.txt + sample test). Returns file contents — does NOT write to disk. Caller writes files.",
-  {},
-  ANN_READ_ONLY,
-  async () => jsonResponse({ success: true, ...crosspadTestScaffold() })
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -344,74 +372,56 @@ server.tool(
 // ═══════════════════════════════════════════════════════════════════════
 
 server.tool(
-  "crosspad_pad_press",
-  "Press a pad on the simulator (16-pad grid). Send crosspad_pad_release to release.",
+  "crosspad_input",
+  "Send a single input event to the running PC simulator (consolidated tool — replaces 7 separate tools in v6). Required fields depend on `action`: pad_press={pad,velocity?} · pad_release={pad} · encoder_rotate={delta} · encoder_press / encoder_release={} · click={x,y} · key={keycode}. The simulator validates and rejects bad combinations.",
   {
-    pad: PadIndex,
-    velocity: Velocity.default(127),
+    action: z.enum([
+      "pad_press", "pad_release",
+      "encoder_rotate", "encoder_press", "encoder_release",
+      "click", "key",
+    ]).describe("Which input event to dispatch."),
+    pad: PadIndex.optional().describe("Pad index (pad_press / pad_release)."),
+    velocity: Velocity.optional().describe("Pad velocity (pad_press, default 127)."),
+    delta: z.number().int().optional().describe("Encoder rotation delta. Positive=CW, negative=CCW. Typical -10..10."),
+    x: z.number().int().min(0).optional().describe("X pixel coordinate (click)."),
+    y: z.number().int().min(0).optional().describe("Y pixel coordinate (click)."),
+    keycode: z.number().int().optional().describe("SDL keycode (key). E.g. 27=ESC, 32=SPACE, 13=RETURN."),
   },
   ANN_SIDE_EFFECT,
-  async ({ pad, velocity }) =>
-    jsonResponse(envelope({ ...(await crosspadInput({ action: "pad_press", pad, velocity })) }))
-);
+  async ({ action, pad, velocity, delta, x, y, keycode }) => {
+    // Per-action required-field validation. Cleaner than letting the sim reject
+    // because the error here cites the missing field by name.
+    const need = (field: string, val: unknown): string | null =>
+      val === undefined ? `Field '${field}' is required for action='${action}'.` : null;
+    let missing: string | null = null;
+    switch (action) {
+      case "pad_press":
+        missing = need("pad", pad); break;
+      case "pad_release":
+        missing = need("pad", pad); break;
+      case "encoder_rotate":
+        missing = need("delta", delta); break;
+      case "click":
+        missing = need("x", x) ?? need("y", y); break;
+      case "key":
+        missing = need("keycode", keycode); break;
+    }
+    if (missing) return err(missing);
 
-server.tool(
-  "crosspad_pad_release",
-  "Release a previously-pressed pad on the simulator.",
-  { pad: PadIndex },
-  ANN_SIDE_EFFECT,
-  async ({ pad }) =>
-    jsonResponse(envelope({ ...(await crosspadInput({ action: "pad_release", pad })) }))
-);
-
-server.tool(
-  "crosspad_encoder_rotate",
-  "Rotate the encoder on the simulator. Positive delta = clockwise.",
-  {
-    delta: z.number().int().describe("Rotation delta. Positive = clockwise, negative = counter-clockwise. Typical range -10..10."),
-  },
-  ANN_SIDE_EFFECT,
-  async ({ delta }) =>
-    jsonResponse(envelope({ ...(await crosspadInput({ action: "encoder_rotate", delta })) }))
-);
-
-server.tool(
-  "crosspad_encoder_press",
-  "Press the encoder button on the simulator.",
-  {},
-  ANN_SIDE_EFFECT,
-  async () => jsonResponse(envelope({ ...(await crosspadInput({ action: "encoder_press" })) }))
-);
-
-server.tool(
-  "crosspad_encoder_release",
-  "Release the encoder button on the simulator.",
-  {},
-  ANN_SIDE_EFFECT,
-  async () => jsonResponse(envelope({ ...(await crosspadInput({ action: "encoder_release" })) }))
-);
-
-server.tool(
-  "crosspad_click",
-  "Click at (x, y) coordinates in the simulator window.",
-  {
-    x: z.number().int().min(0).describe("X pixel coordinate (window-relative)"),
-    y: z.number().int().min(0).describe("Y pixel coordinate (window-relative)"),
-  },
-  ANN_SIDE_EFFECT,
-  async ({ x, y }) =>
-    jsonResponse(envelope({ ...(await crosspadInput({ action: "click", x, y })) }))
-);
-
-server.tool(
-  "crosspad_key",
-  "Send a key event to the simulator using an SDL keycode.",
-  {
-    keycode: z.number().int().describe("SDL keycode (see SDL_keycode.h). E.g. 27=ESC, 32=SPACE, 13=RETURN."),
-  },
-  ANN_SIDE_EFFECT,
-  async ({ keycode }) =>
-    jsonResponse(envelope({ ...(await crosspadInput({ action: "key", keycode })) }))
+    const params: Parameters<typeof crosspadInput>[0] =
+      action === "pad_press"
+        ? { action, pad: pad!, velocity: velocity ?? 127 }
+        : action === "pad_release"
+        ? { action, pad: pad! }
+        : action === "encoder_rotate"
+        ? { action, delta: delta! }
+        : action === "click"
+        ? { action, x: x!, y: y! }
+        : action === "key"
+        ? { action, keycode: keycode! }
+        : { action };
+    return jsonResponse(envelope({ ...(await crosspadInput(params)) }));
+  }
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -419,39 +429,46 @@ server.tool(
 // ═══════════════════════════════════════════════════════════════════════
 
 server.tool(
-  "crosspad_midi_note_on",
-  "Send a MIDI note_on event to the simulator.",
-  { channel: Channel, note: Note, velocity: Velocity.default(127) },
+  "crosspad_midi",
+  "Send a single MIDI event to the running simulator (consolidated tool — replaces 4 separate tools in v6). Required fields depend on `type`: note_on/note_off={note,velocity?} · cc={cc_num,value} · program_change={program}.",
+  {
+    type: z.enum(["note_on", "note_off", "cc", "program_change"])
+      .describe("MIDI event type."),
+    channel: Channel,
+    note: Note.optional().describe("MIDI note number (note_on, note_off)."),
+    velocity: Velocity.optional().describe("Velocity (note_on default 127, note_off default 0)."),
+    cc_num: Cc.optional().describe("Controller number (cc)."),
+    value: Cc7.optional().describe("Controller value (cc)."),
+    program: Program.optional().describe("Program number (program_change)."),
+  },
   ANN_SIDE_EFFECT,
-  async ({ channel, note, velocity }) =>
-    jsonResponse(envelope({ ...(await crosspadMidiSend({ type: "note_on", channel, note, velocity })) }))
-);
+  async ({ type, channel, note, velocity, cc_num, value, program }) => {
+    const need = (field: string, val: unknown): string | null =>
+      val === undefined ? `Field '${field}' is required for type='${type}'.` : null;
+    let missing: string | null = null;
+    switch (type) {
+      case "note_on":
+      case "note_off":
+        missing = need("note", note); break;
+      case "cc":
+        missing = need("cc_num", cc_num) ?? need("value", value); break;
+      case "program_change":
+        missing = need("program", program); break;
+    }
+    if (missing) return err(missing);
 
-server.tool(
-  "crosspad_midi_note_off",
-  "Send a MIDI note_off event to the simulator.",
-  { channel: Channel, note: Note, velocity: Velocity.default(0) },
-  ANN_SIDE_EFFECT,
-  async ({ channel, note, velocity }) =>
-    jsonResponse(envelope({ ...(await crosspadMidiSend({ type: "note_off", channel, note, velocity })) }))
-);
-
-server.tool(
-  "crosspad_midi_cc",
-  "Send a MIDI control change (CC) event to the simulator.",
-  { channel: Channel, cc_num: Cc, value: Cc7 },
-  ANN_SIDE_EFFECT,
-  async ({ channel, cc_num, value }) =>
-    jsonResponse(envelope({ ...(await crosspadMidiSend({ type: "cc", channel, cc_num, value })) }))
-);
-
-server.tool(
-  "crosspad_midi_program_change",
-  "Send a MIDI program_change event to the simulator.",
-  { channel: Channel, program: Program },
-  ANN_SIDE_EFFECT,
-  async ({ channel, program }) =>
-    jsonResponse(envelope({ ...(await crosspadMidiSend({ type: "program_change", channel, program })) }))
+    return jsonResponse(envelope({
+      ...(await crosspadMidiSend({
+        type,
+        channel,
+        note,
+        velocity: velocity ?? (type === "note_off" ? 0 : type === "note_on" ? 127 : undefined),
+        cc_num,
+        value,
+        program,
+      })),
+    }));
+  }
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -497,7 +514,7 @@ server.tool(
 
 server.tool(
   "crosspad_repo_status",
-  "Git status across all detected CrossPad repos: branch, HEAD, dirty files, submodule sync state.",
+  "Git status across ALL detected CrossPad repos in one call: branch, HEAD, dirty files, submodule sync state. PREFER THIS over running `git status` per repo — handles the 5-repo monorepo layout in one shot.",
   {},
   ANN_READ_ONLY,
   async () => jsonResponse({ success: true, ...crosspadReposStatus() })
@@ -536,7 +553,7 @@ server.tool(
 
 server.tool(
   "crosspad_commit",
-  "Commit staged changes in a specific repo. Refuses if merge conflicts present. Never pushes. If files[] supplied, stages them first; otherwise commits whatever is currently staged.",
+  "Commit staged changes in a specific CrossPad repo. PREFER THIS over raw `git commit` — handles repo aliases (idf/pc/arduino/core/gui), refuses on merge conflicts, uses 0600 tempfiles for messages (no shell-quoting issues with quotes/newlines/backticks), and never pushes. Stages files[] first if supplied.",
   {
     repo: RepoAlias,
     message: z.string().min(1).describe("Commit message"),
@@ -554,7 +571,7 @@ server.tool(
 
 server.tool(
   "crosspad_search_symbols",
-  "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. Substring match: query 'Foo' matches FooBar, MyFoo, etc. Skips usage sites.",
+  "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. PREFER THIS over raw `grep -r` or `git grep` — it filters to definitions only (skips call sites/declarations), classifies kind, and aggregates across all 5 repos automatically. Substring match: 'Foo' matches FooBar, MyFoo.",
   {
     query: z.string().min(1).describe("Symbol name (substring match, case-insensitive on filter)"),
     kind: z.enum(["class", "function", "macro", "enum", "typedef", "all"]).default("all"),
@@ -605,26 +622,6 @@ server.tool(
   ANN_READ_ONLY,
   async ({ platform }) =>
     jsonResponse({ success: true, apps: crosspadApps(platform) })
-);
-
-server.tool(
-  "crosspad_scaffold_app",
-  "Generate boilerplate for a new CrossPad app (cpp, hpp, CMakeLists.txt). Returns file contents — does NOT write to disk. Caller writes files.",
-  {
-    name: z.string().min(1).regex(/^[A-Z][A-Za-z0-9]*$/, "Must be PascalCase (e.g. 'Metronome')")
-      .describe("PascalCase app name"),
-    display_name: z.string().optional()
-      .describe("Human-readable name shown in UI. Defaults to `name`."),
-    has_pad_logic: z.boolean().default(false)
-      .describe("Generate IPadLogicHandler stub for pad-aware apps."),
-    icon: z.string().default("CrossPad_Logo_110w.png")
-      .describe("Icon filename (resolved against platform asset prefix)."),
-    platform: z.enum(["pc", "idf", "arduino"]).default("pc")
-      .describe("Target platform. PC pulls in pc_stubs; idf/arduino do not."),
-  },
-  ANN_READ_ONLY,
-  async ({ name, display_name, has_pad_logic, icon, platform }) =>
-    jsonResponse({ success: true, ...crosspadScaffoldApp({ name, display_name, has_pad_logic, icon, platform }) })
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -696,6 +693,62 @@ server.tool(
   async ({ platform }) => {
     const onLine = makeStreamLogger("apps_sync");
     return jsonResponse(envelope({ ...(await crosspadAppSync(platform, onLine)) }));
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// RESOURCES
+// crosspad://workspace — agregat (repos, branches, dirty, sim status).
+// Eksponowane jako resource (nie tool) → klient może załadować raz na
+// początek sesji bez tool call, dając LLM tani sygnał kontekstowy.
+// ═══════════════════════════════════════════════════════════════════════
+
+import { isSimulatorRunning as _isSimRunning } from "./utils/remote-client.js";
+import { getRepos as _getRepos } from "./config.js";
+import { getHead as _getHead } from "./utils/git.js";
+
+server.resource(
+  "crosspad-workspace",
+  "crosspad://workspace",
+  {
+    description: "Detected CrossPad repos with branch, HEAD, dirty count, plus PC simulator running status. Cheap snapshot — load once per session for context.",
+    mimeType: "application/json",
+  },
+  async () => {
+    const repos = _getRepos();
+    const repoSummary: Record<string, unknown> = {};
+    for (const [name, root] of Object.entries(repos)) {
+      const head = _getHead(root);
+      // Quick branch + dirty count via single-shot porcelain
+      const { runCommand: _runCmd } = await import("./utils/exec.js");
+      const branch = _runCmd("git rev-parse --abbrev-ref HEAD", root, 5000);
+      const dirty = _runCmd("git status --porcelain", root, 5000);
+      const dirtyCount = dirty.success
+        ? dirty.stdout.split("\n").filter((l) => l.trim().length > 0).length
+        : 0;
+      repoSummary[name] = {
+        path: root,
+        head: head ?? null,
+        branch: branch.success ? branch.stdout.trim() : null,
+        dirty_count: dirtyCount,
+      };
+    }
+    const simRunning = await _isSimRunning();
+    const payload = {
+      detected_repos: Object.keys(repos),
+      repos: repoSummary,
+      pc_simulator: { running: simRunning },
+      hint: "If a repo you expected isn't detected, set its path env var (CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT, etc.) and restart the MCP server.",
+    };
+    return {
+      contents: [
+        {
+          uri: "crosspad://workspace",
+          mimeType: "application/json",
+          text: JSON.stringify(payload, null, 2),
+        },
+      ],
+    };
   }
 );
 

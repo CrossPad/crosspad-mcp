@@ -1,13 +1,40 @@
-# crosspad-mcp — TODO (Review MCP, v6.0.0)
+# crosspad-mcp — TODO (Review MCP)
 
 Review krytyczny z perspektywy zgodności z MCP spec, security i idiomatyki protokołu.
 Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
+
+**Status:** runda 1 (commit `7ac0f17`) + runda 2 + runda 3 (uncommitted, **v7.0.0**).
+
+---
+
+## ⭐ Meta-bug (user-reported, runda 3)
+
+**Problem:** Mimo CLAUDE.md i memory, Claude w sesji często NIE używa `crosspad_*` tools — robi raw `git status`, `grep`, `cmake` ręcznie. Trzeba mu jawnie przypominać.
+
+**Fix runda 3:**
+- ✅ MCP server `instructions` (1667 chars) — eksponowane przez protokół do klienta na initialize. Klient sklei z system-promptem. Wymienia explicite kiedy używać crosspad_* zamiast raw shell.
+- ✅ Wzmocnione description kluczowych toolów ("PREFER THIS over raw `cmake --build`/`git status`/`grep`/etc.") — drugi sygnał na poziomie tool selection.
+- ✅ Resource `crosspad://workspace` — agregat (repos, branch, dirty, sim status) loadowalny bez tool call. Klient może pinować jako session context.
+
+To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-protokołu który klient *zawsze* uwzględnia.
+
+---
+
+## Co dało v7.0.0 (runda 3)
+
+- **Surface 42 → 30 tools + 1 resource:**
+  - Wywalone: `crosspad_scaffold_app`, `crosspad_test_scaffold` (do docs)
+  - Zlane: 7× input → 1 (`crosspad_input` z `action`); 4× midi → 1 (`crosspad_midi` z `type`); 2× log → 1 (`crosspad_log` z `target`)
+  - Dodane: `crosspad_kill_pc`
+- **Server `instructions`** dla discoverability/affinity
+- **Resource `crosspad://workspace`** dla session context bez tool call
+- **Migration notes** w README v6→v7
 
 ---
 
 ## 🔴 Krytyczne — niezgodność z MCP spec
 
-### [ ] 1. Dodać `isError: true` na błędach narzędzi
+### [x] 1. Dodać `isError: true` na błędach narzędzi ✅ commit `7ac0f17`
 - **Plik:** [src/index.ts:72-74](src/index.ts#L72-L74)
 - **Problem:** `err()` zwraca `{success:false, error:...}` w treści, ale brakuje protokolarnej flagi `isError: true` na CallToolResult. LLM widzi to jako "tool call ok z tekstem" zamiast "tool call zwrócił błąd".
 - **Fix:**
@@ -26,7 +53,7 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 - **Fix:** Dla każdego toola zdefiniować `outputSchema` (zod) i zwracać `structuredContent: {...}` zamiast (lub obok) `text`.
 - **Priorytet:** Tooly z bogatymi danymi: `crosspad_repo_status`, `crosspad_stats`, `crosspad_apps_list`, `crosspad_search_symbols`, `crosspad_devices`, `crosspad_build_*`.
 
-### [ ] 3. Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`)
+### [x] 3. Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`) ✅ commit `7ac0f17`
 - **Problem:** Zero hintów. Klienci MCP używają ich do confirmation gating.
 - **Destructive (`destructiveHint: true`):**
   - `crosspad_commit`
@@ -52,7 +79,9 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 - **Problem:** Build IDF ma timeout 600s. User anuluje (`notifications/cancelled`) — spawn dalej miele.
 - **Fix:** Pobrać `AbortSignal` z requestu, propagować do `spawn`, na `cancelled` wywołać `child.kill('SIGTERM')` → po 2s `SIGKILL`.
 
-### [ ] 6. Eksponować `resources` i `prompts`
+### [~] 6. Eksponować `resources` i `prompts` (runda 3 — wybrany podzbiór)
+- Resources: `crosspad://workspace` agregat — w trakcie
+- Prompts: odłożone, na razie polegamy na server `instructions`
 - **Problem:** Tylko `tools` capability. Idiomatyczny MCP eksponuje:
 - **Resources do dodania:**
   - `app-registry.json` z każdej platformy
@@ -71,7 +100,10 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 
 ## 🟠 Bloat surfacy (anti-pattern dla LLM)
 
-### [ ] 7. Konsolidacja 41 → ~25 tools
+### [~] 7. Konsolidacja 41 → ~32 tools (runda 3 — w trakcie)
+- Wywal: scaffold (2× — przeniesione do docs)
+- Zlej: midi 4→1, input 5→1, log 2→1
+- Bump major version 6→7
 - **Problem:** Commit `aa866ec` "split mega-tools into 41" → ruch w złą stronę. Każdy tool kosztuje LLM context (name+desc+schema).
 - **Konsolidacja:**
   - 4× MIDI (`note_on/off`, `cc`, `program_change`) → 1 `crosspad_midi` z `z.discriminatedUnion("type", ...)`. Backend już to ma w [src/tools/midi.ts:33](src/tools/midi.ts#L33).
@@ -87,7 +119,7 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 
 ## 🔴 Security — shell injection
 
-### [ ] 9. `runCommand` puszcza shell domyślnie
+### [~] 9. `runCommand` puszcza shell domyślnie — częściowo (allow-listy w poz. 10 mitygują)
 - **Plik:** [src/utils/exec.ts:106](src/utils/exec.ts#L106), [src/utils/exec.ts:99-128](src/utils/exec.ts#L99-L128)
 - **Problem:** `execSync` bez `shell:false` uruchamia przez `/bin/sh -c`. Każdy interpolowany user-string to potencjalny RCE.
 - **Hot-spoty:**
@@ -101,7 +133,7 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
   - Zostaw shell-mode tylko dla statycznych komend (`cmake --build build`).
   - Dodać wariant `runShell(cmdString, ...)` jawnie tylko dla zaufanych statycznych ciągów.
 
-### [ ] 10. Allow-list walidacja `port` i `branch`
+### [x] 10. Allow-list walidacja `port` i `branch` ✅ commit `7ac0f17`
 - **Port (Zod):**
   ```ts
   const Port = z.string()
@@ -116,7 +148,7 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
   ```
 - **App name (Zod):** już ma regex w `crosspad_scaffold_app`, dodać do `crosspad_apps_install/remove/update`.
 
-### [ ] 11. Tempfile permissions (`os.tmpdir()`)
+### [x] 11. Tempfile permissions (`os.tmpdir()`) ✅ commit `7ac0f17`
 - **Plik:** [src/tools/repo-actions.ts:268-278](src/tools/repo-actions.ts#L268-L278), [src/tools/repo-actions.ts:311-316](src/tools/repo-actions.ts#L311-L316)
 - **Problem:** Pliki w `os.tmpdir()` z PID+Date.now() są world-readable na multi-user boxie pod default umask. Commit message + paths leak.
 - **Fix:**
@@ -146,14 +178,14 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 - **Problem:** Wczytasz registry z PC, potem z IDF — drugi nadpisuje pierwszy.
 - **Fix:** `Map<sourcePath, {data, timestamp, mtimeMs}>`.
 
-### [ ] 15. Brak `crosspad_kill_pc` / proper status
+### [x] 15. Brak `crosspad_kill_pc` / proper status ✅ runda 2 (uncommitted)
 - **Plik:** [src/tools/build.ts:147](src/tools/build.ts#L147), [src/utils/exec.ts:417-430](src/utils/exec.ts#L417-L430)
 - **Problem:** `spawnDetached` → fire-and-forget. `isSimulatorRunning` przez TCP, ale zombie binary po crashu (TCP server padł, proces żyje) niewykryte.
 - **Fix:**
   - Dodać `crosspad_kill_pc` (PID tracked przez server lub `pgrep CrossPad`).
   - W `crosspad_run_pc` zwracać też wynik post-spawn ping (z timeoutem 3s) — wtedy LLM wie czy sim faktycznie wstał.
 
-### [ ] 16. Hardcoded port 19840
+### [x] 16. Hardcoded port 19840 ✅ runda 2 (uncommitted) — `CROSSPAD_REMOTE_PORT` + `CROSSPAD_REMOTE_HOST`
 - **Plik:** [src/utils/remote-client.ts:8](src/utils/remote-client.ts#L8)
 - **Fix:** `const REMOTE_PORT = parseInt(process.env.CROSSPAD_REMOTE_PORT ?? "19840", 10);` Dodać do README config table.
 
@@ -162,17 +194,17 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 - **Problem:** Równoległy `idf.py monitor` w terminalu się gryzie z `crosspad_log_idf`.
 - **Fix:** Sprawdzić `lsof -t <port>` przed otwarciem, zwrócić błąd "port busy". Albo dodać do README warning.
 
-### [ ] 18. Naiwny `parseErrors` w PC build
+### [x] 18. Naiwny `parseErrors` w PC build ✅ runda 2 (uncommitted)
 - **Plik:** [src/tools/build.ts:16-24](src/tools/build.ts#L16-L24)
 - **Problem:** `\berror\b` case-insensitive na każdej linii. `// error handling done` w outputcie cmake → false positive.
 - **Fix:** Zaaplikować pattern z [src/tools/idf-build.ts:76-92](src/tools/idf-build.ts#L76-L92) (compiler `:line:col: error:` style + `CMake Error` + `FAILED:` + `undefined reference`).
 
-### [ ] 19. Walidacja response z TCP simulator
+### [~] 19. Walidacja response z TCP simulator — runda 2 (uncommitted): screenshot+settings_set zod-walidowane; midi/stats/settings_get nadal pass-through
 - **Pliki:** [src/tools/screenshot.ts:69-73](src/tools/screenshot.ts#L69-L73), [src/tools/midi.ts](src/tools/midi.ts), [src/tools/settings.ts](src/tools/settings.ts), [src/tools/stats.ts](src/tools/stats.ts)
 - **Problem:** `resp.width as number` bez walidacji. Sim zwróci śmieć → NaN/undefined w odpowiedzi tool.
 - **Fix:** Zod schema dla każdej response (np. `ScreenshotResponseSchema`, `StatsResponseSchema`), `.parse()` przed castem.
 
-### [ ] 20. Asymetria scaffold (`return content` vs `crosspad_commit` write)
+### [x] 20. Asymetria scaffold (`return content` vs `crosspad_commit` write) ✅ runda 3 — wywalone z MCP, treść w docs (decyzja usera)
 - **Pliki:** [src/tools/scaffold.ts](src/tools/scaffold.ts), `crosspad_test_scaffold` w [src/tools/test.ts](src/tools/test.ts)
 - **Problem:** Scaffold zwraca content → caller LLM `Write`-uje. `crosspad_commit` modyfikuje git. Niespójna semantyka.
 - **Fix opcja A:** Dodać `dry_run: boolean` (default true). Gdy false, tool zapisuje pliki do `dir`, sprawdza czy istnieją (refuse override unless `force`).
