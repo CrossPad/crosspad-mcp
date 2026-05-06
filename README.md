@@ -57,7 +57,9 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 }
 ```
 
-## Tools (30) + 1 resource
+## Tools (28) + resources
+
+> v8 unifies platform-axis tools: build/run/kill/check/flash now take `platform` (or `transport`) as an arg instead of being split per-platform. Migration table at the bottom of this file.
 
 Each tool is focused on a single action. Strict schema validation (ranges on MIDI/pad values, enums on platforms/repos) catches bad inputs before execution.
 
@@ -65,13 +67,11 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 
 | Tool | Purpose |
 |------|---------|
-| `crosspad_build_pc` | Build PC simulator (`mode`: incremental/clean/reconfigure) |
-| `crosspad_run_pc` | Launch simulator, return PID + post-spawn TCP readiness probe |
-| `crosspad_kill_pc` | Stop running simulator (SIGTERM by exe name match) |
-| `crosspad_check_pc` | Health check: stale exe, new sources, submodule drift |
-| `crosspad_build_idf` | Build ESP-IDF firmware (`mode`: build/fullclean/clean) |
-| `crosspad_flash_uart` | UART flash (`idf.py flash`, requires bootloader mode) |
-| `crosspad_flash_ota` | OTA flash via USB CDC (no bootloader needed) |
+| `crosspad_build` | Build for `platform: pc\|idf` (`mode`: incremental/clean/reconfigure for PC, incremental/clean/fullclean for IDF; `build_type` for PC) |
+| `crosspad_run` | Launch built simulator (`platform: pc`), return PID + post-spawn TCP readiness probe |
+| `crosspad_kill` | Stop running simulator (`platform: pc`, SIGTERM by exe name match) |
+| `crosspad_check` | Health check (`platform: pc`): stale exe, new sources, submodule drift |
+| `crosspad_flash` | Flash firmware to device (`transport: uart\|ota`, `port?`, `firmware_path?` ota-only) |
 | `crosspad_log` | Capture logs (`target`: pc=spawn binary / idf=read serial) |
 | `crosspad_devices` | List USB serial devices, flag CrossPads |
 
@@ -126,6 +126,22 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 |-----|---------|
 | `crosspad://workspace` | JSON snapshot: detected repos, branches, HEADs, dirty counts, PC simulator running status. Loadable without a tool call — clients (e.g. Claude Code) can pin it as session context. |
 
+### Migration: v7 → v8
+
+Platform/transport now flows as an arg, not as part of the tool name. Net: 30 → 28 tools.
+
+| Old (v7) | New (v8) |
+|---|---|
+| `crosspad_build_pc` | `crosspad_build` with `platform: pc` |
+| `crosspad_build_idf` | `crosspad_build` with `platform: idf` |
+| `crosspad_run_pc` | `crosspad_run` with `platform: pc` |
+| `crosspad_kill_pc` | `crosspad_kill` with `platform: pc` |
+| `crosspad_check_pc` | `crosspad_check` with `platform: pc` |
+| `crosspad_flash_uart` | `crosspad_flash` with `transport: uart` |
+| `crosspad_flash_ota` | `crosspad_flash` with `transport: ota` |
+
+Run/kill/check are PC-only today (the `platform` arg is reserved for future symmetry — IDF firmware doesn't run on the host). Build modes are validated per-platform: `reconfigure` is PC-only; `fullclean` is IDF-only.
+
 ### Migration: v6 → v7
 
 Tools removed (logic moved to docs): `crosspad_scaffold_app`, `crosspad_test_scaffold`.
@@ -137,7 +153,7 @@ Tools consolidated:
 | `crosspad_midi_note_on`, `crosspad_midi_note_off`, `crosspad_midi_cc`, `crosspad_midi_program_change` | `crosspad_midi` with `type` field |
 | `crosspad_log_pc`, `crosspad_log_idf` | `crosspad_log` with `target` field |
 
-Net: 42 tools → 30 tools + 1 resource. Mostly internal — clients don't pick obsolete names because they query `tools/list` on connect.
+Net: 42 tools → 30 tools + 1 resource (v7). Subsequent unification in v8 → 28 tools (see above).
 
 All tools return a uniform envelope: `{ "success": boolean, ...data, "error"?: string }`. On failure the result also has the MCP-protocol `isError: true` flag set so clients can route errors distinctly from successful calls.
 

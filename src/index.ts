@@ -49,8 +49,8 @@ WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, pr
 
 - Inspecting code  → crosspad_search_symbols (NOT \`grep -r\`); crosspad_list_interfaces; crosspad_interface_implementations.
 - Repo state       → crosspad_repo_status (NOT \`git status\` across N repos); crosspad_repo_diff for submodule drift.
-- Building PC sim  → crosspad_check_pc → crosspad_build_pc (NOT raw cmake/ninja). Then crosspad_run_pc; crosspad_kill_pc when done.
-- Building firmware→ crosspad_build_idf (NOT raw \`idf.py build\`); crosspad_flash_uart or crosspad_flash_ota.
+- Building PC sim  → crosspad_check platform=pc → crosspad_build platform=pc (NOT raw cmake/ninja). Then crosspad_run; crosspad_kill when done.
+- Building firmware→ crosspad_build platform=idf (NOT raw \`idf.py build\`); crosspad_flash transport=uart|ota.
 - Tests            → crosspad_test_run (NOT raw catch2 binary).
 - Sim interaction  → crosspad_screenshot, crosspad_input, crosspad_midi, crosspad_stats, crosspad_settings_get/set.
 - Apps (registry)  → crosspad_apps_list / install / remove / update / sync (NOT manual submodule git ops).
@@ -412,35 +412,49 @@ const O_AppAction = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
-// BUILD — PC simulator
+// BUILD — unified across platforms (pc, idf)
+// `platform` arg disambiguates. Modes are validated per-platform at runtime.
 // ═══════════════════════════════════════════════════════════════════════
 
+const BuildPlatform = z.enum(["pc", "idf"]).describe("Target platform: 'pc' = host simulator, 'idf' = ESP32-S3 firmware.");
+const PlatformPcOnly = z.enum(["pc"]).default("pc").describe("Platform — currently only 'pc' is supported here.");
+
 server.registerTool(
-  "crosspad_build_pc",
+  "crosspad_build",
   {
-    description: "Build the CrossPad PC simulator (CMake + Ninja). PREFER THIS over running raw `cmake --build build` — it picks the right MSVC env on Windows, parses errors[], warnings_count, output_path, and streams progress. Returns structured result.",
+    description: "Build CrossPad for the given platform. platform=pc → CMake + Ninja host simulator (PREFER THIS over `cmake --build build` — picks the right MSVC env on Windows, parses errors/warnings, streams progress). platform=idf → idf.py build for ESP32-S3 firmware (PREFER THIS over `idf.py build` — sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).",
     inputSchema: {
-      mode: z.enum(["incremental", "clean", "reconfigure"])
+      platform: BuildPlatform,
+      mode: z.enum(["incremental", "clean", "fullclean", "reconfigure"])
         .default("incremental")
-        .describe("incremental: rebuild only what changed (fastest). clean: wipe build dir + reconfigure + build. reconfigure: re-run cmake without wiping."),
+        .describe("incremental: rebuild only what changed (default). clean: wipe build dir then build. reconfigure: re-run cmake without wiping (PC only). fullclean: idf.py fullclean then build (IDF only)."),
       build_type: z.enum(["Debug", "Release", "RelWithDebInfo"])
         .default("Debug")
-        .describe("CMake build type. Only honored on clean/reconfigure (incremental keeps the existing cache)."),
+        .describe("CMake build type — PC only. Only honored on clean/reconfigure (incremental keeps existing cache)."),
     },
     outputSchema: O_Build,
     annotations: ANN_DESTRUCTIVE,
   },
-  async ({ mode, build_type }, extra: any) => {
-    const onLine = makeProgressLogger("build-pc", extra);
-    return jsonResponse((await crosspadBuild(mode, onLine, build_type, extra.signal)));
+  async ({ platform, mode, build_type }, extra: any) => {
+    if (platform === "pc") {
+      if (mode === "fullclean") return err("mode='fullclean' is IDF-only. PC supports: incremental, clean, reconfigure.");
+      const onLine = makeProgressLogger("build-pc", extra);
+      return jsonResponse(await crosspadBuild(mode as "incremental" | "clean" | "reconfigure", onLine, build_type, extra.signal));
+    }
+    // idf
+    if (mode === "reconfigure") return err("mode='reconfigure' is PC-only. IDF supports: incremental, clean, fullclean.");
+    const idfMode = mode === "incremental" ? "build" : mode;
+    const onLine = makeProgressLogger("build-idf", extra);
+    return jsonResponse(await crosspadIdfBuild(idfMode as "build" | "fullclean" | "clean", onLine, extra.signal));
   }
 );
 
 server.registerTool(
-  "crosspad_run_pc",
+  "crosspad_run",
   {
-    description: "Launch the built PC simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if a simulator is already responding on port 19840 (use force=true to override). Fails if binary not built — call crosspad_build_pc first.",
+    description: "Launch the built simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if one is already responding on the TCP control port (use force=true to override). Fails if binary not built — call crosspad_build first. Currently PC-only (IDF firmware doesn't run on the host).",
     inputSchema: {
+      platform: PlatformPcOnly,
       force: z.boolean().default(false)
         .describe("Spawn another instance even if one is already running. Default: false."),
     },
@@ -453,7 +467,7 @@ server.registerTool(
       return err(result.error ?? "Simulator already running.", { exe_path: result.exe_path, already_running: true });
     }
     if (result.pid === null) {
-      return err(`Binary not found: ${result.exe_path}. Run crosspad_build_pc first.`, { exe_path: result.exe_path });
+      return err(`Binary not found: ${result.exe_path}. Run crosspad_build first.`, { exe_path: result.exe_path });
     }
     if (result.responsive === false) {
       return err(
@@ -466,81 +480,57 @@ server.registerTool(
 );
 
 server.registerTool(
-  "crosspad_kill_pc",
+  "crosspad_kill",
   {
-    description: "Stop the running PC simulator. Sends SIGTERM to processes named 'CrossPad'. Returns the killed PIDs and whether the TCP control port stopped responding.",
-    inputSchema: {},
+    description: "Stop the running PC simulator. Sends SIGTERM to processes named 'CrossPad'. Returns killed PIDs and whether the TCP control port stopped responding. Currently PC-only.",
+    inputSchema: {
+      platform: PlatformPcOnly,
+    },
     outputSchema: O_Kill,
     annotations: ANN_DESTRUCTIVE,
   },
-  async () => jsonResponse((await crosspadKill()))
+  async () => jsonResponse(await crosspadKill())
 );
 
 server.registerTool(
-  "crosspad_check_pc",
+  "crosspad_check",
   {
-    description: "Health check for the PC build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build_pc to decide if rebuild needed.",
-    inputSchema: {},
+    description: "Health check for a build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build to decide if rebuild needed. Currently PC-only.",
+    inputSchema: {
+      platform: PlatformPcOnly,
+    },
     outputSchema: O_BuildCheck,
     annotations: ANN_READ_ONLY,
   },
   async () => jsonResponse(crosspadBuildCheck())
 );
 
-
 // ═══════════════════════════════════════════════════════════════════════
-// BUILD — ESP-IDF firmware
+// FLASH — unified UART/OTA into one tool with `transport` axis
 // ═══════════════════════════════════════════════════════════════════════
 
 server.registerTool(
-  "crosspad_build_idf",
+  "crosspad_flash",
   {
-    description: "Build CrossPad firmware for ESP32-S3 via idf.py. PREFER THIS over running raw `idf.py build` — it sources the IDF env automatically, auto-detects unregistered apps and escalates to fullclean when needed, and parses errors[], warnings[], tail into structured output.",
+    description: "Flash firmware to a connected CrossPad device. transport='uart' uses idf.py flash (device must be in bootloader mode). transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required). Requires prior crosspad_build platform=idf.",
     inputSchema: {
-      mode: z.enum(["build", "fullclean", "clean"])
-        .default("build")
-        .describe("build: incremental (auto-fullclean if new apps detected). fullclean: idf.py fullclean then build. clean: wipe build dir then build."),
-    },
-    outputSchema: O_IdfBuild,
-    annotations: ANN_DESTRUCTIVE,
-  },
-  async ({ mode }, extra: any) => {
-    const onLine = makeProgressLogger("build-idf", extra);
-    return jsonResponse((await crosspadIdfBuild(mode, onLine, extra.signal)));
-  }
-);
-
-server.registerTool(
-  "crosspad_flash_uart",
-  {
-    description: "Flash firmware to a connected CrossPad over UART (idf.py flash). Device must be in bootloader mode. Requires prior crosspad_build_idf.",
-    inputSchema: {
-      port: Port.optional(),
-    },
-    outputSchema: O_Flash,
-    annotations: ANN_DESTRUCTIVE,
-  },
-  async ({ port }, extra: any) => {
-    const onLine = makeProgressLogger("flash-uart", extra);
-    return jsonResponse((await crosspadIdfFlash(port, onLine, extra.signal)));
-  }
-);
-
-server.registerTool(
-  "crosspad_flash_ota",
-  {
-    description: "Flash firmware via OTA over USB CDC (no bootloader mode required). Uses platform-idf/tools/ota_flash.py. Requires prior crosspad_build_idf.",
-    inputSchema: {
+      transport: z.enum(["uart", "ota"]).describe("'uart' = bootloader-mode flash via idf.py; 'ota' = USB-CDC OTA flash via ota_flash.py."),
       port: Port.optional(),
       firmware_path: z.string().optional()
-        .describe("Custom firmware binary path. Defaults to <idf-root>/build/CrossPad.bin."),
+        .describe("Custom firmware binary path (OTA only). Defaults to <idf-root>/build/CrossPad.bin."),
     },
     outputSchema: O_Flash,
     annotations: ANN_DESTRUCTIVE,
   },
-  async ({ port, firmware_path }, extra: any) => {
+  async ({ transport, port, firmware_path }, extra: any) => {
+    if (transport === "uart") {
+      if (firmware_path) return err("Field 'firmware_path' is OTA-only — UART flash always uses the active build dir.");
+      const onLine = makeProgressLogger("flash-uart", extra);
+      return jsonResponse(await crosspadIdfFlash(port, onLine, extra.signal));
+    }
+    // ota
     const onLine = makeProgressLogger("flash-ota", extra);
-    return jsonResponse((await crosspadIdfOta(port, firmware_path, onLine, extra.signal)));
+    return jsonResponse(await crosspadIdfOta(port, firmware_path, onLine, extra.signal));
   }
 );
 

@@ -3,7 +3,7 @@
 Review krytyczny z perspektywy zgodności z MCP spec, security i idiomatyki protokołu.
 Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 
-**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (`fedae5c`, outputSchema + structuredContent) + runda 6 (uncommitted — TCP zod hardening, envelope cleanup, app-registry resources).
+**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (`fedae5c`, outputSchema + structuredContent) + runda 6 (`ca07999`, TCP zod / envelope cleanup / registry resources) + runda 7 (uncommitted — v8.0.0 platform-axis unification: 30 → 26 tools).
 
 ---
 
@@ -20,7 +20,24 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 
 ---
 
-## Co dało runda 6 (uncommitted)
+## Co dało runda 7 (uncommitted, v8.0.0)
+
+**Platform-axis unification (#8) — breaking, intentional.** Net: 30 → 28 tools.
+
+| Old (v7) | New (v8) |
+|---|---|
+| `crosspad_build_pc` + `crosspad_build_idf` | `crosspad_build` z `platform: pc\|idf` |
+| `crosspad_run_pc` | `crosspad_run` z `platform: pc` |
+| `crosspad_kill_pc` | `crosspad_kill` z `platform: pc` |
+| `crosspad_check_pc` | `crosspad_check` z `platform: pc` |
+| `crosspad_flash_uart` + `crosspad_flash_ota` | `crosspad_flash` z `transport: uart\|ota` |
+
+- Mode walidowany per-platform: `reconfigure` PC-only; `fullclean` IDF-only; `incremental` mapowane na `build` dla IDF wewnętrznie.
+- `crosspad_run/kill/check` dziś tylko PC — `platform` arg trzymany dla przyszłej symetrii.
+- Net surface: 30 → 28 tools. README v7→v8 migration table dodany.
+- v8.0.0 w package.json. Server `instructions` zaktualizowane (krótszy bo mniej toolów do wymienienia).
+
+## Co dało runda 6 (`ca07999`)
 
 - **TCP response Zod (#19):** centralny guard w `remote-client.ts` — `RemoteEnvelopeSchema` (object z `ok: boolean`, passthrough). Każda odpowiedź sim parsowana przez `parseRemoteResponse()`; non-object/scalar/array → synthetic `{ok:false, error:"malformed response"}`. Stats/midi/settings_get dziedziczą bezpieczeństwo bez per-tool zod.
 - **Envelope helper cleanup (#21):** funkcja `envelope()` usunięta. Wszystkie `jsonResponse(envelope({...await foo()}))` → `jsonResponse(await foo())`. Każda tool-function i tak zwraca `{success, ...}`. `jsonResponse` przyjmuje `object` (nie `Record`), wewnętrznie cast do Record do `isError` check.
@@ -140,7 +157,7 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
   - 3× architecture (`list_interfaces`, `interface_implementations`, `capabilities`) → 1 `crosspad_architecture` z `query` enum.
   - Rozważ: `crosspad_log_pc` + `crosspad_log_idf` → `crosspad_log` z `target`.
 
-### [ ] 8. Spójność osi platformowej w nazwach
+### [x] 8. Spójność osi platformowej w nazwach ✅ runda 7 (v8.0.0)
 - **Problem:** `crosspad_build_pc`, `crosspad_build_idf` — platforma w nazwie. Ale `crosspad_apps_install` bierze `platform` jako arg.
 - **Fix:** Wybrać jedną konwencję. Sugestia: zostać przy nazwie z platformą dla build/flash (różne implementacje), `platform` jako arg dla apps (delegacja do tego samego skryptu).
 
@@ -282,5 +299,4 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 Pozostałe (deferred — wymagają większego refaktoru lub mają niski ROI):
 - Resources/Prompts expansion (poz. 6) — workspace done; reszta (registry, manifesty, prompts) odłożona.
 - HTTP/SSE transport (poz. 26) — niche, stdio jest ok dla embedded dev.
-- Spójność osi platformowej w nazwach (poz. 8) — kosmetyka, zmiana łamie API.
 - MCP-native code search jako resources (poz. 25) — niespójne z innymi tool-based searches.
