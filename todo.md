@@ -3,7 +3,7 @@
 Review krytyczny z perspektywy zgodności z MCP spec, security i idiomatyki protokołu.
 Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 
-**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (uncommitted — outputSchema + structuredContent).
+**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (`fedae5c`, outputSchema + structuredContent).
 
 ---
 
@@ -20,7 +20,7 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 
 ---
 
-## Co dało runda 5 (uncommitted)
+## Co dało runda 5 (`fedae5c`)
 
 - **outputSchema + structuredContent (#2):** wszystkie 30 toolów zmigrowane z `server.tool(...)` → `server.registerTool(name, {description, inputSchema, outputSchema, annotations}, cb)`. Każdy tool ma jawny output shape (Zod) — exposed w `tools/list` jako JSON Schema.
 - **`jsonResponse`** zwraca teraz oba: `content` (text JSON dla LLM/legacy klientów) i `structuredContent` (typowany dict zgodny z outputSchema). `isError: true` dalej ustawiane gdy `success: false` w danych.
