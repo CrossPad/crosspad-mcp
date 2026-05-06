@@ -26,7 +26,8 @@ const TEST_EXE = path.join(BIN_DIR, `crosspad_tests${EXE_EXT}`);
 export async function crosspadTest(
   filter: string = "",
   listOnly: boolean = false,
-  onLine?: OnLine
+  onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<TestResult> {
   const startTime = Date.now();
 
@@ -51,7 +52,7 @@ export async function crosspadTest(
 
   let configResult;
   if (onLine) {
-    configResult = await runBuildStream(configCmd, CROSSPAD_PC_ROOT, onLine, 120_000);
+    configResult = await runBuildStream(configCmd, CROSSPAD_PC_ROOT, onLine, 120_000, signal);
   } else {
     configResult = runBuild(configCmd, CROSSPAD_PC_ROOT, 120_000);
   }
@@ -75,7 +76,7 @@ export async function crosspadTest(
   const buildCmd = "cmake --build build --target crosspad_tests";
   let buildResult;
   if (onLine) {
-    buildResult = await runBuildStream(buildCmd, CROSSPAD_PC_ROOT, onLine, 300_000);
+    buildResult = await runBuildStream(buildCmd, CROSSPAD_PC_ROOT, onLine, 300_000, signal);
   } else {
     buildResult = runBuild(buildCmd, CROSSPAD_PC_ROOT, 300_000);
   }
@@ -125,7 +126,7 @@ export async function crosspadTest(
 
   let testResult;
   if (onLine) {
-    testResult = await runBuildStream(testCmd, CROSSPAD_PC_ROOT, onLine, 120_000);
+    testResult = await runBuildStream(testCmd, CROSSPAD_PC_ROOT, onLine, 120_000, signal);
   } else {
     testResult = runBuild(testCmd, CROSSPAD_PC_ROOT, 120_000);
   }

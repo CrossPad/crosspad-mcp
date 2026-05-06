@@ -1,6 +1,6 @@
 import fs from "fs";
 import { BIN_EXE, CROSSPAD_PC_ROOT } from "../config.js";
-import { runCommandStream, OnLine } from "../utils/exec.js";
+import { runArgvStream, OnLine } from "../utils/exec.js";
 
 export interface LogResult {
   success: boolean;
@@ -20,7 +20,8 @@ export interface LogResult {
 export async function crosspadLog(
   timeoutSeconds: number = 5,
   maxLines: number = 200,
-  onLine?: OnLine
+  onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<LogResult> {
   if (!fs.existsSync(BIN_EXE)) {
     return {
@@ -36,11 +37,13 @@ export async function crosspadLog(
 
   onLine?.("stdout", `[crosspad] Launching ${BIN_EXE} (capturing for ${timeoutSeconds}s)...`);
 
-  const result = await runCommandStream(
-    `"${BIN_EXE}"`,
+  // argv mode — BIN_EXE may contain spaces; never let the path touch a shell.
+  const result = await runArgvStream(
+    BIN_EXE, [],
     CROSSPAD_PC_ROOT,
     onLine ?? (() => {}),
-    timeoutSeconds * 1000
+    timeoutSeconds * 1000,
+    signal,
   );
 
   // Truncate to maxLines

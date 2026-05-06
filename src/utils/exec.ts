@@ -1,4 +1,5 @@
 import { execSync, spawn, SpawnOptions } from "child_process";
+import fs from "fs";
 import { VCVARSALL, IS_WINDOWS, IDF_PATH } from "../config.js";
 
 /** Callback invoked for each line of stdout/stderr during streaming exec. */
@@ -8,7 +9,21 @@ export type OnLine = (stream: "stdout" | "stderr", line: string) => void;
 // MSVC ENVIRONMENT (Windows-only)
 // ═══════════════════════════════════════════════════════════════════════
 
-let cachedMsvcEnv: Record<string, string> | null = null;
+interface CachedEnv {
+  data: Record<string, string>;
+  mtimeMs: number;
+}
+let cachedMsvcEnv: CachedEnv | null = null;
+
+function statMtime(p: string): number {
+  try { return fs.statSync(p).mtimeMs; } catch { return 0; }
+}
+
+/** @internal exported for testing — drop both env caches. */
+export function _resetEnvCaches(): void {
+  cachedMsvcEnv = null;
+  cachedIdfEnv = null;
+}
 
 /**
  * Capture MSVC environment by running vcvarsall.bat and parsing `set` output.
@@ -18,7 +33,8 @@ export function getMsvcEnv(): Record<string, string> {
   if (!IS_WINDOWS) {
     return { ...process.env } as Record<string, string>;
   }
-  if (cachedMsvcEnv) return cachedMsvcEnv;
+  const mtime = statMtime(VCVARSALL);
+  if (cachedMsvcEnv && cachedMsvcEnv.mtimeMs === mtime) return cachedMsvcEnv.data;
 
   const cmd = `"${VCVARSALL}" x64 >nul 2>&1 && set`;
   const output = execSync(cmd, {
@@ -35,7 +51,7 @@ export function getMsvcEnv(): Record<string, string> {
     }
   }
 
-  cachedMsvcEnv = env;
+  cachedMsvcEnv = { data: env, mtimeMs: mtime };
   return env;
 }
 
@@ -133,7 +149,7 @@ export function runCommand(
 
 /**
  * Helper: spawn a process and stream stdout/stderr line-by-line via onLine.
- * Returns the same ExecResult as the sync variants.
+ * Supports argv mode (shell:false + args[]) and AbortSignal-driven cancellation.
  */
 function spawnStreaming(
   cmd: string,
@@ -141,11 +157,13 @@ function spawnStreaming(
   env: Record<string, string> | undefined,
   shell: string | boolean,
   onLine: OnLine,
-  timeoutMs: number
+  timeoutMs: number,
+  args: string[] = [],
+  signal?: AbortSignal,
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
     const start = Date.now();
-    const child = spawn(cmd, [], {
+    const child = spawn(cmd, args, {
       cwd,
       env,
       shell,
@@ -158,11 +176,22 @@ function spawnStreaming(
     let stdoutBuf = "";
     let stderrBuf = "";
     let killed = false;
+    let cancelled = false;
 
     const timer = setTimeout(() => {
       killed = true;
       child.kill("SIGTERM");
     }, timeoutMs);
+
+    const escalateKill = () => {
+      child.kill("SIGTERM");
+      setTimeout(() => { if (!child.killed) child.kill("SIGKILL"); }, 2000);
+    };
+    const onAbort = () => { cancelled = true; killed = true; escalateKill(); };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     function flushLines(buf: string, stream: "stdout" | "stderr"): string {
       const parts = buf.split("\n");
@@ -189,13 +218,14 @@ function spawnStreaming(
 
     child.on("close", (code) => {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
       if (stdoutBuf.length > 0) onLine("stdout", stdoutBuf.replace(/\r$/, ""));
       if (stderrBuf.length > 0) onLine("stderr", stderrBuf.replace(/\r$/, ""));
 
       resolve({
         success: killed ? false : code === 0,
         stdout: normalizeLineEndings(stdout),
-        stderr: normalizeLineEndings(stderr),
+        stderr: normalizeLineEndings(cancelled ? stderr + "\n[cancelled]" : stderr),
         exitCode: killed ? -1 : (code ?? 1),
         durationMs: Date.now() - start,
       });
@@ -203,6 +233,7 @@ function spawnStreaming(
 
     child.on("error", (err) => {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
       resolve({
         success: false,
         stdout: normalizeLineEndings(stdout),
@@ -215,16 +246,33 @@ function spawnStreaming(
 }
 
 /**
+ * Run an arbitrary executable with argv array (no shell). Use for inputs that
+ * may contain user-controlled strings — eliminates shell-injection risk.
+ */
+export function runArgvStream(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  onLine: OnLine,
+  timeoutMs: number = 60_000,
+  signal?: AbortSignal,
+  env?: Record<string, string>,
+): Promise<ExecResult> {
+  return spawnStreaming(cmd, cwd, env, false, onLine, timeoutMs, args, signal);
+}
+
+/**
  * Run a command with the MSVC environment, streaming output line-by-line.
  */
 export function runWithMsvcStream(
   cmd: string,
   cwd: string,
   onLine: OnLine,
-  timeoutMs = 300_000
+  timeoutMs = 300_000,
+  signal?: AbortSignal,
 ): Promise<ExecResult> {
   const env = getMsvcEnv();
-  return spawnStreaming(cmd, cwd, env, "cmd.exe", onLine, timeoutMs);
+  return spawnStreaming(cmd, cwd, env, "cmd.exe", onLine, timeoutMs, [], signal);
 }
 
 /**
@@ -234,16 +282,17 @@ export function runCommandStream(
   cmd: string,
   cwd: string,
   onLine: OnLine,
-  timeoutMs = 60_000
+  timeoutMs = 60_000,
+  signal?: AbortSignal,
 ): Promise<ExecResult> {
-  return spawnStreaming(cmd, cwd, undefined, true, onLine, timeoutMs);
+  return spawnStreaming(cmd, cwd, undefined, true, onLine, timeoutMs, [], signal);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 // ESP-IDF ENVIRONMENT
 // ═══════════════════════════════════════════════════════════════════════
 
-let cachedIdfEnv: Record<string, string> | null = null;
+let cachedIdfEnv: CachedEnv | null = null;
 
 /**
  * Capture ESP-IDF environment. Cached for the lifetime of the server process.
@@ -251,10 +300,12 @@ let cachedIdfEnv: Record<string, string> | null = null;
  * - Linux/Mac: sources export.sh and captures env via null-delimited output
  */
 export function getIdfEnv(): Record<string, string> {
-  if (cachedIdfEnv) return cachedIdfEnv;
+  const exportPath = IS_WINDOWS ? `${IDF_PATH}\\export.bat` : `${IDF_PATH}/export.sh`;
+  const mtime = statMtime(exportPath);
+  if (cachedIdfEnv && cachedIdfEnv.mtimeMs === mtime) return cachedIdfEnv.data;
 
   if (IS_WINDOWS) {
-    const exportBat = `${IDF_PATH}\\export.bat`;
+    const exportBat = exportPath;
     const cmd = `set MSYSTEM=&& set PYTHONIOENCODING=utf-8&& call "${exportBat}" >nul 2>&1 && set`;
     const output = execSync(cmd, {
       shell: "cmd.exe",
@@ -269,12 +320,12 @@ export function getIdfEnv(): Record<string, string> {
         env[line.slice(0, eq)] = line.slice(eq + 1).trimEnd();
       }
     }
-    cachedIdfEnv = env;
+    cachedIdfEnv = { data: env, mtimeMs: mtime };
     return env;
   }
 
   // Linux/Mac: source export.sh and capture environment
-  const exportSh = `${IDF_PATH}/export.sh`;
+  const exportSh = exportPath;
   const cmd = `bash -c '. "${exportSh}" >/dev/null 2>&1 && env -0'`;
   const output = execSync(cmd, {
     encoding: "utf-8",
@@ -291,7 +342,7 @@ export function getIdfEnv(): Record<string, string> {
     }
   }
 
-  cachedIdfEnv = env;
+  cachedIdfEnv = { data: env, mtimeMs: mtime };
   return env;
 }
 
@@ -342,10 +393,27 @@ export function runWithIdfStream(
   cmd: string,
   cwd: string,
   onLine: OnLine,
-  timeoutMs = 600_000
+  timeoutMs = 600_000,
+  signal?: AbortSignal,
 ): Promise<ExecResult> {
   const env = getIdfEnv();
-  return spawnStreaming(cmd, cwd, env, IDF_SHELL, onLine, timeoutMs);
+  return spawnStreaming(cmd, cwd, env, IDF_SHELL, onLine, timeoutMs, [], signal);
+}
+
+/**
+ * Run with IDF env in argv mode (no shell) — use for commands taking
+ * user-controlled args (port path, firmware path).
+ */
+export function runIdfArgvStream(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  onLine: OnLine,
+  timeoutMs = 600_000,
+  signal?: AbortSignal,
+): Promise<ExecResult> {
+  const env = getIdfEnv();
+  return spawnStreaming(cmd, cwd, env, false, onLine, timeoutMs, args, signal);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -375,12 +443,13 @@ export function runBuildStream(
   cmd: string,
   cwd: string,
   onLine: OnLine,
-  timeoutMs = 300_000
+  timeoutMs = 300_000,
+  signal?: AbortSignal,
 ): Promise<ExecResult> {
   if (IS_WINDOWS) {
-    return runWithMsvcStream(cmd, cwd, onLine, timeoutMs);
+    return runWithMsvcStream(cmd, cwd, onLine, timeoutMs, signal);
   }
-  return runCommandStream(cmd, cwd, onLine, timeoutMs);
+  return runCommandStream(cmd, cwd, onLine, timeoutMs, signal);
 }
 
 /**
@@ -401,9 +470,10 @@ export function runIdfStream(
   cmd: string,
   cwd: string,
   onLine: OnLine,
-  timeoutMs = 600_000
+  timeoutMs = 600_000,
+  signal?: AbortSignal,
 ): Promise<ExecResult> {
-  return runWithIdfStream(cmd, cwd, onLine, timeoutMs);
+  return runWithIdfStream(cmd, cwd, onLine, timeoutMs, signal);
 }
 
 /** Strip \r from Windows line endings */

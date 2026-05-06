@@ -74,6 +74,31 @@ function makeStreamLogger(logger: string): OnLine {
   };
 }
 
+/**
+ * Compose a stream logger that ALSO emits notifications/progress when the
+ * client supplied a progress token. Build/test/flash callers see a moving
+ * counter (lines processed) and the latest log line as the message.
+ *
+ * Lines remain on the logging channel for diagnostics; progress is the
+ * spec-compliant signal for "still working."
+ */
+function makeProgressLogger(logger: string, extra: any): OnLine {
+  const stream = makeStreamLogger(logger);
+  const token = extra?._meta?.progressToken as string | number | undefined;
+  if (token === undefined || token === null) return stream;
+  let counter = 0;
+  return (s, line) => {
+    stream(s, line);
+    counter++;
+    extra
+      .sendNotification({
+        method: "notifications/progress",
+        params: { progressToken: token, progress: counter, message: line.slice(0, 200) },
+      })
+      .catch(() => {});
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // RESPONSE HELPERS — uniform { success, ...data, error? } envelope
 // MCP spec: tool-level errors must set `isError: true` on the result so the
@@ -170,11 +195,14 @@ server.tool(
     mode: z.enum(["incremental", "clean", "reconfigure"])
       .default("incremental")
       .describe("incremental: rebuild only what changed (fastest). clean: wipe build dir + reconfigure + build. reconfigure: re-run cmake without wiping."),
+    build_type: z.enum(["Debug", "Release", "RelWithDebInfo"])
+      .default("Debug")
+      .describe("CMake build type. Only honored on clean/reconfigure (incremental keeps the existing cache)."),
   },
   ANN_DESTRUCTIVE,
-  async ({ mode }) => {
-    const onLine = makeStreamLogger("build_pc");
-    return jsonResponse(envelope({ ...(await crosspadBuild(mode, onLine)) }));
+  async ({ mode, build_type }, extra: any) => {
+    const onLine = makeProgressLogger("build-pc", extra);
+    return jsonResponse(envelope({ ...(await crosspadBuild(mode, onLine, build_type, extra.signal)) }));
   }
 );
 
@@ -234,9 +262,9 @@ server.tool(
       .describe("build: incremental (auto-fullclean if new apps detected). fullclean: idf.py fullclean then build. clean: wipe build dir then build."),
   },
   ANN_DESTRUCTIVE,
-  async ({ mode }) => {
-    const onLine = makeStreamLogger("build_idf");
-    return jsonResponse(envelope({ ...(await crosspadIdfBuild(mode, onLine)) }));
+  async ({ mode }, extra: any) => {
+    const onLine = makeProgressLogger("build-idf", extra);
+    return jsonResponse(envelope({ ...(await crosspadIdfBuild(mode, onLine, extra.signal)) }));
   }
 );
 
@@ -247,9 +275,9 @@ server.tool(
     port: Port.optional(),
   },
   ANN_DESTRUCTIVE,
-  async ({ port }) => {
-    const onLine = makeStreamLogger("flash_uart");
-    return jsonResponse(envelope({ ...(await crosspadIdfFlash(port, onLine)) }));
+  async ({ port }, extra: any) => {
+    const onLine = makeProgressLogger("flash-uart", extra);
+    return jsonResponse(envelope({ ...(await crosspadIdfFlash(port, onLine, extra.signal)) }));
   }
 );
 
@@ -262,9 +290,9 @@ server.tool(
       .describe("Custom firmware binary path. Defaults to <idf-root>/build/CrossPad.bin."),
   },
   ANN_DESTRUCTIVE,
-  async ({ port, firmware_path }) => {
-    const onLine = makeStreamLogger("flash_ota");
-    return jsonResponse(envelope({ ...(await crosspadIdfOta(port, firmware_path, onLine)) }));
+  async ({ port, firmware_path }, extra: any) => {
+    const onLine = makeProgressLogger("flash-ota", extra);
+    return jsonResponse(envelope({ ...(await crosspadIdfOta(port, firmware_path, onLine, extra.signal)) }));
   }
 );
 
@@ -280,19 +308,19 @@ server.tool(
       .describe("Case-insensitive substring filter (idf only). Only lines containing this string are returned."),
   },
   ANN_READ_ONLY,
-  async ({ target, port, timeout_seconds, max_lines, filter }) => {
+  async ({ target, port, timeout_seconds, max_lines, filter }, extra: any) => {
     if (target === "pc") {
       if (port) return err("Field 'port' is not used when target='pc'.");
       if (filter) return err("Field 'filter' is not used when target='pc'.");
-      const onLine = makeStreamLogger("log_pc");
+      const onLine = makeProgressLogger("log-pc", extra);
       return jsonResponse(envelope({
-        ...(await crosspadLog(timeout_seconds ?? 5, max_lines ?? 200, onLine)),
+        ...(await crosspadLog(timeout_seconds ?? 5, max_lines ?? 200, onLine, extra.signal)),
       }));
     }
     // target === "idf"
-    const onLine = makeStreamLogger("log_idf");
+    const onLine = makeProgressLogger("log-idf", extra);
     return jsonResponse(envelope({
-      ...(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine)),
+      ...(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine, extra.signal)),
     }));
   }
 );
@@ -319,9 +347,9 @@ server.tool(
       .describe("List discovered tests without running them."),
   },
   { readOnlyHint: false, destructiveHint: false, idempotentHint: true } as const,
-  async ({ filter, list_only }) => {
-    const onLine = makeStreamLogger("test");
-    return jsonResponse(envelope({ ...(await crosspadTest(filter, list_only, onLine)) }));
+  async ({ filter, list_only }, extra: any) => {
+    const onLine = makeProgressLogger("test", extra);
+    return jsonResponse(envelope({ ...(await crosspadTest(filter, list_only, onLine, extra.signal)) }));
   }
 );
 
@@ -650,9 +678,9 @@ server.tool(
     force: z.boolean().default(false).describe("Install even if marked incompatible."),
   },
   ANN_DESTRUCTIVE_OPEN,
-  async ({ platform, app_name, ref, force }) => {
-    const onLine = makeStreamLogger("apps_install");
-    return jsonResponse(envelope({ ...(await crosspadAppInstall(app_name, platform, ref, force, onLine)) }));
+  async ({ platform, app_name, ref, force }, extra: any) => {
+    const onLine = makeProgressLogger("apps-install", extra);
+    return jsonResponse(envelope({ ...(await crosspadAppInstall(app_name, platform, ref, force, onLine, extra.signal)) }));
   }
 );
 
@@ -664,9 +692,9 @@ server.tool(
     app_name: AppName,
   },
   ANN_DESTRUCTIVE,
-  async ({ platform, app_name }) => {
-    const onLine = makeStreamLogger("apps_remove");
-    return jsonResponse(envelope({ ...(await crosspadAppRemove(app_name, platform, onLine)) }));
+  async ({ platform, app_name }, extra: any) => {
+    const onLine = makeProgressLogger("apps-remove", extra);
+    return jsonResponse(envelope({ ...(await crosspadAppRemove(app_name, platform, onLine, extra.signal)) }));
   }
 );
 
@@ -679,9 +707,9 @@ server.tool(
     update_all: z.boolean().default(false),
   },
   ANN_DESTRUCTIVE_OPEN,
-  async ({ platform, app_name, update_all }) => {
-    const onLine = makeStreamLogger("apps_update");
-    return jsonResponse(envelope({ ...(await crosspadAppUpdate(platform, app_name, update_all, onLine)) }));
+  async ({ platform, app_name, update_all }, extra: any) => {
+    const onLine = makeProgressLogger("apps-update", extra);
+    return jsonResponse(envelope({ ...(await crosspadAppUpdate(platform, app_name, update_all, onLine, extra.signal)) }));
   }
 );
 
@@ -690,9 +718,9 @@ server.tool(
   "Sync a platform's apps.json manifest with existing submodules (rebuild manifest from disk state).",
   { platform: Platform },
   ANN_DESTRUCTIVE,
-  async ({ platform }) => {
-    const onLine = makeStreamLogger("apps_sync");
-    return jsonResponse(envelope({ ...(await crosspadAppSync(platform, onLine)) }));
+  async ({ platform }, extra: any) => {
+    const onLine = makeProgressLogger("apps-sync", extra);
+    return jsonResponse(envelope({ ...(await crosspadAppSync(platform, onLine, extra.signal)) }));
   }
 );
 

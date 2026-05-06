@@ -12,7 +12,28 @@ import fs from "fs";
 import { CROSSPAD_IDF_ROOT, IS_WINDOWS } from "../config.js";
 import { getIdfEnv, OnLine } from "../utils/exec.js";
 import { findCrosspadPort } from "../utils/device.js";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
+
+/**
+ * Best-effort check: is some other process already holding this serial port?
+ * Linux/macOS only (relies on lsof). Returns the holding PID(s) or null.
+ * Returning null on Windows / when lsof is missing is the safe default —
+ * we treat "unknown" as "ok to proceed" so this never blocks legitimate use.
+ */
+function findHoldersOfPort(port: string): number[] | null {
+  if (IS_WINDOWS) return null;
+  try {
+    const r = spawnSync("lsof", ["-t", port], { encoding: "utf-8", timeout: 3000 });
+    if (r.status !== 0) return [];
+    const pids = r.stdout
+      .split("\n")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n !== process.pid);
+    return pids;
+  } catch {
+    return null;
+  }
+}
 
 export interface MonitorResult {
   success: boolean;
@@ -64,6 +85,7 @@ export async function crosspadIdfMonitor(
   maxLines: number = 500,
   filter: string | undefined,
   onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<MonitorResult> {
   const startTime = Date.now();
 
@@ -82,6 +104,23 @@ export async function crosspadIdfMonitor(
   }
 
   const targetPort = resolved.port;
+
+  // Refuse to grab the port if another process is already reading it (e.g.
+  // an idf.py monitor in a terminal). Two readers race on bytes and produce
+  // garbled output. lsof-based check, Linux/macOS only — best effort.
+  const holders = findHoldersOfPort(targetPort);
+  if (holders && holders.length > 0) {
+    return {
+      success: false,
+      port: targetPort,
+      duration_seconds: 0,
+      lines: [],
+      line_count: 0,
+      truncated: false,
+      error: `Serial port ${targetPort} is in use by PID(s) ${holders.join(", ")}. Close that monitor (or kill the process) and retry.`,
+    };
+  }
+
   onLine?.("stdout", `[idf-monitor] Capturing from ${targetPort} for ${timeoutSeconds}s...`);
 
   // Get IDF environment (for Python with pyserial)
@@ -101,7 +140,6 @@ export async function crosspadIdfMonitor(
   }
 
   const script = buildSerialReaderScript(targetPort, timeoutSeconds);
-  const shell = IS_WINDOWS ? "cmd.exe" : "/bin/bash";
 
   return new Promise((resolve) => {
     const lines: string[] = [];
@@ -125,6 +163,17 @@ export async function crosspadIdfMonitor(
         if (!child.killed) child.kill("SIGKILL");
       }, 2000);
     }, (timeoutSeconds + 3) * 1000);
+
+    // External cancellation (MCP client cancelled the request).
+    const onAbort = () => {
+      onLine?.("stdout", `[idf-monitor] Cancelled, stopping...`);
+      child.kill("SIGTERM");
+      setTimeout(() => { if (!child.killed) child.kill("SIGKILL"); }, 2000);
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     function processLine(line: string) {
       // Strip ANSI escape codes
@@ -166,6 +215,7 @@ export async function crosspadIdfMonitor(
 
     child.on("close", (code) => {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
       if (stdoutBuf.trim()) {
         processLine(stdoutBuf);
       }
@@ -185,6 +235,7 @@ export async function crosspadIdfMonitor(
 
     child.on("error", (err) => {
       clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
       const duration = (Date.now() - startTime) / 1000;
 
       resolve({

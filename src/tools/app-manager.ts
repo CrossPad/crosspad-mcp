@@ -13,7 +13,8 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { CROSSPAD_IDF_ROOT, CROSSPAD_PC_ROOT, getRepos } from "../config.js";
-import { runCommand, runCommandStream, OnLine } from "../utils/exec.js";
+import { runArgvStream, OnLine, ExecResult } from "../utils/exec.js";
+import { spawnSync } from "child_process";
 
 // ═══════════════════════════════════════════════════════════════════════
 // TYPES
@@ -186,22 +187,26 @@ function pyEscape(s: string): string {
 }
 
 /**
- * Build a Python command that invokes app_manager.py's AppManager class.
+ * Build a Python script body invoking app_manager.py's AppManager class.
+ * Returned as a string to be passed via `python3 -c <script>` in argv mode
+ * (no shell, no quoting issues).
  */
 /** @internal exported for testing */
-export function buildPythonCmd(projectRoot: string, scriptDir: string, method: string, args: string = ""): string {
+export function buildPythonScript(projectRoot: string, scriptDir: string, method: string, args: string = ""): string {
   const toolsDir = path.join(projectRoot, scriptDir).replace(/\\/g, "/");
   const projectDir = projectRoot.replace(/\\/g, "/");
-
-  const script = [
+  return [
     `import sys, os`,
     `sys.path.insert(0, '${pyEscape(toolsDir)}')`,
     `from app_manager import AppManager`,
     `mgr = AppManager('${pyEscape(projectDir)}')`,
     `mgr.${method}(${args})`,
   ].join("; ");
+}
 
-  return `python3 -c "${script}"`;
+/** @deprecated kept for tests — composes a shell command (do not use in new code). */
+export function buildPythonCmd(projectRoot: string, scriptDir: string, method: string, args: string = ""): string {
+  return `python3 -c "${buildPythonScript(projectRoot, scriptDir, method, args)}"`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -229,10 +234,10 @@ export function crosspadAppList(showAll: boolean = false): AppListResult {
   }
 
   if (!registry) {
-    // Try refreshing via Python on the first available platform
+    // Try refreshing via Python on the first available platform — argv mode.
     const plat = platforms[0];
-    const refreshCmd = buildPythonCmd(plat.root, plat.scriptDir, "_load_registry");
-    runCommand(refreshCmd, plat.root, 30_000);
+    const script = buildPythonScript(plat.root, plat.scriptDir, "_load_registry");
+    spawnSync("python3", ["-c", script], { cwd: plat.root, timeout: 30_000 });
     registry = loadRegistryJsonFrom(plat.root);
   }
 
@@ -318,17 +323,28 @@ function requirePlatform(platform: string): { info: PlatformInfo } | { error: Ap
   return { info };
 }
 
-let _pythonOk: boolean | null = null;
+// python3 availability cache with TTL — re-probes on stale entries so a Python
+// install (or PATH change) is picked up without restarting the server.
+const PYTHON_CACHE_TTL_MS = 60_000;
+let _pythonCache: { ok: boolean; checkedAt: number } | null = null;
+
+/** @internal exported for testing — drop the python-available cache. */
+export function _resetPythonCache(): void { _pythonCache = null; }
 
 function isPythonAvailable(): boolean {
-  if (_pythonOk !== null) return _pythonOk;
-  try {
-    execSync("python3 --version", { stdio: "ignore", timeout: 5000 });
-    _pythonOk = true;
-  } catch {
-    _pythonOk = false;
+  const now = Date.now();
+  if (_pythonCache && now - _pythonCache.checkedAt < PYTHON_CACHE_TTL_MS) {
+    return _pythonCache.ok;
   }
-  return _pythonOk;
+  let ok = false;
+  try {
+    const r = spawnSync("python3", ["--version"], { timeout: 5000, stdio: "ignore" });
+    ok = r.status === 0;
+  } catch {
+    ok = false;
+  }
+  _pythonCache = { ok, checkedAt: now };
+  return ok;
 }
 
 function validatePythonSetup(info: PlatformInfo): string | null {
@@ -350,6 +366,7 @@ async function runPythonAction(
   appName: string | undefined,
   onLine: OnLine | undefined,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<AppActionResult> {
   const validationError = validatePythonSetup(info);
   if (validationError) {
@@ -363,23 +380,12 @@ async function runPythonAction(
     };
   }
 
-  const cmd = buildPythonCmd(info.root, info.scriptDir, method, args);
-
-  if (onLine) {
-    const result = await runCommandStream(cmd, info.root, onLine, timeoutMs);
-    // Mutating actions write app-registry.json/apps.json — drop the cache.
-    invalidateRegistryCache();
-    return {
-      success: result.success,
-      action,
-      platform: info.label,
-      app_name: appName,
-      output: result.stdout,
-      error: result.success ? undefined : result.stderr || result.stdout,
-    };
-  }
-
-  const result = runCommand(cmd, info.root, timeoutMs);
+  // argv mode — script body passed as a single arg to `python3 -c`.
+  const script = buildPythonScript(info.root, info.scriptDir, method, args);
+  const sink: OnLine = onLine ?? (() => {});
+  const result: ExecResult = await runArgvStream(
+    "python3", ["-c", script], info.root, sink, timeoutMs, signal,
+  );
   invalidateRegistryCache();
   return {
     success: result.success,
@@ -397,6 +403,7 @@ export async function crosspadAppInstall(
   ref: string = "main",
   force: boolean = false,
   onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<AppActionResult> {
   const resolved = requirePlatform(platform);
   if ("error" in resolved) return { ...resolved.error, action: "install" };
@@ -407,7 +414,7 @@ export async function crosspadAppInstall(
   return runPythonAction(
     resolved.info, "install",
     "install", `'${pyEscape(appName)}', ref='${pyEscape(ref)}'${forceArg}`,
-    appName, onLine, 120_000,
+    appName, onLine, 120_000, signal,
   );
 }
 
@@ -415,6 +422,7 @@ export async function crosspadAppRemove(
   appName: string,
   platform: string,
   onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<AppActionResult> {
   const resolved = requirePlatform(platform);
   if ("error" in resolved) return { ...resolved.error, action: "remove" };
@@ -424,7 +432,7 @@ export async function crosspadAppRemove(
   return runPythonAction(
     resolved.info, "remove",
     "remove", `'${pyEscape(appName)}'`,
-    appName, onLine, 60_000,
+    appName, onLine, 60_000, signal,
   );
 }
 
@@ -433,6 +441,7 @@ export async function crosspadAppUpdate(
   appName?: string,
   updateAll: boolean = false,
   onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<AppActionResult> {
   const resolved = requirePlatform(platform);
   if ("error" in resolved) return { ...resolved.error, action: "update" };
@@ -457,13 +466,14 @@ export async function crosspadAppUpdate(
 
   return runPythonAction(
     resolved.info, "update", "update", args,
-    appName, onLine, 120_000,
+    appName, onLine, 120_000, signal,
   );
 }
 
 export async function crosspadAppSync(
   platform: string,
   onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<AppActionResult> {
   const resolved = requirePlatform(platform);
   if ("error" in resolved) return { ...resolved.error, action: "sync" };
@@ -472,6 +482,6 @@ export async function crosspadAppSync(
 
   return runPythonAction(
     resolved.info, "sync", "sync", "",
-    undefined, onLine, 60_000,
+    undefined, onLine, 60_000, signal,
   );
 }

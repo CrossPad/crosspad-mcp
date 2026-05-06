@@ -3,7 +3,7 @@
 Review krytyczny z perspektywy zgodności z MCP spec, security i idiomatyki protokołu.
 Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 
-**Status:** runda 1 (commit `7ac0f17`) + runda 2 + runda 3 (uncommitted, **v7.0.0**).
+**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (uncommitted — security/cancellation/progress).
 
 ---
 
@@ -19,6 +19,18 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-protokołu który klient *zawsze* uwzględnia.
 
 ---
+
+## Co dało runda 4 (uncommitted)
+
+- **Shell-injection elimination (#9):** `runArgvStream` + `runIdfArgvStream` (shell:false). Migrowane: `idf-flash` UART/OTA, `idf-monitor`, app-manager (`python -c` przez argv), repo-actions (wszystkie `git` przez `spawnSync`), log.ts. Pozostałe `runCommand`/`runBuild` używane tylko z statycznymi stringami (cmake, idf.py build).
+- **Cancellation (#5):** `AbortSignal` propagowany z `extra.signal` przez build/idf-build/test/flash/log/idf-monitor/app-manager → `spawnStreaming` (SIGTERM → SIGKILL po 2s).
+- **Progress notifications (#4):** `makeProgressLogger` emituje `notifications/progress` z `progressToken` z requestu. Klienci dostają licznik linii + ostatnia linia jako message. Logging zostaje dla diagnostyki.
+- **Env cache TTL (#12):** MSVC + IDF env cache invalidują przy zmianie mtime `vcvarsall.bat`/`export.sh`/`export.bat`.
+- **Python availability TTL (#13):** 60s TTL na `_pythonCache`.
+- **Serial port lock check (#17):** `lsof -t <port>` przed otwarciem (Linux/macOS); jeśli zajęty — błąd z PID-em holdera. Best-effort, na Windows bypass.
+- **Build type param (#24):** `crosspad_build_pc` przyjmuje `build_type: Debug|Release|RelWithDebInfo` (honored on clean/reconfigure).
+- **Logger naming (#23):** wszędzie kebab-case (`build-pc`, `flash-uart`, `apps-install`).
+- **engines.node (#22):** `>=18.0.0` w package.json.
 
 ## Co dało v7.0.0 (runda 3)
 
@@ -69,13 +81,13 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
   - `crosspad_apps_list`, `crosspad_check_pc`, `crosspad_stats`, `crosspad_settings_get`, `crosspad_screenshot`
 - **Open world (`openWorldHint: true`):** wszystkie tooly app-manager (sięgają do gh/GitHub).
 
-### [ ] 4. Streaming via `notifications/progress` zamiast `logging/message`
+### [x] 4. Streaming via `notifications/progress` zamiast `logging/message` ✅ runda 4
 - **Plik:** [src/index.ts:46-52](src/index.ts#L46-L52)
 - **Problem:** Build/test/flash wysyłają każdą linię jako `sendLoggingMessage`. To diagnostic channel, nie progress reporting. Klient nie ma progress baru.
 - **Fix:** Pobrać `progressToken` z `_meta` requestu, wysyłać `notifications/progress` z `{progress, total?}`. Logging zostawić tylko dla błędów/diagnostyki.
 - **Tooły wymagające progress:** `crosspad_build_pc`, `crosspad_build_idf`, `crosspad_test_run`, `crosspad_flash_uart`, `crosspad_flash_ota`, `crosspad_log_pc`, `crosspad_log_idf`, `crosspad_apps_install/update`.
 
-### [ ] 5. Obsługa cancellation
+### [x] 5. Obsługa cancellation ✅ runda 4
 - **Problem:** Build IDF ma timeout 600s. User anuluje (`notifications/cancelled`) — spawn dalej miele.
 - **Fix:** Pobrać `AbortSignal` z requestu, propagować do `spawn`, na `cancelled` wywołać `child.kill('SIGTERM')` → po 2s `SIGKILL`.
 
@@ -119,7 +131,7 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 
 ## 🔴 Security — shell injection
 
-### [~] 9. `runCommand` puszcza shell domyślnie — częściowo (allow-listy w poz. 10 mitygują)
+### [x] 9. `runCommand` puszcza shell domyślnie ✅ runda 4 (argv mode dla wszystkich user-influenced ścieżek)
 - **Plik:** [src/utils/exec.ts:106](src/utils/exec.ts#L106), [src/utils/exec.ts:99-128](src/utils/exec.ts#L99-L128)
 - **Problem:** `execSync` bez `shell:false` uruchamia przez `/bin/sh -c`. Każdy interpolowany user-string to potencjalny RCE.
 - **Hot-spoty:**
@@ -164,16 +176,16 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 
 ## 🟡 Średnie
 
-### [ ] 12. Cache env-ów na całe życie procesu
+### [x] 12. Cache env-ów na całe życie procesu ✅ runda 4 (mtime-aware)
 - **Plik:** [src/utils/exec.ts:11](src/utils/exec.ts#L11), [src/utils/exec.ts:246](src/utils/exec.ts#L246)
 - **Problem:** MSVC (`cachedMsvcEnv`) i IDF (`cachedIdfEnv`) cache forever. Upgrade IDF → server pokazuje stare paths.
 - **Fix:** Trzymać mtime `export.sh`/`export.bat` w cache, invalidate przy zmianie. Albo prosty TTL 10min.
 
-### [ ] 13. `isPythonAvailable` cache bez TTL
+### [x] 13. `isPythonAvailable` cache bez TTL ✅ runda 4 (60s TTL)
 - **Plik:** [src/tools/app-manager.ts:321-332](src/tools/app-manager.ts#L321-L332)
 - **Fix:** TTL 60s lub invalidate przy mutating action.
 
-### [ ] 14. `_registryCache` singleton, nie per-source
+### [x] 14. `_registryCache` singleton, nie per-source ✅ runda 2 (mtime-aware per-source)
 - **Plik:** [src/tools/app-manager.ts:124-130](src/tools/app-manager.ts#L124-L130)
 - **Problem:** Wczytasz registry z PC, potem z IDF — drugi nadpisuje pierwszy.
 - **Fix:** `Map<sourcePath, {data, timestamp, mtimeMs}>`.
@@ -189,7 +201,7 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 - **Plik:** [src/utils/remote-client.ts:8](src/utils/remote-client.ts#L8)
 - **Fix:** `const REMOTE_PORT = parseInt(process.env.CROSSPAD_REMOTE_PORT ?? "19840", 10);` Dodać do README config table.
 
-### [ ] 17. Brak lockingu na port serial
+### [x] 17. Brak lockingu na port serial ✅ runda 4 (lsof check, Linux/macOS)
 - **Plik:** [src/tools/idf-monitor.ts:36-49](src/tools/idf-monitor.ts#L36-L49)
 - **Problem:** Równoległy `idf.py monitor` w terminalu się gryzie z `crosspad_log_idf`.
 - **Fix:** Sprawdzić `lsof -t <port>` przed otwarciem, zwrócić błąd "port busy". Albo dodać do README warning.
@@ -219,15 +231,15 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 
 ## 🟢 Nice-to-have
 
-### [ ] 22. `package.json` `engines.node`
+### [x] 22. `package.json` `engines.node` ✅ runda 4 (`>=18.0.0`)
 - **Fix:** Dodać `"engines": { "node": ">=18.0.0" }` (spawn options, ESM, fetch).
 
-### [ ] 23. Logger naming convention
+### [x] 23. Logger naming convention ✅ runda 4 (kebab-case)
 - **Pliki:** [src/index.ts](src/index.ts) (`build_pc`, `flash_uart`, `idf-monitor`)
 - **Problem:** Mix underscore i dash.
 - **Fix:** Wybrać jedno (sugestia: dash).
 
-### [ ] 24. `crosspad_build_pc` — wsparcie release mode
+### [x] 24. `crosspad_build_pc` — wsparcie release mode ✅ runda 4 (`build_type` param)
 - **Plik:** [src/tools/build.ts:54](src/tools/build.ts#L54)
 - **Problem:** Hardcoded `-DCMAKE_BUILD_TYPE=Debug`.
 - **Fix:** Param `build_type: z.enum(["Debug","Release","RelWithDebInfo"])` default `Debug`.
@@ -244,10 +256,15 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 
 ## TL;DR — Top 5 do naprawy najpierw
 
-1. **`isError: true` flag** na błędach (1-linijka, real spec compliance) → poz. 1.
-2. **Tool annotations** (`destructiveHint`/`readOnlyHint`) — natychmiastowy UX win → poz. 3.
-3. **Shell injection** — refaktor `runCommand` na spawn z args[] + allow-list dla port/branch → poz. 9, 10.
-4. **Konsolidacja** 41 → ~25 tools (input + midi do discriminatedUnion) → poz. 7.
-5. **Progress notifications** zamiast logging dla build/test/flash + cancellation → poz. 4, 5.
+1. **`isError: true` flag** na błędach (1-linijka, real spec compliance) → poz. 1. ✅
+2. **Tool annotations** (`destructiveHint`/`readOnlyHint`) — natychmiastowy UX win → poz. 3. ✅
+3. **Shell injection** — refaktor `runCommand` na spawn z args[] + allow-list dla port/branch → poz. 9, 10. ✅
+4. **Konsolidacja** 41 → ~25 tools (input + midi do discriminatedUnion) → poz. 7. ✅
+5. **Progress notifications** zamiast logging dla build/test/flash + cancellation → poz. 4, 5. ✅
 
-Reszta to nice-to-have (resources, outputSchema, hardcoded port, env cache TTL).
+Pozostałe (deferred — wymagają większego refaktoru lub mają niski ROI):
+- `outputSchema` + `structuredContent` (poz. 2) — wymaga migracji `server.tool` → `server.registerTool` dla 30 toolów. Każdy tool potrzebuje Zod output schema + zwracanie `structuredContent` zamiast text.
+- Resources/Prompts expansion (poz. 6) — workspace done; reszta (registry, manifesty, prompts) odłożona.
+- HTTP/SSE transport (poz. 26) — niche, stdio jest ok dla embedded dev.
+- TCP response Zod validation (poz. 19) — częściowo (screenshot+settings_set); stats/midi/settings_get pass-through. Diminishing returns.
+- Envelope helper cleanup (poz. 21) — kept as defensive no-op; refactor to drop it = pure churn.

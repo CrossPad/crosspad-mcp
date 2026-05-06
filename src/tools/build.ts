@@ -59,9 +59,13 @@ export function countWarnings(output: string): number {
   return count;
 }
 
+export type BuildType = "Debug" | "Release" | "RelWithDebInfo";
+
 export async function crosspadBuild(
   mode: "incremental" | "clean" | "reconfigure",
-  onLine?: OnLine
+  onLine?: OnLine,
+  buildType: BuildType = "Debug",
+  signal?: AbortSignal,
 ): Promise<BuildResult> {
   const startTime = Date.now();
 
@@ -76,13 +80,13 @@ export async function crosspadBuild(
     const configCmd = [
       "cmake -B build -G Ninja",
       `-DCMAKE_TOOLCHAIN_FILE=${VCPKG_TOOLCHAIN}`,
-      "-DCMAKE_BUILD_TYPE=Debug",
+      `-DCMAKE_BUILD_TYPE=${buildType}`,
     ].join(" ");
 
-    onLine?.("stdout", `[crosspad] Configuring: ${mode}...`);
+    onLine?.("stdout", `[crosspad] Configuring: ${mode} (${buildType})...`);
 
     if (onLine) {
-      const configResult = await runBuildStream(configCmd, CROSSPAD_PC_ROOT, onLine, 600_000);
+      const configResult = await runBuildStream(configCmd, CROSSPAD_PC_ROOT, onLine, 600_000, signal);
       if (!configResult.success) {
         const combined = configResult.stdout + "\n" + configResult.stderr;
         return {
@@ -116,7 +120,7 @@ export async function crosspadBuild(
   let buildSuccess: boolean;
 
   if (onLine) {
-    const buildResult = await runBuildStream("cmake --build build", CROSSPAD_PC_ROOT, onLine, 600_000);
+    const buildResult = await runBuildStream("cmake --build build", CROSSPAD_PC_ROOT, onLine, 600_000, signal);
     buildStdout = buildResult.stdout;
     buildStderr = buildResult.stderr;
     buildSuccess = buildResult.success;

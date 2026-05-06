@@ -10,6 +10,22 @@ import os from "os";
 import path from "path";
 import { getRepos, CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT } from "../config.js";
 import { runCommand } from "../utils/exec.js";
+import { spawnSync } from "child_process";
+
+/**
+ * Run git in argv mode (no shell). Use for any git invocation that takes
+ * user-controlled args (refs, paths). Returns ExecResult-shaped object so
+ * call sites stay uniform.
+ */
+function git(args: string[], cwd: string, timeoutMs = 30_000) {
+  const r = spawnSync("git", args, { cwd, encoding: "utf-8", timeout: timeoutMs });
+  return {
+    success: r.status === 0,
+    stdout: (r.stdout ?? "").replace(/\r\n/g, "\n"),
+    stderr: (r.stderr ?? "").replace(/\r\n/g, "\n"),
+    exitCode: r.status ?? 1,
+  };
+}
 import { getHead, listSubmodules, findSubmodulePath } from "../utils/git.js";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -146,7 +162,7 @@ export function crosspadSubmoduleUpdate(
   const oldSha = getHead(fullSubPath);
 
   // Fetch latest
-  const fetchResult = runCommand("git fetch origin", fullSubPath, 30_000);
+  const fetchResult = git(["fetch", "origin"], fullSubPath, 30_000);
   if (!fetchResult.success) {
     return {
       success: false,
@@ -161,8 +177,8 @@ export function crosspadSubmoduleUpdate(
     };
   }
 
-  // Checkout target
-  const checkoutResult = runCommand(`git checkout origin/${branch}`, fullSubPath, 15_000);
+  // Checkout target — argv mode keeps `branch` out of any shell.
+  const checkoutResult = git(["checkout", `origin/${branch}`], fullSubPath, 15_000);
   if (!checkoutResult.success) {
     return {
       success: false,
@@ -185,12 +201,13 @@ export function crosspadSubmoduleUpdate(
   let changedFiles: string[] = [];
 
   if (oldSha && newSha && oldSha !== newSha) {
-    const countResult = runCommand(`git rev-list --count ${oldSha}..${newSha}`, fullSubPath);
+    const range = `${oldSha}..${newSha}`;
+    const countResult = git(["rev-list", "--count", range], fullSubPath);
     if (countResult.success) {
       commitsPulled = parseInt(countResult.stdout.trim(), 10) || 0;
     }
 
-    const diffResult = runCommand(`git diff --name-only ${oldSha}..${newSha}`, fullSubPath);
+    const diffResult = git(["diff", "--name-only", range], fullSubPath);
     if (diffResult.success) {
       changedFiles = diffResult.stdout
         .trim()
@@ -200,7 +217,7 @@ export function crosspadSubmoduleUpdate(
   }
 
   // Stage the submodule update in parent repo
-  const addResult = runCommand(`git add ${subPath}`, resolvedRepo.root, 10_000);
+  const addResult = git(["add", "--", subPath], resolvedRepo.root, 10_000);
 
   return {
     success: true,
@@ -245,7 +262,7 @@ export function crosspadCommit(
   }
 
   // Check for merge conflicts
-  const statusResult = runCommand("git status --porcelain", resolvedRepo.root);
+  const statusResult = git(["status", "--porcelain"], resolvedRepo.root);
   if (statusResult.success) {
     const conflicted = statusResult.stdout
       .split("\n")
@@ -276,8 +293,8 @@ export function crosspadCommit(
     if (files && files.length > 0) {
       const pathspecFile = path.join(scratchDir, "pathspec");
       fs.writeFileSync(pathspecFile, files.join("\n"), { encoding: "utf-8", mode: 0o600 });
-      const addResult = runCommand(
-        `git add --pathspec-from-file="${pathspecFile}"`,
+      const addResult = git(
+        ["add", `--pathspec-from-file=${pathspecFile}`],
         resolvedRepo.root,
         10_000,
       );
@@ -294,7 +311,7 @@ export function crosspadCommit(
     }
 
     // Check something is staged
-    const diffResult = runCommand("git diff --cached --name-only", resolvedRepo.root);
+    const diffResult = git(["diff", "--cached", "--name-only"], resolvedRepo.root);
     const stagedFiles = diffResult.success
       ? diffResult.stdout.trim().split("\n").filter((l) => l.length > 0)
       : [];
@@ -314,8 +331,8 @@ export function crosspadCommit(
     // backticks) on both bash and Windows cmd.
     const msgFile = path.join(scratchDir, "commit.msg");
     fs.writeFileSync(msgFile, message, { encoding: "utf-8", mode: 0o600 });
-    const commitResult = runCommand(
-      `git commit -F "${msgFile}"`,
+    const commitResult = git(
+      ["commit", "-F", msgFile],
       resolvedRepo.root,
       30_000,
     );
@@ -332,7 +349,7 @@ export function crosspadCommit(
     }
 
     // Get the new commit hash
-    const hashResult = runCommand("git rev-parse HEAD", resolvedRepo.root);
+    const hashResult = git(["rev-parse", "HEAD"], resolvedRepo.root);
     const commitHash = hashResult.success ? hashResult.stdout.trim() : null;
 
     return {

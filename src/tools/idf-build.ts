@@ -113,9 +113,10 @@ async function runIdfCmd(
   cmd: string,
   onLine: OnLine | undefined,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; success: boolean }> {
   if (onLine) {
-    const r = await runIdfStream(cmd, CROSSPAD_IDF_ROOT, onLine, timeoutMs);
+    const r = await runIdfStream(cmd, CROSSPAD_IDF_ROOT, onLine, timeoutMs, signal);
     return r;
   }
   return runIdf(cmd, CROSSPAD_IDF_ROOT, timeoutMs);
@@ -123,7 +124,8 @@ async function runIdfCmd(
 
 export async function crosspadIdfBuild(
   mode: "build" | "fullclean" | "clean",
-  onLine?: OnLine
+  onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<IdfBuildResult> {
   const startTime = Date.now();
   let autoReconfigured = false;
@@ -140,7 +142,7 @@ export async function crosspadIdfBuild(
 
   if (mode === "fullclean") {
     onLine?.("stdout", "[idf] Running idf.py fullclean...");
-    const r = await runIdfCmd("idf.py fullclean", onLine, 60_000);
+    const r = await runIdfCmd("idf.py fullclean", onLine, 60_000, signal);
     if (!r.success) {
       const combined = r.stdout + "\n" + r.stderr;
       return {
@@ -164,7 +166,7 @@ export async function crosspadIdfBuild(
 
   onLine?.("stdout", "[idf] Building...");
 
-  const r = await runIdfCmd("idf.py build", onLine, 600_000);
+  const r = await runIdfCmd("idf.py build", onLine, 600_000, signal);
   const combined = r.stdout + "\n" + r.stderr;
   const errors = parseErrors(combined);
   const warnings = parseWarnings(combined);

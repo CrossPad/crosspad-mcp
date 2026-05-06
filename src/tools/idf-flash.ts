@@ -11,7 +11,7 @@
 import fs from "fs";
 import path from "path";
 import { CROSSPAD_IDF_ROOT } from "../config.js";
-import { runIdfStream, OnLine } from "../utils/exec.js";
+import { runIdfStream, runIdfArgvStream, OnLine } from "../utils/exec.js";
 import { findCrosspadPort } from "../utils/device.js";
 
 export interface FlashResult {
@@ -30,6 +30,7 @@ export interface FlashResult {
 export async function crosspadIdfFlash(
   port: string | undefined,
   onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<FlashResult> {
   const startTime = Date.now();
 
@@ -74,8 +75,12 @@ export async function crosspadIdfFlash(
   const targetPort = resolved.port;
   onLine?.("stdout", `[idf-flash] Flashing via UART to ${targetPort}...`);
 
-  const cmd = `idf.py -p ${targetPort} flash`;
-  const result = await runIdfStream(cmd, CROSSPAD_IDF_ROOT, onLine ?? (() => {}), 300_000);
+  // argv mode (shell:false) — port is allow-list-validated upstream but
+  // defense-in-depth means we never let it touch a shell.
+  const result = await runIdfArgvStream(
+    "idf.py", ["-p", targetPort, "flash"],
+    CROSSPAD_IDF_ROOT, onLine ?? (() => {}), 300_000, signal,
+  );
 
   const combined = result.stdout + "\n" + result.stderr;
   const tail = combined
@@ -105,6 +110,7 @@ export async function crosspadIdfOta(
   port: string | undefined,
   firmwarePath: string | undefined,
   onLine?: OnLine,
+  signal?: AbortSignal,
 ): Promise<FlashResult> {
   const startTime = Date.now();
 
@@ -146,17 +152,18 @@ export async function crosspadIdfOta(
     };
   }
 
-  // Build command — ota_flash.py handles auto-detection itself,
-  // but we add --port if specified for multi-device scenarios.
-  // Uses IDF environment so the IDF Python venv (with pyserial) is on PATH.
-  const portArg = port ? `--port ${port}` : "";
-  const cmd = `python3 "${otaScript}" "${fwPath}" ${portArg}`.trim();
+  // argv mode — firmware_path is user input, port is validated. Never let
+  // either touch a shell.
+  const argv = [otaScript, fwPath];
+  if (port) argv.push("--port", port);
 
   const resolvedPort = port ?? "(auto-detect)";
   onLine?.("stdout", `[idf-ota] OTA flash to ${resolvedPort}...`);
   onLine?.("stdout", `[idf-ota] Firmware: ${fwPath} (${formatFileSize(fwPath)})`);
 
-  const result = await runIdfStream(cmd, CROSSPAD_IDF_ROOT, onLine ?? (() => {}), 120_000);
+  const result = await runIdfArgvStream(
+    "python3", argv, CROSSPAD_IDF_ROOT, onLine ?? (() => {}), 120_000, signal,
+  );
 
   const combined = result.stdout + "\n" + result.stderr;
   const tail = combined
