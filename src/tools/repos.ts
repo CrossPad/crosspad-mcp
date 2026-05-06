@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { getRepos, CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT } from "../config.js";
-import { getRepoStatus, getSubmodulePin, getHead, RepoStatus } from "../utils/git.js";
+import { getRepoStatus, getSubmodulePin, getHead, listSubmodules, findSubmodulePath, RepoStatus } from "../utils/git.js";
 
 export interface SubmoduleSync {
   pinned: string | null;
@@ -16,7 +16,10 @@ export interface ReposStatusResult {
 }
 
 function detectMode(rootPath: string): "dev-mode" | "submodule-mode" | "unknown" {
-  const corePath = path.join(rootPath, "crosspad-core");
+  const subs = listSubmodules(rootPath);
+  const corePathRel = subs["crosspad-core"];
+  if (!corePathRel) return "unknown";
+  const corePath = path.join(rootPath, corePathRel);
   try {
     const stat = fs.lstatSync(corePath);
     if (stat.isSymbolicLink()) return "dev-mode";
@@ -62,17 +65,16 @@ export function crosspadReposStatus(): ReposStatusResult {
     if (!fs.existsSync(parent.root)) continue;
 
     for (const sub of ["crosspad-core", "crosspad-gui"]) {
-      const subPath = path.join(parent.root, sub.includes("/") ? sub : `components/${sub}`);
-      // crosspad-pc has crosspad-core at root, platform-idf has it in components/
-      const actualSubPath = fs.existsSync(path.join(parent.root, sub))
-        ? sub
-        : `components/${sub}`;
+      // findSubmodulePath handles both "<name>" and "<dir>/<name>" entries
+      // in .gitmodules (e.g. platform-idf uses "components/crosspad-core").
+      const relPath = findSubmodulePath(parent.root, sub);
+      if (!relPath) continue; // not a submodule in this parent
 
-      const pinned = getSubmodulePin(parent.root, actualSubPath);
-      if (pinned === null) continue; // not a submodule in this repo
+      const pinned = getSubmodulePin(parent.root, sub);
+      if (pinned === null) continue;
 
       let localHead: string | null = null;
-      const fullSubPath = path.join(parent.root, actualSubPath);
+      const fullSubPath = path.join(parent.root, relPath);
       if (fs.existsSync(fullSubPath)) {
         localHead = getHead(fullSubPath);
       }

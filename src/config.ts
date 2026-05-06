@@ -73,7 +73,7 @@ export const VCPKG_TOOLCHAIN = path.join(vcpkgRoot, "scripts", "buildsystems", "
 export const BUILD_DIR = path.join(CROSSPAD_PC_ROOT, "build");
 
 const EXE_EXT = IS_WINDOWS ? ".exe" : "";
-export const BIN_EXE = path.join(CROSSPAD_PC_ROOT, "bin", `main${EXE_EXT}`);
+export const BIN_EXE = path.join(CROSSPAD_PC_ROOT, "bin", `CrossPad${EXE_EXT}`);
 
 // ═══════════════════════════════════════════════════════════════════════
 // REPOS — dynamic discovery from per-repo paths, cached
@@ -114,21 +114,60 @@ export const REPOS = REPO_CANDIDATES;
 
 let cachedCrosspadCorePath: string | null | undefined = undefined;
 
+function readSubmodulePathsFromGitmodules(parentRoot: string): Record<string, string> {
+  const gitmodules = path.join(parentRoot, ".gitmodules");
+  if (!fs.existsSync(gitmodules)) return {};
+  const out: Record<string, string> = {};
+  try {
+    const content = fs.readFileSync(gitmodules, "utf-8");
+    const blocks = content.split(/\[submodule\s+"([^"]+)"\]/);
+    for (let i = 1; i < blocks.length; i += 2) {
+      const name = blocks[i];
+      const body = blocks[i + 1] ?? "";
+      const pathMatch = body.match(/^\s*path\s*=\s*(.+)$/m);
+      if (pathMatch) out[name] = pathMatch[1].trim();
+    }
+  } catch {
+    // ignore
+  }
+  return out;
+}
+
 /**
  * Resolve the crosspad-core path. Checks:
  * 1. Standalone repo ($CROSSPAD_CORE_ROOT or $GIT_DIR/crosspad-core)
- * 2. Submodule inside platform-idf: $IDF_ROOT/components/crosspad-core
- * 3. Submodule inside crosspad-pc: $PC_ROOT/crosspad-core
+ * 2. Submodule inside any parent repo (path resolved from .gitmodules)
+ * 3. Common conventional fallback paths.
  * Returns null if not found anywhere.
  */
 export function resolveCrosspadCore(): string | null {
   if (cachedCrosspadCorePath !== undefined) return cachedCrosspadCorePath;
 
-  const candidates = [
-    CROSSPAD_CORE_ROOT,
+  const candidates: string[] = [CROSSPAD_CORE_ROOT];
+
+  for (const parentRoot of [CROSSPAD_IDF_ROOT, CROSSPAD_PC_ROOT, CROSSPAD_ARDUINO_ROOT]) {
+    const subs = readSubmodulePathsFromGitmodules(parentRoot);
+    // Match by exact name first, then by path basename (handles
+    // [submodule "components/crosspad-core"] in platform-idf).
+    const direct = subs["crosspad-core"];
+    if (direct) {
+      candidates.push(path.join(parentRoot, direct));
+      continue;
+    }
+    for (const [, p] of Object.entries(subs)) {
+      if (path.basename(p) === "crosspad-core") {
+        candidates.push(path.join(parentRoot, p));
+      }
+    }
+  }
+
+  // Conventional fallbacks
+  candidates.push(
     path.join(CROSSPAD_IDF_ROOT, "components", "crosspad-core"),
+    path.join(CROSSPAD_PC_ROOT, "lib", "crosspad-core"),
     path.join(CROSSPAD_PC_ROOT, "crosspad-core"),
-  ];
+    path.join(CROSSPAD_ARDUINO_ROOT, "lib", "crosspad-core"),
+  );
 
   for (const p of candidates) {
     if (fs.existsSync(path.join(p, "include", "crosspad"))) {

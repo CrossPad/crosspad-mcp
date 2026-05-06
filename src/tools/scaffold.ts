@@ -1,8 +1,11 @@
+export type ScaffoldPlatform = "pc" | "idf" | "arduino";
+
 export interface ScaffoldParams {
   name: string; // PascalCase, e.g. "Metronome"
   display_name?: string;
   has_pad_logic?: boolean;
   icon?: string;
+  platform?: ScaffoldPlatform;
 }
 
 export interface ScaffoldResult {
@@ -12,6 +15,7 @@ export interface ScaffoldResult {
     after_pattern: string;
     content: string;
   };
+  platform: ScaffoldPlatform;
 }
 
 export function crosspadScaffoldApp(params: ScaffoldParams): ScaffoldResult {
@@ -20,6 +24,7 @@ export function crosspadScaffoldApp(params: ScaffoldParams): ScaffoldResult {
     display_name = name,
     has_pad_logic = false,
     icon = "CrossPad_Logo_110w.png",
+    platform = "pc",
   } = params;
 
   const lower = name.toLowerCase();
@@ -53,15 +58,22 @@ void ${name}_destroy(lv_obj_t* app_obj);
 `;
 
   // --- App implementation ---
+  // PC builds use pc_stubs to substitute the embedded App lifecycle types;
+  // IDF/Arduino builds pull the real headers directly from the embedded SDK.
+  const platformIncludes =
+    platform === "pc"
+      ? `#include "pc_stubs/PcApp.hpp"
+#include "pc_stubs/pc_platform.h"
+`
+      : "";
+
   let appCpp = `/**
  * @file ${name}App.cpp
- * @brief ${display_name} app — LVGL GUI
+ * @brief ${display_name} app — LVGL GUI (${platform})
  */
 
 #include "${name}App.hpp"
-#include "pc_stubs/PcApp.hpp"
-#include "pc_stubs/pc_platform.h"
-
+${platformIncludes}
 #include <crosspad/app/AppRegistry.hpp>
 #include <crosspad/pad/PadManager.hpp>
 #include "crosspad-gui/components/app_lifecycle.h"
@@ -225,5 +237,5 @@ void ${name}PadLogic::onPadReleased(uint8_t padIndex)
     content: `add_subdirectory(${dir})\nlist(APPEND MAIN_SOURCES \${${upper}_APP_SOURCES})`,
   };
 
-  return { files, cmake_patch: cmakePatch };
+  return { files, cmake_patch: cmakePatch, platform };
 }

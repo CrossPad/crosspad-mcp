@@ -122,22 +122,41 @@ function resolvePlatform(platform: string): PlatformInfo | null {
 // ═══════════════════════════════════════════════════════════════════════
 
 const REGISTRY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-let _registryCache: { data: Record<string, AppEntry>; timestamp: number; source: string } | null = null;
+let _registryCache: {
+  data: Record<string, AppEntry>;
+  timestamp: number;
+  source: string;
+  mtimeMs: number;
+} | null = null;
+
+/** Invalidate the registry cache. Call after any mutation (install/remove/update/sync). */
+export function invalidateRegistryCache(): void {
+  _registryCache = null;
+}
 
 function loadRegistryJsonFrom(repoRoot: string): Record<string, AppEntry> | null {
   const registryPath = path.join(repoRoot, "app-registry.json");
 
-  // Return cached if fresh and from same source
-  if (_registryCache && _registryCache.source === registryPath && Date.now() - _registryCache.timestamp < REGISTRY_CACHE_TTL_MS) {
-    return _registryCache.data;
-  }
-
   if (!fs.existsSync(registryPath)) return null;
+
+  // mtime-aware cache: invalidate if file changed on disk
+  const stat = fs.statSync(registryPath);
+  const fresh =
+    _registryCache &&
+    _registryCache.source === registryPath &&
+    _registryCache.mtimeMs === stat.mtimeMs &&
+    Date.now() - _registryCache.timestamp < REGISTRY_CACHE_TTL_MS;
+  if (fresh) return _registryCache!.data;
 
   try {
     const data = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
     const apps = data.apps ?? {};
-    _registryCache = { data: apps, timestamp: Date.now(), source: registryPath };
+    _registryCache = {
+      data: apps,
+      timestamp: Date.now(),
+      source: registryPath,
+      mtimeMs: stat.mtimeMs,
+    };
     return apps;
   } catch {
     return null;
@@ -161,6 +180,11 @@ export function isCompatible(app: AppEntry, platformId: string): boolean {
   return app.platforms.includes(platformId);
 }
 
+/** Escape single quotes for safe embedding in a Python single-quoted literal. */
+function pyEscape(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 /**
  * Build a Python command that invokes app_manager.py's AppManager class.
  */
@@ -171,9 +195,9 @@ export function buildPythonCmd(projectRoot: string, scriptDir: string, method: s
 
   const script = [
     `import sys, os`,
-    `sys.path.insert(0, '${toolsDir}')`,
+    `sys.path.insert(0, '${pyEscape(toolsDir)}')`,
     `from app_manager import AppManager`,
-    `mgr = AppManager('${projectDir}')`,
+    `mgr = AppManager('${pyEscape(projectDir)}')`,
     `mgr.${method}(${args})`,
   ].join("; ");
 
@@ -343,6 +367,8 @@ async function runPythonAction(
 
   if (onLine) {
     const result = await runCommandStream(cmd, info.root, onLine, timeoutMs);
+    // Mutating actions write app-registry.json/apps.json — drop the cache.
+    invalidateRegistryCache();
     return {
       success: result.success,
       action,
@@ -354,6 +380,7 @@ async function runPythonAction(
   }
 
   const result = runCommand(cmd, info.root, timeoutMs);
+  invalidateRegistryCache();
   return {
     success: result.success,
     action,
@@ -379,7 +406,7 @@ export async function crosspadAppInstall(
 
   return runPythonAction(
     resolved.info, "install",
-    "install", `'${appName}', ref='${ref}'${forceArg}`,
+    "install", `'${pyEscape(appName)}', ref='${pyEscape(ref)}'${forceArg}`,
     appName, onLine, 120_000,
   );
 }
@@ -396,7 +423,7 @@ export async function crosspadAppRemove(
 
   return runPythonAction(
     resolved.info, "remove",
-    "remove", `'${appName}'`,
+    "remove", `'${pyEscape(appName)}'`,
     appName, onLine, 60_000,
   );
 }
@@ -414,7 +441,7 @@ export async function crosspadAppUpdate(
   if (updateAll) {
     args = "update_all=True";
   } else if (appName) {
-    args = `app_name='${appName}'`;
+    args = `app_name='${pyEscape(appName)}'`;
   } else {
     return {
       success: false,

@@ -42,7 +42,13 @@ export async function crosspadScreenshot(
   try {
     if (saveToFile) {
       // Fast path: simulator writes PNG directly to disk
-      const fname = filename || `screenshot_${Date.now()}.png`;
+      // Sanitize filename to prevent path traversal: strip any directory
+      // components, keep only the basename. Reject empty/invalid names.
+      let fname = filename || `screenshot_${Date.now()}.png`;
+      fname = path.basename(fname);
+      if (!fname || fname === "." || fname === "..") {
+        fname = `screenshot_${Date.now()}.png`;
+      }
       const screenshotsDir = path.join(CROSSPAD_PC_ROOT, "screenshots");
       if (!fs.existsSync(screenshotsDir)) {
         fs.mkdirSync(screenshotsDir, { recursive: true });

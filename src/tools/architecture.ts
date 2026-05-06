@@ -48,7 +48,13 @@ function findInterfaces(): InterfaceInfo[] {
 
 function findImplementations(interfaceName: string): ImplementationInfo[] {
   const results: ImplementationInfo[] = [];
-  const pattern = `class\\s+\\w+.*:\\s*(public\\s+)?.*${interfaceName}`;
+  // Use explicit char classes — POSIX ERE in some git builds doesn't
+  // honour \w/\s inside character classes. Word boundary at the end of
+  // interfaceName so e.g. "IPad" doesn't match "IPadding".
+  const W = "[A-Za-z0-9_]";
+  const WS = "[ \\t]";
+  const escIface = interfaceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = `class${WS}+${W}+.*:${WS}*(public${WS}+)?.*${escIface}([^A-Za-z0-9_]|$)`;
   const repos = getRepos();
 
   const platformMap: Record<string, string> = {
@@ -129,8 +135,10 @@ function queryCapabilities(): CapabilityInfo {
   for (const [name, repoPath] of Object.entries(repos)) {
     if (!platformMap[name]) continue;
 
+    // Use -F (fixed strings) with multiple -e patterns to avoid regex
+    // dialect issues across git builds.
     const result = runCommand(
-      `git grep -h "addPlatformCapability\\|setPlatformCapabilities" -- "*.cpp" "*.hpp" "*.h"`,
+      `git grep -h -F -e "addPlatformCapability" -e "setPlatformCapabilities" -- "*.cpp" "*.hpp" "*.h"`,
       repoPath
     );
 
@@ -219,9 +227,10 @@ export function crosspadApps(
   }
 
   for (const [platName, repoPath] of targets) {
-    // Search for REGISTER_APP and _register_*_app patterns
+    // Search for REGISTER_APP and _register_*_app patterns.
+    // Use [A-Za-z0-9_] instead of \w for portability across git/POSIX builds.
     const result = runCommand(
-      `git grep --recurse-submodules -n -E "REGISTER_APP\\(|void _register_\\w+_app\\(\\)" -- "*.cpp"`,
+      `git grep --recurse-submodules -n -E "REGISTER_APP\\(|void _register_[A-Za-z0-9_]+_app\\(\\)" -- "*.cpp"`,
       repoPath
     );
 

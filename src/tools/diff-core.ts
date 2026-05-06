@@ -1,8 +1,8 @@
 import fs from "fs";
 import path from "path";
-import { CROSSPAD_PC_ROOT } from "../config.js";
+import { CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT } from "../config.js";
 import { runCommand } from "../utils/exec.js";
-import { getSubmodulePin } from "../utils/git.js";
+import { getSubmodulePin, findSubmodulePath } from "../utils/git.js";
 
 export interface DiffEntry {
   status: string; // A, M, D, R
@@ -22,6 +22,7 @@ export interface SubmoduleDiff {
 }
 
 export interface DiffCoreResult {
+  parent_repo: string;
   submodules: SubmoduleDiff[];
 }
 
@@ -29,10 +30,16 @@ export interface DiffCoreResult {
  * Show what changed in crosspad-core and/or crosspad-gui relative to the
  * pinned submodule commit. Essential for dev-mode workflows where you're
  * editing shared repos but haven't committed/pinned yet.
+ *
+ * Submodule paths are resolved dynamically from .gitmodules (handles both
+ * `crosspad-core` and `lib/crosspad-core` layouts).
  */
 export function crosspadDiffCore(
-  submodule: "crosspad-core" | "crosspad-gui" | "both" = "both"
+  submodule: "crosspad-core" | "crosspad-gui" | "both" = "both",
+  parent: "crosspad-pc" | "platform-idf" = "crosspad-pc",
 ): DiffCoreResult {
+  const parentRoot = parent === "platform-idf" ? CROSSPAD_IDF_ROOT : CROSSPAD_PC_ROOT;
+
   const targets = submodule === "both"
     ? ["crosspad-core", "crosspad-gui"]
     : [submodule];
@@ -40,9 +47,10 @@ export function crosspadDiffCore(
   const submodules: SubmoduleDiff[] = [];
 
   for (const sub of targets) {
-    const subPath = path.join(CROSSPAD_PC_ROOT, sub);
+    const relPath = findSubmodulePath(parentRoot, sub);
+    const subPath = relPath ? path.join(parentRoot, relPath) : path.join(parentRoot, sub);
     const isDevMode = isJunction(subPath);
-    const pinnedCommit = getSubmodulePin(CROSSPAD_PC_ROOT, sub);
+    const pinnedCommit = getSubmodulePin(parentRoot, sub);
 
     // Get current HEAD
     const headResult = runCommand("git rev-parse HEAD", subPath);
@@ -117,7 +125,7 @@ export function crosspadDiffCore(
     });
   }
 
-  return { submodules };
+  return { parent_repo: parent, submodules };
 }
 
 function isJunction(p: string): boolean {

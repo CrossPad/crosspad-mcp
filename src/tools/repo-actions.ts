@@ -6,10 +6,11 @@
  */
 
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { getRepos, CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT } from "../config.js";
 import { runCommand } from "../utils/exec.js";
-import { getHead } from "../utils/git.js";
+import { getHead, listSubmodules, findSubmodulePath } from "../utils/git.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // TYPES
@@ -61,13 +62,6 @@ function resolveRepo(repo: string): RepoInfo | null {
     return { name: canonical, root: repos[canonical] };
   }
 
-  // Try partial match
-  for (const [name, repoPath] of Object.entries(repos)) {
-    if (name.toLowerCase().includes(repo.toLowerCase())) {
-      return { name, root: repoPath };
-    }
-  }
-
   return null;
 }
 
@@ -76,28 +70,11 @@ function getAvailableRepoNames(): string[] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// SUBMODULE PATHS — where each submodule lives inside parent repos
+// SUBMODULE PATH RESOLUTION — dynamic via .gitmodules
 // ═══════════════════════════════════════════════════════════════════════
 
-const SUBMODULE_PATHS: Record<string, Record<string, string>> = {
-  "platform-idf": {
-    "crosspad-core": "components/crosspad-core",
-    "crosspad-gui": "components/crosspad-gui",
-    "crosspad-instructions": "components/crosspad-instructions",
-    "crosspad-sampler": "components/crosspad-sampler",
-  },
-  "crosspad-pc": {
-    "crosspad-core": "crosspad-core",
-    "crosspad-gui": "crosspad-gui",
-  },
-  "ESP32-S3": {
-    "crosspad-core": "lib/crosspad-core",
-    "crosspad-gui": "lib/crosspad-gui",
-  },
-};
-
-function getSubmodulePath(repoName: string, submodule: string): string | null {
-  return SUBMODULE_PATHS[repoName]?.[submodule] ?? null;
+function getSubmodulePath(repoRoot: string, submodule: string): string | null {
+  return findSubmodulePath(repoRoot, submodule);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -134,9 +111,9 @@ export function crosspadSubmoduleUpdate(
     };
   }
 
-  const subPath = getSubmodulePath(resolvedRepo.name, submodule);
+  const subPath = getSubmodulePath(resolvedRepo.root, submodule);
   if (!subPath) {
-    const knownSubs = Object.keys(SUBMODULE_PATHS[resolvedRepo.name] ?? {});
+    const knownSubs = Object.keys(listSubmodules(resolvedRepo.root));
     return {
       success: false,
       submodule,
@@ -285,10 +262,20 @@ export function crosspadCommit(
     }
   }
 
-  // Stage specific files if provided
+  // Stage specific files if provided — use --pathspec-from-file to avoid
+  // shell-quoting issues (paths with spaces, quotes, backslashes).
   if (files && files.length > 0) {
-    const fileList = files.map((f) => `"${f}"`).join(" ");
-    const addResult = runCommand(`git add ${fileList}`, resolvedRepo.root, 10_000);
+    const pathspecFile = path.join(
+      os.tmpdir(),
+      `crosspad-pathspec-${process.pid}-${Date.now()}.txt`,
+    );
+    fs.writeFileSync(pathspecFile, files.join("\n"), "utf-8");
+    const addResult = runCommand(
+      `git add --pathspec-from-file="${pathspecFile}"`,
+      resolvedRepo.root,
+      10_000,
+    );
+    try { fs.unlinkSync(pathspecFile); } catch { /* ignore */ }
     if (!addResult.success) {
       return {
         success: false,
@@ -318,9 +305,19 @@ export function crosspadCommit(
     };
   }
 
-  // Commit — escape message for shell safety
-  const escapedMessage = message.replace(/'/g, "'\\''");
-  const commitResult = runCommand(`git commit -m '${escapedMessage}'`, resolvedRepo.root, 30_000);
+  // Commit via tempfile to avoid shell-quoting issues (newlines, quotes,
+  // backticks) on both bash and Windows cmd.
+  const msgFile = path.join(
+    os.tmpdir(),
+    `crosspad-commit-${process.pid}-${Date.now()}.msg`,
+  );
+  fs.writeFileSync(msgFile, message, "utf-8");
+  const commitResult = runCommand(
+    `git commit -F "${msgFile}"`,
+    resolvedRepo.root,
+    30_000,
+  );
+  try { fs.unlinkSync(msgFile); } catch { /* ignore */ }
 
   if (!commitResult.success) {
     return {

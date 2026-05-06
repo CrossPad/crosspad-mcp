@@ -29,24 +29,30 @@ export function buildPattern(query: string, kind: string): string {
   const q = query; // Already escaped by caller
   const patterns: string[] = [];
 
+  // Use explicit character classes — `\w` / `\s` inside `[...]` are not
+  // portable across POSIX ERE implementations.
+  const W = "[A-Za-z0-9_]"; // word char
+  const WS = "[ \\t]"; // whitespace (intra-line)
+
   if (kind === "class" || kind === "all") {
     // class/struct definition: class Foo { or class Foo : public Bar {
-    patterns.push(`(class|struct)\\s+\\w*${q}\\w*\\s*[:{]`);
-    patterns.push(`(class|struct)\\s+\\w*${q}\\w*\\s*$`); // multi-line def
+    patterns.push(`(class|struct)${WS}+${W}*${q}${W}*${WS}*[:{]`);
+    patterns.push(`(class|struct)${WS}+${W}*${q}${W}*${WS}*$`); // multi-line def
   }
   if (kind === "macro" || kind === "all") {
-    patterns.push(`#define\\s+\\w*${q}\\w*`);
+    patterns.push(`#define${WS}+${W}*${q}${W}*`);
   }
   if (kind === "enum" || kind === "all") {
-    patterns.push(`enum\\s+(class\\s+)?\\w*${q}\\w*`);
+    patterns.push(`enum${WS}+(class${WS}+)?${W}*${q}${W}*`);
   }
   if (kind === "typedef" || kind === "all") {
-    patterns.push(`using\\s+\\w*${q}\\w*\\s*=`);
-    patterns.push(`typedef\\s+.*\\b\\w*${q}\\w*\\s*;`);
+    patterns.push(`using${WS}+${W}*${q}${W}*${WS}*=`);
+    patterns.push(`typedef${WS}+.*${W}*${q}${W}*${WS}*;`);
   }
   if (kind === "function" || kind === "all") {
-    // Function definition: type name( or void name(  — exclude calls by requiring return type or line start
-    patterns.push(`^\\w[\\w:\\s*&<>]+\\b\\w*${q}\\w*\\s*\\(`);
+    // Function definition: starts with type qualifier (word char), then
+    // type tokens (word/colon/space/tab/star/amp/angle), then the name and `(`.
+    patterns.push(`^${W}[${W.slice(1, -1)}: \\t*&<>]+${W}*${q}${W}*${WS}*\\(`);
   }
 
   return patterns.join("|");

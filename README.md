@@ -57,62 +57,77 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 }
 ```
 
-## Tools (6)
+## Tools (41)
 
-### `crosspad_build` — Build, run, or check the PC simulator or ESP-IDF firmware
+Each tool is focused on a single action. Strict schema validation (ranges on MIDI/pad values, enums on platforms/repos) catches bad inputs before execution.
 
-| Action | What it does |
-|--------|-------------|
-| `pc` | Build PC simulator (incremental/clean/reconfigure) |
-| `pc_run` | Launch simulator, return PID |
-| `pc_check` | Health check: stale exe, new sources, submodule drift |
-| `pc_log` | Run exe, capture stdout for N seconds, kill |
-| `idf` | Build ESP-IDF firmware (build/fullclean/clean) |
+### Build & flash
 
-### `crosspad_test` — Catch2 tests for crosspad-pc
+| Tool | Purpose |
+|------|---------|
+| `crosspad_build_pc` | Build PC simulator (`mode`: incremental/clean/reconfigure) |
+| `crosspad_run_pc` | Launch simulator, return PID |
+| `crosspad_check_pc` | Health check: stale exe, new sources, submodule drift |
+| `crosspad_log_pc` | Run exe, capture stdout for N seconds, kill |
+| `crosspad_build_idf` | Build ESP-IDF firmware (`mode`: build/fullclean/clean) |
+| `crosspad_flash_uart` | UART flash (`idf.py flash`, requires bootloader mode) |
+| `crosspad_flash_ota` | OTA flash via USB CDC (no bootloader needed) |
+| `crosspad_log_idf` | Capture serial logs from connected device |
+| `crosspad_devices` | List USB serial devices, flag CrossPads |
 
-| Action | What it does |
-|--------|-------------|
-| `run` | Build + run tests, with optional name filter |
-| `scaffold` | Generate test CMakeLists.txt + sample test file |
+### Tests
 
-### `crosspad_sim` — Interact with the running simulator
+| Tool | Purpose |
+|------|---------|
+| `crosspad_test_run` | Build + run Catch2 suite (`filter`, `list_only`) |
+| `crosspad_test_scaffold` | Return Catch2 boilerplate file contents |
 
-| Action | What it does |
-|--------|-------------|
-| `screenshot` | Capture PNG (full window or LCD only) |
-| `input` | Press pads, rotate encoder, click, send keys |
-| `stats` | Pad state, capabilities, heap, registered apps |
-| `settings_get` | Read settings by category |
-| `settings_set` | Write individual setting key |
+### Simulator interaction
 
-### `crosspad_repo` — Git status and submodule diffs
+| Tool | Purpose |
+|------|---------|
+| `crosspad_screenshot` | PNG screenshot (file_path by default; `return_inline` for base64) |
+| `crosspad_pad_press` / `crosspad_pad_release` | Press/release a pad (0-15) |
+| `crosspad_encoder_rotate` / `crosspad_encoder_press` / `crosspad_encoder_release` | Encoder events |
+| `crosspad_click` | Click at (x, y) |
+| `crosspad_key` | Send SDL keycode |
+| `crosspad_midi_note_on` / `crosspad_midi_note_off` | MIDI notes (channel 0-15, note 0-127, velocity 0-127) |
+| `crosspad_midi_cc` | MIDI CC (channel, cc_num 0-127, value 0-127) |
+| `crosspad_midi_program_change` | Program change |
+| `crosspad_stats` | Runtime state: pads, capabilities, heap, apps |
+| `crosspad_settings_get` / `crosspad_settings_set` | Read/write settings |
 
-| Action | What it does |
-|--------|-------------|
-| `status` | Git status across all detected CrossPad repos |
-| `diff` | Submodule drift: commits ahead/behind, changed files |
+### Git / repos
 
-### `crosspad_code` — Search and analyze code across repos
+| Tool | Purpose |
+|------|---------|
+| `crosspad_repo_status` | Status across all detected repos |
+| `crosspad_repo_diff` | Submodule drift in crosspad-pc / platform-idf |
+| `crosspad_submodule_update` | Update submodule to `origin/<branch>` and stage |
+| `crosspad_commit` | Commit staged changes (refuses on conflicts; never pushes) |
 
-| Action | What it does |
-|--------|-------------|
-| `search` | Find classes, functions, macros, enums via git grep |
-| `interfaces` | List crosspad-core interfaces and their implementations |
-| `apps` | List REGISTER_APP registrations per platform |
-| `scaffold` | Generate new app boilerplate (cpp, hpp, CMakeLists.txt) |
+### Code search & scaffolding
 
-### `crosspad_apps` — App package manager (multi-platform)
+| Tool | Purpose |
+|------|---------|
+| `crosspad_search_symbols` | Find class/function/macro/enum/typedef definitions |
+| `crosspad_list_interfaces` | List crosspad-core interfaces |
+| `crosspad_interface_implementations` | Find implementations of a given interface |
+| `crosspad_capabilities` | Capability flags + per-platform sets |
+| `crosspad_list_apps_source` | Apps registered via `REGISTER_APP()` macro |
+| `crosspad_scaffold_app` | Generate new app boilerplate (PascalCase name) |
 
-| Action | What it does |
-|--------|-------------|
-| `list` | Available apps from registry + where installed (idf/pc/arduino) |
-| `install` | Install app as git submodule (requires `platform` param) |
-| `remove` | Remove app submodule (requires `platform` param) |
-| `update` | Update one or all installed apps (requires `platform` param) |
-| `sync` | Sync manifest with existing submodules (requires `platform` param) |
+### App package manager (crosspad-apps registry)
 
-`list` aggregates `apps.json` from all detected repos. Mutations (`install`, `remove`, `update`, `sync`) target a specific platform via the `platform` parameter (`idf`, `pc`, or `arduino`).
+| Tool | Purpose |
+|------|---------|
+| `crosspad_apps_list` | Apps from registry + where installed (no Python needed) |
+| `crosspad_apps_install` | Install app as submodule (`platform`, `app_name`, `ref`, `force`) |
+| `crosspad_apps_remove` | Remove installed app submodule |
+| `crosspad_apps_update` | Update one (`app_name`) or all (`update_all`) apps |
+| `crosspad_apps_sync` | Rebuild manifest from disk state |
+
+All tools return a uniform envelope: `{ "success": boolean, ...data, "error"?: string }`.
 
 ## Configuration
 
@@ -156,7 +171,7 @@ npm run test:watch  # tests in watch mode
 
 ```
 src/
-  index.ts              — 6 tool registrations with action dispatch
+  index.ts              — 41 focused tool registrations (one tool per action)
   config.ts             — per-repo env vars, dynamic discovery, IDF/MSVC paths
   config.test.ts        — config unit tests (fs mocking)
   utils/

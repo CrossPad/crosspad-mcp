@@ -107,13 +107,17 @@ export async function crosspadTest(
   }
 
   // Run tests
+  // Escape double-quotes / backticks / dollars in the filter to prevent
+  // shell injection. Catch2 filters are simple tag/glob strings so this
+  // sanitization doesn't lose semantics.
+  const safeFilter = filter.replace(/[`"$\\]/g, "\\$&");
   let testCmd = `"${TEST_EXE}"`;
   if (listOnly) {
     testCmd += " --list-tests";
   } else {
     testCmd += " --reporter compact";
-    if (filter) {
-      testCmd += ` "${filter}"`;
+    if (safeFilter) {
+      testCmd += ` "${safeFilter}"`;
     }
   }
 

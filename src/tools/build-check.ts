@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { CROSSPAD_PC_ROOT, BUILD_DIR, BIN_EXE } from "../config.js";
 import { runCommand } from "../utils/exec.js";
-import { getHead, getSubmodulePin } from "../utils/git.js";
+import { getHead, getSubmodulePin, listSubmodules } from "../utils/git.js";
 
 export interface BuildCheckResult {
   needs_reconfigure: boolean;
@@ -18,7 +18,7 @@ export interface BuildCheckResult {
  * Detect whether cmake reconfigure or rebuild is needed.
  * Checks:
  * - Does build/ dir exist?
- * - Does bin/main.exe exist?
+ * - Does bin/CrossPad exist?
  * - Are there new .cpp/.hpp files not in CMakeCache?
  * - Did crosspad-core or crosspad-gui HEAD change vs pinned?
  * - Are there uncommitted changes in source?
@@ -43,18 +43,28 @@ export function crosspadBuildCheck(): BuildCheckResult {
     exeAgeSeconds = (Date.now() - stat.mtimeMs) / 1000;
   } else {
     needsRebuild = true;
-    reasons.push("bin/main.exe not found — need build");
+    reasons.push("bin/CrossPad not found — need build");
   }
+
+  // Resolve submodule paths dynamically (handles both `crosspad-core` and
+  // `lib/crosspad-core` layouts via .gitmodules)
+  const subs = listSubmodules(CROSSPAD_PC_ROOT);
+  const corePath = subs["crosspad-core"]
+    ? path.join(CROSSPAD_PC_ROOT, subs["crosspad-core"])
+    : path.join(CROSSPAD_PC_ROOT, "crosspad-core");
+  const guiPath = subs["crosspad-gui"]
+    ? path.join(CROSSPAD_PC_ROOT, subs["crosspad-gui"])
+    : path.join(CROSSPAD_PC_ROOT, "crosspad-gui");
 
   // Check for source files newer than exe
   if (exeExists) {
     const exeMtime = fs.statSync(BIN_EXE).mtimeMs;
     const srcDirs = [
       path.join(CROSSPAD_PC_ROOT, "src"),
-      path.join(CROSSPAD_PC_ROOT, "crosspad-core", "src"),
-      path.join(CROSSPAD_PC_ROOT, "crosspad-core", "include"),
-      path.join(CROSSPAD_PC_ROOT, "crosspad-gui", "src"),
-      path.join(CROSSPAD_PC_ROOT, "crosspad-gui", "include"),
+      path.join(corePath, "src"),
+      path.join(corePath, "include"),
+      path.join(guiPath, "src"),
+      path.join(guiPath, "include"),
     ];
 
     let newerCount = 0;
@@ -65,7 +75,7 @@ export function crosspadBuildCheck(): BuildCheckResult {
     }
     if (newerCount > 0) {
       needsRebuild = true;
-      reasons.push("Source files are newer than bin/main.exe");
+      reasons.push("Source files are newer than bin/CrossPad");
     }
   }
 
@@ -98,7 +108,8 @@ export function crosspadBuildCheck(): BuildCheckResult {
   const submoduleChanges: Record<string, { pinned: string | null; current: string | null; changed: boolean }> = {};
   for (const sub of ["crosspad-core", "crosspad-gui"]) {
     const pinned = getSubmodulePin(CROSSPAD_PC_ROOT, sub);
-    const subPath = path.join(CROSSPAD_PC_ROOT, sub);
+    const subRel = subs[sub] ?? sub;
+    const subPath = path.join(CROSSPAD_PC_ROOT, subRel);
     let current: string | null = null;
 
     if (fs.existsSync(subPath)) {

@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { CROSSPAD_PC_ROOT, BUILD_DIR, BIN_EXE, VCPKG_TOOLCHAIN } from "../config.js";
 import { runBuild, runBuildStream, spawnDetached, OnLine } from "../utils/exec.js";
+import { isSimulatorRunning } from "../utils/remote-client.js";
 
 export interface BuildResult {
   success: boolean;
@@ -118,11 +119,29 @@ export async function crosspadBuild(
 export interface RunResult {
   pid: number | null;
   exe_path: string;
+  already_running?: boolean;
+  error?: string;
 }
 
-export function crosspadRun(): RunResult {
+/**
+ * Launch the simulator binary in the background.
+ *
+ * Refuses to spawn a second instance if one is already responding on the
+ * remote-control port — multiple instances clobber each other's window
+ * state and the TCP listener binds to the same port.
+ */
+export async function crosspadRun(force: boolean = false): Promise<RunResult> {
   if (!fs.existsSync(BIN_EXE)) {
     return { pid: null, exe_path: BIN_EXE };
+  }
+
+  if (!force && (await isSimulatorRunning())) {
+    return {
+      pid: null,
+      exe_path: BIN_EXE,
+      already_running: true,
+      error: "Simulator already running on port 19840. Pass force=true to spawn another instance anyway.",
+    };
   }
 
   const pid = spawnDetached(BIN_EXE, [], CROSSPAD_PC_ROOT);

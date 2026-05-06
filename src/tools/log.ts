@@ -13,7 +13,7 @@ export interface LogResult {
 }
 
 /**
- * Launch main.exe, capture stdout/stderr for up to `timeout_seconds`,
+ * Launch the CrossPad binary, capture stdout/stderr for up to `timeout_seconds`,
  * then kill the process and return the output.
  * Streams lines in real-time via onLine callback.
  */
@@ -27,7 +27,7 @@ export async function crosspadLog(
       success: false,
       exe_path: BIN_EXE,
       stdout: "",
-      stderr: "bin/main.exe not found — build first",
+      stderr: `${BIN_EXE} not found — build first`,
       exit_code: null,
       duration_seconds: 0,
       truncated: false,
