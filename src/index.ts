@@ -106,8 +106,17 @@ function makeProgressLogger(logger: string, extra: any): OnLine {
 // ═══════════════════════════════════════════════════════════════════════
 
 function jsonResponse(data: Record<string, unknown>) {
-  const result: { content: Array<{ type: "text"; text: string }>; isError?: boolean } = {
+  // Emit structuredContent in addition to text content.
+  // - Clients with outputSchema validate structuredContent.
+  // - Clients without it ignore the field per spec.
+  // - LLM still sees the same JSON in `content` for backwards compat.
+  const result: {
+    content: Array<{ type: "text"; text: string }>;
+    structuredContent: Record<string, unknown>;
+    isError?: boolean;
+  } = {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    structuredContent: data,
   };
   if (data.success === false) result.isError = true;
   return result;
@@ -185,35 +194,264 @@ const ANN_READ_OPEN = { readOnlyHint: true, openWorldHint: true } as const;
 const ANN_SIDE_EFFECT = { readOnlyHint: false, destructiveHint: false } as const;
 
 // ═══════════════════════════════════════════════════════════════════════
+// OUTPUT SCHEMAS — typed result shapes per tool, exposed as `outputSchema`
+// so clients can validate `structuredContent`. Loose by design (most fields
+// optional, no .strict()) — implementations are free to return additional
+// keys; the schema documents the *expected* shape, not a tight contract.
+// ═══════════════════════════════════════════════════════════════════════
+
+const ErrorField = { error: z.string().optional() };
+
+const O_Build = {
+  success: z.boolean(),
+  duration_seconds: z.number(),
+  errors: z.array(z.string()),
+  warnings_count: z.number().int(),
+  output_path: z.string(),
+  ...ErrorField,
+};
+
+const O_Run = {
+  success: z.boolean(),
+  pid: z.number().int().nullable().optional(),
+  exe_path: z.string(),
+  already_running: z.boolean().optional(),
+  responsive: z.boolean().optional(),
+  ...ErrorField,
+};
+
+const O_Kill = {
+  success: z.boolean(),
+  killed_pids: z.array(z.number().int()),
+  was_running: z.boolean(),
+  ...ErrorField,
+};
+
+const O_BuildCheck = {
+  success: z.boolean(),
+  needs_rebuild: z.boolean(),
+  reasons: z.array(z.string()),
+  exe_exists: z.boolean(),
+  exe_path: z.string(),
+  ...ErrorField,
+};
+
+const O_IdfBuild = {
+  success: z.boolean(),
+  duration_seconds: z.number(),
+  errors: z.array(z.string()),
+  warnings: z.array(z.string()),
+  tail: z.array(z.string()),
+  auto_reconfigured: z.boolean().optional(),
+  ...ErrorField,
+};
+
+const O_Flash = {
+  success: z.boolean(),
+  method: z.enum(["uart", "ota"]),
+  port: z.string(),
+  duration_seconds: z.number(),
+  output_tail: z.array(z.string()),
+  ...ErrorField,
+};
+
+// Log result is target-dependent; keep it permissive.
+const O_Log = {
+  success: z.boolean(),
+  // pc fields
+  exe_path: z.string().optional(),
+  stdout: z.string().optional(),
+  stderr: z.string().optional(),
+  exit_code: z.number().int().nullable().optional(),
+  duration_seconds: z.number().optional(),
+  truncated: z.boolean().optional(),
+  // idf fields
+  port: z.string().optional(),
+  lines: z.array(z.string()).optional(),
+  line_count: z.number().int().optional(),
+  ...ErrorField,
+};
+
+const O_Devices = {
+  success: z.boolean(),
+  devices: z.array(z.object({
+    port: z.string(),
+    description: z.string().optional(),
+    vid: z.string().optional(),
+    pid: z.string().optional(),
+    is_crosspad: z.boolean(),
+  }).passthrough()),
+  crosspad_count: z.number().int().optional(),
+  ...ErrorField,
+};
+
+const O_Test = {
+  success: z.boolean(),
+  tests_found: z.boolean(),
+  build_output: z.string(),
+  test_output: z.string(),
+  passed: z.number().int(),
+  failed: z.number().int(),
+  errors: z.array(z.string()),
+  duration_seconds: z.number(),
+  ...ErrorField,
+};
+
+const O_Screenshot = {
+  success: z.boolean(),
+  width: z.number().int().optional(),
+  height: z.number().int().optional(),
+  format: z.string().optional(),
+  file_path: z.string().optional(),
+  size: z.number().int().optional(),
+  ...ErrorField,
+};
+
+const O_Input = {
+  success: z.boolean(),
+  ...ErrorField,
+};
+
+const O_Midi = {
+  success: z.boolean(),
+  type: z.enum(["note_on", "note_off", "cc", "program_change"]).optional(),
+  channel: z.number().int().optional(),
+  details: z.record(z.string(), z.number()).optional(),
+  ...ErrorField,
+};
+
+const O_Stats = {
+  success: z.boolean(),
+  stats: z.record(z.string(), z.unknown()).optional(),
+  ...ErrorField,
+};
+
+const O_SettingsGet = {
+  success: z.boolean(),
+  settings: z.record(z.string(), z.unknown()).optional(),
+  ...ErrorField,
+};
+
+const O_SettingsSet = {
+  success: z.boolean(),
+  key: z.string().optional(),
+  value: z.number().optional(),
+  ...ErrorField,
+};
+
+// Repo-status & repo-diff are loose aggregate structures — only the top
+// `success` is guaranteed; everything else passes through.
+const O_RepoStatus = {
+  success: z.boolean(),
+  repos: z.array(z.record(z.string(), z.unknown())).optional(),
+  ...ErrorField,
+};
+
+const O_RepoDiff = {
+  success: z.boolean(),
+  parent: z.string().optional(),
+  submodules: z.array(z.record(z.string(), z.unknown())).optional(),
+  ...ErrorField,
+};
+
+const O_SubmoduleUpdate = {
+  success: z.boolean(),
+  submodule: z.string(),
+  repo: z.string(),
+  old_sha: z.string().nullable(),
+  new_sha: z.string().nullable(),
+  commits_pulled: z.number().int(),
+  changed_files: z.array(z.string()),
+  staged: z.boolean(),
+  ...ErrorField,
+};
+
+const O_Commit = {
+  success: z.boolean(),
+  repo: z.string(),
+  commit_hash: z.string().nullable(),
+  message: z.string(),
+  files_committed: z.array(z.string()),
+  ...ErrorField,
+};
+
+const O_SearchSymbols = {
+  success: z.boolean(),
+  matches: z.array(z.record(z.string(), z.unknown())).optional(),
+  total: z.number().int().optional(),
+  truncated: z.boolean().optional(),
+  ...ErrorField,
+};
+
+const O_Architecture = {
+  success: z.boolean(),
+  // any of: interfaces[], implementations[], capabilities, etc.
+  interfaces: z.array(z.unknown()).optional(),
+  implementations: z.array(z.unknown()).optional(),
+  capabilities: z.array(z.unknown()).optional(),
+  platforms: z.record(z.string(), z.unknown()).optional(),
+  ...ErrorField,
+};
+
+const O_AppsSource = {
+  success: z.boolean(),
+  apps: z.array(z.record(z.string(), z.unknown())),
+  ...ErrorField,
+};
+
+const O_AppsList = {
+  success: z.boolean(),
+  apps: z.array(z.record(z.string(), z.unknown())),
+  installed_count: z.number().int(),
+  total_count: z.number().int(),
+  ...ErrorField,
+};
+
+const O_AppAction = {
+  success: z.boolean(),
+  action: z.string(),
+  platform: z.string(),
+  app_name: z.string().optional(),
+  output: z.string(),
+  ...ErrorField,
+};
+
+// ═══════════════════════════════════════════════════════════════════════
 // BUILD — PC simulator
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_build_pc",
-  "Build the CrossPad PC simulator (CMake + Ninja). PREFER THIS over running raw `cmake --build build` — it picks the right MSVC env on Windows, parses errors[], warnings_count, output_path, and streams progress. Returns structured result.",
   {
-    mode: z.enum(["incremental", "clean", "reconfigure"])
-      .default("incremental")
-      .describe("incremental: rebuild only what changed (fastest). clean: wipe build dir + reconfigure + build. reconfigure: re-run cmake without wiping."),
-    build_type: z.enum(["Debug", "Release", "RelWithDebInfo"])
-      .default("Debug")
-      .describe("CMake build type. Only honored on clean/reconfigure (incremental keeps the existing cache)."),
+    description: "Build the CrossPad PC simulator (CMake + Ninja). PREFER THIS over running raw `cmake --build build` — it picks the right MSVC env on Windows, parses errors[], warnings_count, output_path, and streams progress. Returns structured result.",
+    inputSchema: {
+      mode: z.enum(["incremental", "clean", "reconfigure"])
+        .default("incremental")
+        .describe("incremental: rebuild only what changed (fastest). clean: wipe build dir + reconfigure + build. reconfigure: re-run cmake without wiping."),
+      build_type: z.enum(["Debug", "Release", "RelWithDebInfo"])
+        .default("Debug")
+        .describe("CMake build type. Only honored on clean/reconfigure (incremental keeps the existing cache)."),
+    },
+    outputSchema: O_Build,
+    annotations: ANN_DESTRUCTIVE,
   },
-  ANN_DESTRUCTIVE,
   async ({ mode, build_type }, extra: any) => {
     const onLine = makeProgressLogger("build-pc", extra);
     return jsonResponse(envelope({ ...(await crosspadBuild(mode, onLine, build_type, extra.signal)) }));
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_run_pc",
-  "Launch the built PC simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if a simulator is already responding on port 19840 (use force=true to override). Fails if binary not built — call crosspad_build_pc first.",
   {
-    force: z.boolean().default(false)
-      .describe("Spawn another instance even if one is already running. Default: false."),
+    description: "Launch the built PC simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if a simulator is already responding on port 19840 (use force=true to override). Fails if binary not built — call crosspad_build_pc first.",
+    inputSchema: {
+      force: z.boolean().default(false)
+        .describe("Spawn another instance even if one is already running. Default: false."),
+    },
+    outputSchema: O_Run,
+    annotations: ANN_SIDE_EFFECT,
   },
-  ANN_SIDE_EFFECT,
   async ({ force }) => {
     const result = await crosspadRun(force);
     if (result.already_running) {
@@ -232,19 +470,25 @@ server.tool(
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_kill_pc",
-  "Stop the running PC simulator. Sends SIGTERM to processes named 'CrossPad'. Returns the killed PIDs and whether the TCP control port stopped responding.",
-  {},
-  ANN_DESTRUCTIVE,
+  {
+    description: "Stop the running PC simulator. Sends SIGTERM to processes named 'CrossPad'. Returns the killed PIDs and whether the TCP control port stopped responding.",
+    inputSchema: {},
+    outputSchema: O_Kill,
+    annotations: ANN_DESTRUCTIVE,
+  },
   async () => jsonResponse(envelope({ ...(await crosspadKill()) }))
 );
 
-server.tool(
+server.registerTool(
   "crosspad_check_pc",
-  "Health check for the PC build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build_pc to decide if rebuild needed.",
-  {},
-  ANN_READ_ONLY,
+  {
+    description: "Health check for the PC build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build_pc to decide if rebuild needed.",
+    inputSchema: {},
+    outputSchema: O_BuildCheck,
+    annotations: ANN_READ_ONLY,
+  },
   async () => jsonResponse(envelope({ ...crosspadBuildCheck() }))
 );
 
@@ -253,61 +497,73 @@ server.tool(
 // BUILD — ESP-IDF firmware
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_build_idf",
-  "Build CrossPad firmware for ESP32-S3 via idf.py. PREFER THIS over running raw `idf.py build` — it sources the IDF env automatically, auto-detects unregistered apps and escalates to fullclean when needed, and parses errors[], warnings[], tail into structured output.",
   {
-    mode: z.enum(["build", "fullclean", "clean"])
-      .default("build")
-      .describe("build: incremental (auto-fullclean if new apps detected). fullclean: idf.py fullclean then build. clean: wipe build dir then build."),
+    description: "Build CrossPad firmware for ESP32-S3 via idf.py. PREFER THIS over running raw `idf.py build` — it sources the IDF env automatically, auto-detects unregistered apps and escalates to fullclean when needed, and parses errors[], warnings[], tail into structured output.",
+    inputSchema: {
+      mode: z.enum(["build", "fullclean", "clean"])
+        .default("build")
+        .describe("build: incremental (auto-fullclean if new apps detected). fullclean: idf.py fullclean then build. clean: wipe build dir then build."),
+    },
+    outputSchema: O_IdfBuild,
+    annotations: ANN_DESTRUCTIVE,
   },
-  ANN_DESTRUCTIVE,
   async ({ mode }, extra: any) => {
     const onLine = makeProgressLogger("build-idf", extra);
     return jsonResponse(envelope({ ...(await crosspadIdfBuild(mode, onLine, extra.signal)) }));
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_flash_uart",
-  "Flash firmware to a connected CrossPad over UART (idf.py flash). Device must be in bootloader mode. Requires prior crosspad_build_idf.",
   {
-    port: Port.optional(),
+    description: "Flash firmware to a connected CrossPad over UART (idf.py flash). Device must be in bootloader mode. Requires prior crosspad_build_idf.",
+    inputSchema: {
+      port: Port.optional(),
+    },
+    outputSchema: O_Flash,
+    annotations: ANN_DESTRUCTIVE,
   },
-  ANN_DESTRUCTIVE,
   async ({ port }, extra: any) => {
     const onLine = makeProgressLogger("flash-uart", extra);
     return jsonResponse(envelope({ ...(await crosspadIdfFlash(port, onLine, extra.signal)) }));
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_flash_ota",
-  "Flash firmware via OTA over USB CDC (no bootloader mode required). Uses platform-idf/tools/ota_flash.py. Requires prior crosspad_build_idf.",
   {
-    port: Port.optional(),
-    firmware_path: z.string().optional()
-      .describe("Custom firmware binary path. Defaults to <idf-root>/build/CrossPad.bin."),
+    description: "Flash firmware via OTA over USB CDC (no bootloader mode required). Uses platform-idf/tools/ota_flash.py. Requires prior crosspad_build_idf.",
+    inputSchema: {
+      port: Port.optional(),
+      firmware_path: z.string().optional()
+        .describe("Custom firmware binary path. Defaults to <idf-root>/build/CrossPad.bin."),
+    },
+    outputSchema: O_Flash,
+    annotations: ANN_DESTRUCTIVE,
   },
-  ANN_DESTRUCTIVE,
   async ({ port, firmware_path }, extra: any) => {
     const onLine = makeProgressLogger("flash-ota", extra);
     return jsonResponse(envelope({ ...(await crosspadIdfOta(port, firmware_path, onLine, extra.signal)) }));
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_log",
-  "Capture logs from PC simulator (target='pc': spawn binary, capture stdout/stderr, kill) or connected ESP32-S3 device (target='idf': read serial via pyserial, no TTY needed). Consolidated tool — replaces crosspad_log_pc and crosspad_log_idf in v6.",
   {
-    target: z.enum(["pc", "idf"]).describe("'pc' = run + capture sim binary; 'idf' = read serial from connected device."),
-    port: Port.optional().describe("Serial port (idf only). Auto-detected if omitted; required when multiple devices connected."),
-    timeout_seconds: TimeoutSec.optional().describe("Capture duration. Defaults: 5s for pc, 10s for idf."),
-    max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 for pc, 500 for idf."),
-    filter: z.string().optional()
-      .describe("Case-insensitive substring filter (idf only). Only lines containing this string are returned."),
+    description: "Capture logs from PC simulator (target='pc': spawn binary, capture stdout/stderr, kill) or connected ESP32-S3 device (target='idf': read serial via pyserial, no TTY needed). Consolidated tool — replaces crosspad_log_pc and crosspad_log_idf in v6.",
+    inputSchema: {
+      target: z.enum(["pc", "idf"]).describe("'pc' = run + capture sim binary; 'idf' = read serial from connected device."),
+      port: Port.optional().describe("Serial port (idf only). Auto-detected if omitted; required when multiple devices connected."),
+      timeout_seconds: TimeoutSec.optional().describe("Capture duration. Defaults: 5s for pc, 10s for idf."),
+      max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 for pc, 500 for idf."),
+      filter: z.string().optional()
+        .describe("Case-insensitive substring filter (idf only). Only lines containing this string are returned."),
+    },
+    outputSchema: O_Log,
+    annotations: ANN_READ_ONLY,
   },
-  ANN_READ_ONLY,
   async ({ target, port, timeout_seconds, max_lines, filter }, extra: any) => {
     if (target === "pc") {
       if (port) return err("Field 'port' is not used when target='pc'.");
@@ -325,11 +581,14 @@ server.tool(
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_devices",
-  "List all connected USB serial devices. Identifies CrossPad devices (Espressif VID 0x303a, PID 0x3456) separately from other ports.",
-  {},
-  ANN_READ_ONLY,
+  {
+    description: "List all connected USB serial devices. Identifies CrossPad devices (Espressif VID 0x303a, PID 0x3456) separately from other ports.",
+    inputSchema: {},
+    outputSchema: O_Devices,
+    annotations: ANN_READ_ONLY,
+  },
   async () => jsonResponse(envelope({ ...listDevices() }))
 );
 
@@ -337,16 +596,19 @@ server.tool(
 // TEST
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_test_run",
-  "Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
   {
-    filter: z.string().default("")
-      .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Empty = run all."),
-    list_only: z.boolean().default(false)
-      .describe("List discovered tests without running them."),
+    description: "Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
+    inputSchema: {
+      filter: z.string().default("")
+        .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Empty = run all."),
+      list_only: z.boolean().default(false)
+        .describe("List discovered tests without running them."),
+    },
+    outputSchema: O_Test,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
   },
-  { readOnlyHint: false, destructiveHint: false, idempotentHint: true } as const,
   async ({ filter, list_only }, extra: any) => {
     const onLine = makeProgressLogger("test", extra);
     return jsonResponse(envelope({ ...(await crosspadTest(filter, list_only, onLine, extra.signal)) }));
@@ -357,28 +619,35 @@ server.tool(
 // SIM — screenshot
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_screenshot",
-  "Capture a PNG screenshot from the running PC simulator. By default saves to disk and returns the file_path. Set return_inline=true for inline image content (consumes more tokens).",
   {
-    filename: z.string().optional()
-      .describe("Custom filename (saved under <crosspad-pc>/screenshots/). Default: screenshot_<timestamp>.png"),
-    return_inline: z.boolean().default(false)
-      .describe("If true, returns inline base64 image content instead of file_path. Use only when the image is needed in-conversation."),
+    description: "Capture a PNG screenshot from the running PC simulator. By default saves to disk and returns the file_path. Set return_inline=true for inline image content (consumes more tokens).",
+    inputSchema: {
+      filename: z.string().optional()
+        .describe("Custom filename (saved under <crosspad-pc>/screenshots/). Default: screenshot_<timestamp>.png"),
+      return_inline: z.boolean().default(false)
+        .describe("If true, returns inline base64 image content instead of file_path. Use only when the image is needed in-conversation."),
+    },
+    outputSchema: O_Screenshot,
+    annotations: ANN_SIDE_EFFECT,
   },
-  ANN_SIDE_EFFECT,
   async ({ filename, return_inline }) => {
     const result = await crosspadScreenshot(!return_inline, filename);
     if (!result.success) return jsonResponse({ ...result });
 
     if (return_inline) {
-      // Inline path — simulator returned base64 directly
+      // Inline path — simulator returned base64 directly. Include
+      // structuredContent so clients honoring outputSchema see metadata
+      // alongside the image part.
       if (result.data_base64) {
+        const meta = { success: true, width: result.width, height: result.height, format: result.format };
         return {
           content: [
             { type: "image" as const, data: result.data_base64, mimeType: "image/png" },
-            { type: "text" as const, text: JSON.stringify({ success: true, width: result.width, height: result.height, format: result.format }, null, 2) },
+            { type: "text" as const, text: JSON.stringify(meta, null, 2) },
           ],
+          structuredContent: meta,
         };
       }
     }
@@ -399,23 +668,26 @@ server.tool(
 // SIM — input events
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_input",
-  "Send a single input event to the running PC simulator (consolidated tool — replaces 7 separate tools in v6). Required fields depend on `action`: pad_press={pad,velocity?} · pad_release={pad} · encoder_rotate={delta} · encoder_press / encoder_release={} · click={x,y} · key={keycode}. The simulator validates and rejects bad combinations.",
   {
-    action: z.enum([
-      "pad_press", "pad_release",
-      "encoder_rotate", "encoder_press", "encoder_release",
-      "click", "key",
-    ]).describe("Which input event to dispatch."),
-    pad: PadIndex.optional().describe("Pad index (pad_press / pad_release)."),
-    velocity: Velocity.optional().describe("Pad velocity (pad_press, default 127)."),
-    delta: z.number().int().optional().describe("Encoder rotation delta. Positive=CW, negative=CCW. Typical -10..10."),
-    x: z.number().int().min(0).optional().describe("X pixel coordinate (click)."),
-    y: z.number().int().min(0).optional().describe("Y pixel coordinate (click)."),
-    keycode: z.number().int().optional().describe("SDL keycode (key). E.g. 27=ESC, 32=SPACE, 13=RETURN."),
+    description: "Send a single input event to the running PC simulator (consolidated tool — replaces 7 separate tools in v6). Required fields depend on `action`: pad_press={pad,velocity?} · pad_release={pad} · encoder_rotate={delta} · encoder_press / encoder_release={} · click={x,y} · key={keycode}. The simulator validates and rejects bad combinations.",
+    inputSchema: {
+      action: z.enum([
+        "pad_press", "pad_release",
+        "encoder_rotate", "encoder_press", "encoder_release",
+        "click", "key",
+      ]).describe("Which input event to dispatch."),
+      pad: PadIndex.optional().describe("Pad index (pad_press / pad_release)."),
+      velocity: Velocity.optional().describe("Pad velocity (pad_press, default 127)."),
+      delta: z.number().int().optional().describe("Encoder rotation delta. Positive=CW, negative=CCW. Typical -10..10."),
+      x: z.number().int().min(0).optional().describe("X pixel coordinate (click)."),
+      y: z.number().int().min(0).optional().describe("Y pixel coordinate (click)."),
+      keycode: z.number().int().optional().describe("SDL keycode (key). E.g. 27=ESC, 32=SPACE, 13=RETURN."),
+    },
+    outputSchema: O_Input,
+    annotations: ANN_SIDE_EFFECT,
   },
-  ANN_SIDE_EFFECT,
   async ({ action, pad, velocity, delta, x, y, keycode }) => {
     // Per-action required-field validation. Cleaner than letting the sim reject
     // because the error here cites the missing field by name.
@@ -456,20 +728,23 @@ server.tool(
 // SIM — MIDI
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_midi",
-  "Send a single MIDI event to the running simulator (consolidated tool — replaces 4 separate tools in v6). Required fields depend on `type`: note_on/note_off={note,velocity?} · cc={cc_num,value} · program_change={program}.",
   {
-    type: z.enum(["note_on", "note_off", "cc", "program_change"])
-      .describe("MIDI event type."),
-    channel: Channel,
-    note: Note.optional().describe("MIDI note number (note_on, note_off)."),
-    velocity: Velocity.optional().describe("Velocity (note_on default 127, note_off default 0)."),
-    cc_num: Cc.optional().describe("Controller number (cc)."),
-    value: Cc7.optional().describe("Controller value (cc)."),
-    program: Program.optional().describe("Program number (program_change)."),
+    description: "Send a single MIDI event to the running simulator (consolidated tool — replaces 4 separate tools in v6). Required fields depend on `type`: note_on/note_off={note,velocity?} · cc={cc_num,value} · program_change={program}.",
+    inputSchema: {
+      type: z.enum(["note_on", "note_off", "cc", "program_change"])
+        .describe("MIDI event type."),
+      channel: Channel,
+      note: Note.optional().describe("MIDI note number (note_on, note_off)."),
+      velocity: Velocity.optional().describe("Velocity (note_on default 127, note_off default 0)."),
+      cc_num: Cc.optional().describe("Controller number (cc)."),
+      value: Cc7.optional().describe("Controller value (cc)."),
+      program: Program.optional().describe("Program number (program_change)."),
+    },
+    outputSchema: O_Midi,
+    annotations: ANN_SIDE_EFFECT,
   },
-  ANN_SIDE_EFFECT,
   async ({ type, channel, note, velocity, cc_num, value, program }) => {
     const need = (field: string, val: unknown): string | null =>
       val === undefined ? `Field '${field}' is required for type='${type}'.` : null;
@@ -503,36 +778,45 @@ server.tool(
 // SIM — runtime state
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_stats",
-  "Read runtime statistics from the running PC simulator: pad state, capabilities, heap, registered apps, active pad logic.",
-  {},
-  ANN_READ_ONLY,
+  {
+    description: "Read runtime statistics from the running PC simulator: pad state, capabilities, heap, registered apps, active pad logic.",
+    inputSchema: {},
+    outputSchema: O_Stats,
+    annotations: ANN_READ_ONLY,
+  },
   async () => jsonResponse(envelope({ ...(await crosspadStats()) }))
 );
 
-server.tool(
+server.registerTool(
   "crosspad_settings_get",
-  "Read settings from the running simulator.",
   {
-    category: z.enum(["all", "display", "keypad", "vibration", "wireless", "audio", "system"])
-      .default("all")
-      .describe("Settings category. Use 'all' to fetch everything."),
+    description: "Read settings from the running simulator.",
+    inputSchema: {
+      category: z.enum(["all", "display", "keypad", "vibration", "wireless", "audio", "system"])
+        .default("all")
+        .describe("Settings category. Use 'all' to fetch everything."),
+    },
+    outputSchema: O_SettingsGet,
+    annotations: ANN_READ_ONLY,
   },
-  ANN_READ_ONLY,
   async ({ category }) => jsonResponse(envelope({ ...(await crosspadSettingsGet(category)) }))
 );
 
-server.tool(
+server.registerTool(
   "crosspad_settings_set",
-  "Write a single setting on the running simulator.",
   {
-    key: z.string().min(1)
-      .describe("Setting key (e.g. 'lcd_brightness', 'keypad.eco_mode', 'vibration.enable')"),
-    value: z.number()
-      .describe("Numeric value. Booleans: 0=false, 1=true."),
+    description: "Write a single setting on the running simulator.",
+    inputSchema: {
+      key: z.string().min(1)
+        .describe("Setting key (e.g. 'lcd_brightness', 'keypad.eco_mode', 'vibration.enable')"),
+      value: z.number()
+        .describe("Numeric value. Booleans: 0=false, 1=true."),
+    },
+    outputSchema: O_SettingsSet,
+    annotations: ANN_DESTRUCTIVE,
   },
-  ANN_DESTRUCTIVE,
   async ({ key, value }) => jsonResponse(envelope({ ...(await crosspadSettingsSet(key, value)) }))
 );
 
@@ -540,24 +824,30 @@ server.tool(
 // REPO — read-only
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_repo_status",
-  "Git status across ALL detected CrossPad repos in one call: branch, HEAD, dirty files, submodule sync state. PREFER THIS over running `git status` per repo — handles the 5-repo monorepo layout in one shot.",
-  {},
-  ANN_READ_ONLY,
+  {
+    description: "Git status across ALL detected CrossPad repos in one call: branch, HEAD, dirty files, submodule sync state. PREFER THIS over running `git status` per repo — handles the 5-repo monorepo layout in one shot.",
+    inputSchema: {},
+    outputSchema: O_RepoStatus,
+    annotations: ANN_READ_ONLY,
+  },
   async () => jsonResponse({ success: true, ...crosspadReposStatus() })
 );
 
-server.tool(
+server.registerTool(
   "crosspad_repo_diff",
-  "Show submodule drift in a parent repo (crosspad-pc or platform-idf): commits ahead/behind pinned, changed files, uncommitted work. Use to inspect dev-mode work before pinning.",
   {
-    submodule: z.enum(["crosspad-core", "crosspad-gui", "both"]).default("both")
-      .describe("Which submodule to inspect."),
-    parent: z.enum(["crosspad-pc", "platform-idf"]).default("crosspad-pc")
-      .describe("Parent repo containing the submodule. Defaults to crosspad-pc."),
+    description: "Show submodule drift in a parent repo (crosspad-pc or platform-idf): commits ahead/behind pinned, changed files, uncommitted work. Use to inspect dev-mode work before pinning.",
+    inputSchema: {
+      submodule: z.enum(["crosspad-core", "crosspad-gui", "both"]).default("both")
+        .describe("Which submodule to inspect."),
+      parent: z.enum(["crosspad-pc", "platform-idf"]).default("crosspad-pc")
+        .describe("Parent repo containing the submodule. Defaults to crosspad-pc."),
+    },
+    outputSchema: O_RepoDiff,
+    annotations: ANN_READ_ONLY,
   },
-  ANN_READ_ONLY,
   async ({ submodule, parent }) =>
     jsonResponse({ success: true, ...crosspadDiffCore(submodule, parent) })
 );
@@ -566,29 +856,35 @@ server.tool(
 // REPO — mutations
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_submodule_update",
-  "Update a submodule in a parent repo to the latest commit on a tracking branch (git fetch + checkout origin/<branch> + stage). Destructive: discards local commits in the submodule that aren't on the remote branch.",
   {
-    submodule: Submodule,
-    repo: RepoAlias.describe("Parent repo containing the submodule (idf, pc, arduino, or full name)"),
-    branch: GitRef.default("main").describe("Remote branch to track (e.g. main, develop)"),
+    description: "Update a submodule in a parent repo to the latest commit on a tracking branch (git fetch + checkout origin/<branch> + stage). Destructive: discards local commits in the submodule that aren't on the remote branch.",
+    inputSchema: {
+      submodule: Submodule,
+      repo: RepoAlias.describe("Parent repo containing the submodule (idf, pc, arduino, or full name)"),
+      branch: GitRef.default("main").describe("Remote branch to track (e.g. main, develop)"),
+    },
+    outputSchema: O_SubmoduleUpdate,
+    annotations: ANN_DESTRUCTIVE_OPEN,
   },
-  ANN_DESTRUCTIVE_OPEN,
   async ({ submodule, repo, branch }) =>
     jsonResponse(envelope({ ...crosspadSubmoduleUpdate(submodule, repo, branch) }))
 );
 
-server.tool(
+server.registerTool(
   "crosspad_commit",
-  "Commit staged changes in a specific CrossPad repo. PREFER THIS over raw `git commit` — handles repo aliases (idf/pc/arduino/core/gui), refuses on merge conflicts, uses 0600 tempfiles for messages (no shell-quoting issues with quotes/newlines/backticks), and never pushes. Stages files[] first if supplied.",
   {
-    repo: RepoAlias,
-    message: z.string().min(1).describe("Commit message"),
-    files: z.array(z.string()).optional()
-      .describe("Specific files to stage+commit. Omit to commit currently-staged changes."),
+    description: "Commit staged changes in a specific CrossPad repo. PREFER THIS over raw `git commit` — handles repo aliases (idf/pc/arduino/core/gui), refuses on merge conflicts, uses 0600 tempfiles for messages (no shell-quoting issues with quotes/newlines/backticks), and never pushes. Stages files[] first if supplied.",
+    inputSchema: {
+      repo: RepoAlias,
+      message: z.string().min(1).describe("Commit message"),
+      files: z.array(z.string()).optional()
+        .describe("Specific files to stage+commit. Omit to commit currently-staged changes."),
+    },
+    outputSchema: O_Commit,
+    annotations: ANN_DESTRUCTIVE,
   },
-  ANN_DESTRUCTIVE,
   async ({ repo, message, files }) =>
     jsonResponse(envelope({ ...crosspadCommit(repo, message, files) }))
 );
@@ -597,57 +893,72 @@ server.tool(
 // CODE — search and analysis
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_search_symbols",
-  "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. PREFER THIS over raw `grep -r` or `git grep` — it filters to definitions only (skips call sites/declarations), classifies kind, and aggregates across all 5 repos automatically. Substring match: 'Foo' matches FooBar, MyFoo.",
   {
-    query: z.string().min(1).describe("Symbol name (substring match, case-insensitive on filter)"),
-    kind: z.enum(["class", "function", "macro", "enum", "typedef", "all"]).default("all"),
-    repos: z.array(z.string()).default(["all"])
-      .describe("Repo names to scan, or ['all']. Names: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3."),
-    max_results: z.number().int().min(1).max(500).default(50),
-    context_lines: z.number().int().min(0).max(10).default(0)
-      .describe("Surrounding lines per match (like grep -C). 0 = no context."),
+    description: "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. PREFER THIS over raw `grep -r` or `git grep` — it filters to definitions only (skips call sites/declarations), classifies kind, and aggregates across all 5 repos automatically. Substring match: 'Foo' matches FooBar, MyFoo.",
+    inputSchema: {
+      query: z.string().min(1).describe("Symbol name (substring match, case-insensitive on filter)"),
+      kind: z.enum(["class", "function", "macro", "enum", "typedef", "all"]).default("all"),
+      repos: z.array(z.string()).default(["all"])
+        .describe("Repo names to scan, or ['all']. Names: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3."),
+      max_results: z.number().int().min(1).max(500).default(50),
+      context_lines: z.number().int().min(0).max(10).default(0)
+        .describe("Surrounding lines per match (like grep -C). 0 = no context."),
+    },
+    outputSchema: O_SearchSymbols,
+    annotations: ANN_READ_ONLY,
   },
-  ANN_READ_ONLY,
   async ({ query, kind, repos, max_results, context_lines }) =>
     jsonResponse({ success: true, ...crosspadSearchSymbols(query, kind, repos, max_results, context_lines) })
 );
 
-server.tool(
+server.registerTool(
   "crosspad_list_interfaces",
-  "List all crosspad-core interfaces (I*-prefixed classes in crosspad-core/include/crosspad/).",
-  {},
-  ANN_READ_ONLY,
+  {
+    description: "List all crosspad-core interfaces (I*-prefixed classes in crosspad-core/include/crosspad/).",
+    inputSchema: {},
+    outputSchema: O_Architecture,
+    annotations: ANN_READ_ONLY,
+  },
   async () => jsonResponse({ success: true, ...crosspadInterfaces("list") })
 );
 
-server.tool(
+server.registerTool(
   "crosspad_interface_implementations",
-  "Find all classes implementing a given interface across CrossPad repos. Returns className, file path, platform.",
   {
-    interface_name: z.string().min(1).describe("Interface name (e.g. 'IDisplay', 'IPadLogicHandler')"),
+    description: "Find all classes implementing a given interface across CrossPad repos. Returns className, file path, platform.",
+    inputSchema: {
+      interface_name: z.string().min(1).describe("Interface name (e.g. 'IDisplay', 'IPadLogicHandler')"),
+    },
+    outputSchema: O_Architecture,
+    annotations: ANN_READ_ONLY,
   },
-  ANN_READ_ONLY,
   async ({ interface_name }) =>
     jsonResponse({ success: true, ...crosspadInterfaces(`implementations ${interface_name}`) })
 );
 
-server.tool(
+server.registerTool(
   "crosspad_capabilities",
-  "List platform capability flags (Capability enum) and which capabilities each platform sets.",
-  {},
-  ANN_READ_ONLY,
+  {
+    description: "List platform capability flags (Capability enum) and which capabilities each platform sets.",
+    inputSchema: {},
+    outputSchema: O_Architecture,
+    annotations: ANN_READ_ONLY,
+  },
   async () => jsonResponse({ success: true, ...crosspadInterfaces("capabilities") })
 );
 
-server.tool(
+server.registerTool(
   "crosspad_list_apps_source",
-  "List apps registered via REGISTER_APP() macro by scanning source files. Different from crosspad_apps_list (which reads the package registry).",
   {
-    platform: z.enum(["pc", "idf", "arduino", "all"]).default("all"),
+    description: "List apps registered via REGISTER_APP() macro by scanning source files. Different from crosspad_apps_list (which reads the package registry).",
+    inputSchema: {
+      platform: z.enum(["pc", "idf", "arduino", "all"]).default("all"),
+    },
+    outputSchema: O_AppsSource,
+    annotations: ANN_READ_ONLY,
   },
-  ANN_READ_ONLY,
   async ({ platform }) =>
     jsonResponse({ success: true, apps: crosspadApps(platform) })
 );
@@ -656,68 +967,83 @@ server.tool(
 // APPS — package manager (crosspad-apps registry)
 // ═══════════════════════════════════════════════════════════════════════
 
-server.tool(
+server.registerTool(
   "crosspad_apps_list",
-  "List apps from the crosspad-apps registry, aggregating installation status across all detected platform repos. Reads JSON; no Python required.",
   {
-    show_all: z.boolean().default(false)
-      .describe("Include apps incompatible with detected platforms."),
+    description: "List apps from the crosspad-apps registry, aggregating installation status across all detected platform repos. Reads JSON; no Python required.",
+    inputSchema: {
+      show_all: z.boolean().default(false)
+        .describe("Include apps incompatible with detected platforms."),
+    },
+    outputSchema: O_AppsList,
+    annotations: ANN_READ_OPEN,
   },
-  ANN_READ_OPEN,
   async ({ show_all }) =>
     jsonResponse(envelope({ ...crosspadAppList(show_all) }))
 );
 
-server.tool(
+server.registerTool(
   "crosspad_apps_install",
-  "Install an app from the crosspad-apps registry as a git submodule. Requires gh CLI authenticated. Delegates to <repo>/{tools|scripts}/app_manager.py.",
   {
-    platform: Platform,
-    app_name: AppName.describe("App ID from registry (e.g. 'metronome')"),
-    ref: GitRef.default("main").describe("Git ref (branch, tag, or commit SHA)"),
-    force: z.boolean().default(false).describe("Install even if marked incompatible."),
+    description: "Install an app from the crosspad-apps registry as a git submodule. Requires gh CLI authenticated. Delegates to <repo>/{tools|scripts}/app_manager.py.",
+    inputSchema: {
+      platform: Platform,
+      app_name: AppName.describe("App ID from registry (e.g. 'metronome')"),
+      ref: GitRef.default("main").describe("Git ref (branch, tag, or commit SHA)"),
+      force: z.boolean().default(false).describe("Install even if marked incompatible."),
+    },
+    outputSchema: O_AppAction,
+    annotations: ANN_DESTRUCTIVE_OPEN,
   },
-  ANN_DESTRUCTIVE_OPEN,
   async ({ platform, app_name, ref, force }, extra: any) => {
     const onLine = makeProgressLogger("apps-install", extra);
     return jsonResponse(envelope({ ...(await crosspadAppInstall(app_name, platform, ref, force, onLine, extra.signal)) }));
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_apps_remove",
-  "Remove an installed app submodule from a platform repo. Delegates to app_manager.py.",
   {
-    platform: Platform,
-    app_name: AppName,
+    description: "Remove an installed app submodule from a platform repo. Delegates to app_manager.py.",
+    inputSchema: {
+      platform: Platform,
+      app_name: AppName,
+    },
+    outputSchema: O_AppAction,
+    annotations: ANN_DESTRUCTIVE,
   },
-  ANN_DESTRUCTIVE,
   async ({ platform, app_name }, extra: any) => {
     const onLine = makeProgressLogger("apps-remove", extra);
     return jsonResponse(envelope({ ...(await crosspadAppRemove(app_name, platform, onLine, extra.signal)) }));
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_apps_update",
-  "Update one or all installed apps on a platform. Specify app_name OR set update_all=true.",
   {
-    platform: Platform,
-    app_name: AppName.optional().describe("App ID to update. Required unless update_all=true."),
-    update_all: z.boolean().default(false),
+    description: "Update one or all installed apps on a platform. Specify app_name OR set update_all=true.",
+    inputSchema: {
+      platform: Platform,
+      app_name: AppName.optional().describe("App ID to update. Required unless update_all=true."),
+      update_all: z.boolean().default(false),
+    },
+    outputSchema: O_AppAction,
+    annotations: ANN_DESTRUCTIVE_OPEN,
   },
-  ANN_DESTRUCTIVE_OPEN,
   async ({ platform, app_name, update_all }, extra: any) => {
     const onLine = makeProgressLogger("apps-update", extra);
     return jsonResponse(envelope({ ...(await crosspadAppUpdate(platform, app_name, update_all, onLine, extra.signal)) }));
   }
 );
 
-server.tool(
+server.registerTool(
   "crosspad_apps_sync",
-  "Sync a platform's apps.json manifest with existing submodules (rebuild manifest from disk state).",
-  { platform: Platform },
-  ANN_DESTRUCTIVE,
+  {
+    description: "Sync a platform's apps.json manifest with existing submodules (rebuild manifest from disk state).",
+    inputSchema: { platform: Platform },
+    outputSchema: O_AppAction,
+    annotations: ANN_DESTRUCTIVE,
+  },
   async ({ platform }, extra: any) => {
     const onLine = makeProgressLogger("apps-sync", extra);
     return jsonResponse(envelope({ ...(await crosspadAppSync(platform, onLine, extra.signal)) }));

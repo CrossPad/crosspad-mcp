@@ -3,7 +3,7 @@
 Review krytyczny z perspektywy zgodności z MCP spec, security i idiomatyki protokołu.
 Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 
-**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (uncommitted — security/cancellation/progress).
+**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (uncommitted — outputSchema + structuredContent).
 
 ---
 
@@ -20,7 +20,14 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 
 ---
 
-## Co dało runda 4 (uncommitted)
+## Co dało runda 5 (uncommitted)
+
+- **outputSchema + structuredContent (#2):** wszystkie 30 toolów zmigrowane z `server.tool(...)` → `server.registerTool(name, {description, inputSchema, outputSchema, annotations}, cb)`. Każdy tool ma jawny output shape (Zod) — exposed w `tools/list` jako JSON Schema.
+- **`jsonResponse`** zwraca teraz oba: `content` (text JSON dla LLM/legacy klientów) i `structuredContent` (typowany dict zgodny z outputSchema). `isError: true` dalej ustawiane gdy `success: false` w danych.
+- **Output schemas:** loose by design (większość pól optional, brak `.strict()`) — implementacje mogą zwracać extra klucze, schema dokumentuje *spodziewany* shape.
+- **Smoke verify:** tools/list raportuje 30/30 z outputSchema, tools/call repo_status zwraca structuredContent z `success` + 3 detected repos; tools/call stats (sim down) → `isError: true` + structured `error` field.
+
+## Co dało runda 4 (`d696820`)
 
 - **Shell-injection elimination (#9):** `runArgvStream` + `runIdfArgvStream` (shell:false). Migrowane: `idf-flash` UART/OTA, `idf-monitor`, app-manager (`python -c` przez argv), repo-actions (wszystkie `git` przez `spawnSync`), log.ts. Pozostałe `runCommand`/`runBuild` używane tylko z statycznymi stringami (cmake, idf.py build).
 - **Cancellation (#5):** `AbortSignal` propagowany z `extra.signal` przez build/idf-build/test/flash/log/idf-monitor/app-manager → `spawnStreaming` (SIGTERM → SIGKILL po 2s).
@@ -60,7 +67,7 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
   ```
 - Dodatkowo: w każdym `jsonResponse(envelope(...))` jeśli `success===false` ustawić `isError: true`.
 
-### [ ] 2. `outputSchema` + `structuredContent`
+### [x] 2. `outputSchema` + `structuredContent` ✅ runda 5
 - **Problem:** Wszystkie tool results to `text` content z JSON-em. MCP od 2025-03 wspiera typowane outputy.
 - **Fix:** Dla każdego toola zdefiniować `outputSchema` (zod) i zwracać `structuredContent: {...}` zamiast (lub obok) `text`.
 - **Priorytet:** Tooly z bogatymi danymi: `crosspad_repo_status`, `crosspad_stats`, `crosspad_apps_list`, `crosspad_search_symbols`, `crosspad_devices`, `crosspad_build_*`.
@@ -263,8 +270,9 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 5. **Progress notifications** zamiast logging dla build/test/flash + cancellation → poz. 4, 5. ✅
 
 Pozostałe (deferred — wymagają większego refaktoru lub mają niski ROI):
-- `outputSchema` + `structuredContent` (poz. 2) — wymaga migracji `server.tool` → `server.registerTool` dla 30 toolów. Każdy tool potrzebuje Zod output schema + zwracanie `structuredContent` zamiast text.
 - Resources/Prompts expansion (poz. 6) — workspace done; reszta (registry, manifesty, prompts) odłożona.
 - HTTP/SSE transport (poz. 26) — niche, stdio jest ok dla embedded dev.
 - TCP response Zod validation (poz. 19) — częściowo (screenshot+settings_set); stats/midi/settings_get pass-through. Diminishing returns.
 - Envelope helper cleanup (poz. 21) — kept as defensive no-op; refactor to drop it = pure churn.
+- Spójność osi platformowej w nazwach (poz. 8) — kosmetyka, zmiana łamie API.
+- MCP-native code search jako resources (poz. 25) — niespójne z innymi tool-based searches.
