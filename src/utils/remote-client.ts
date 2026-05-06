@@ -4,6 +4,29 @@
  */
 
 import { Socket } from "net";
+import { z } from "zod";
+
+/**
+ * Minimal contract enforced on every TCP simulator response.
+ * Body must be a JSON object with `ok` boolean. Anything else (array, scalar,
+ * missing `ok`) is treated as a malformed response — caller gets a synthetic
+ * `{ok:false, error:"..."}` so downstream code can rely on the shape.
+ */
+const RemoteEnvelopeSchema = z.object({ ok: z.boolean() }).passthrough();
+
+function parseRemoteResponse(raw: string): RemoteResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "invalid JSON response", raw };
+  }
+  const result = RemoteEnvelopeSchema.safeParse(parsed);
+  if (!result.success) {
+    return { ok: false, error: "malformed response (expected object with `ok` boolean)", raw };
+  }
+  return result.data as RemoteResponse;
+}
 
 const REMOTE_PORT = (() => {
   const raw = process.env.CROSSPAD_REMOTE_PORT;
@@ -81,11 +104,7 @@ function sendRemoteCommandOnce(command: Record<string, unknown>): Promise<Remote
         const line = buffer.slice(0, nlIdx);
         resolved = true;
         socket.destroy();
-        try {
-          resolve(JSON.parse(line) as RemoteResponse);
-        } catch {
-          resolve({ ok: false, error: "invalid JSON response", raw: line });
-        }
+        resolve(parseRemoteResponse(line));
       }
     });
 
@@ -107,11 +126,7 @@ function sendRemoteCommandOnce(command: Record<string, unknown>): Promise<Remote
       if (!resolved) {
         resolved = true;
         if (buffer.length > 0) {
-          try {
-            resolve(JSON.parse(buffer) as RemoteResponse);
-          } catch {
-            resolve({ ok: false, error: "incomplete response", raw: buffer });
-          }
+          resolve(parseRemoteResponse(buffer));
         } else {
           reject(new Error("Connection closed without response"));
         }

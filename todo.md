@@ -3,7 +3,7 @@
 Review krytyczny z perspektywy zgodności z MCP spec, security i idiomatyki protokołu.
 Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 
-**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (`fedae5c`, outputSchema + structuredContent).
+**Status:** runda 1 (`7ac0f17`) + runda 2 + runda 3 (`a8a9c0c`, v7.0.0) + runda 4 (`d696820`, security/cancellation/progress) + runda 5 (`fedae5c`, outputSchema + structuredContent) + runda 6 (uncommitted — TCP zod hardening, envelope cleanup, app-registry resources).
 
 ---
 
@@ -19,6 +19,16 @@ Skala: 🔴 krytyczne · 🟠 anti-pattern · 🟡 średnie · 🟢 nice-to-have
 To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-protokołu który klient *zawsze* uwzględnia.
 
 ---
+
+## Co dało runda 6 (uncommitted)
+
+- **TCP response Zod (#19):** centralny guard w `remote-client.ts` — `RemoteEnvelopeSchema` (object z `ok: boolean`, passthrough). Każda odpowiedź sim parsowana przez `parseRemoteResponse()`; non-object/scalar/array → synthetic `{ok:false, error:"malformed response"}`. Stats/midi/settings_get dziedziczą bezpieczeństwo bez per-tool zod.
+- **Envelope helper cleanup (#21):** funkcja `envelope()` usunięta. Wszystkie `jsonResponse(envelope({...await foo()}))` → `jsonResponse(await foo())`. Każda tool-function i tak zwraca `{success, ...}`. `jsonResponse` przyjmuje `object` (nie `Record`), wewnętrznie cast do Record do `isError` check.
+- **App registry/manifest resources (#6 partial):** dla każdej wykrytej platformy z `app-registry.json` lub `apps.json` rejestrowany resource:
+  - `crosspad://apps/registry/<platform>` — surowy `app-registry.json`
+  - `crosspad://apps/installed/<platform>` — surowy `apps.json` manifest installed
+  - Klient widzi je w `resources/list`, ładuje raw bez tool call.
+- **Smoke verify:** resources/list raportuje 6 resources (workspace + 2 per platform×3 platforms = 7 max, w czystym repo 5–7); resources/read crosspad://apps/registry/pc zwraca raw JSON; tools/call repo_status z structuredContent dalej OK.
 
 ## Co dało runda 5 (`fedae5c`)
 
@@ -218,7 +228,7 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 - **Problem:** `\berror\b` case-insensitive na każdej linii. `// error handling done` w outputcie cmake → false positive.
 - **Fix:** Zaaplikować pattern z [src/tools/idf-build.ts:76-92](src/tools/idf-build.ts#L76-L92) (compiler `:line:col: error:` style + `CMake Error` + `FAILED:` + `undefined reference`).
 
-### [~] 19. Walidacja response z TCP simulator — runda 2 (uncommitted): screenshot+settings_set zod-walidowane; midi/stats/settings_get nadal pass-through
+### [x] 19. Walidacja response z TCP simulator ✅ runda 6 (centralny `parseRemoteResponse` w remote-client) + runda 2 (per-tool: screenshot, settings_set)
 - **Pliki:** [src/tools/screenshot.ts:69-73](src/tools/screenshot.ts#L69-L73), [src/tools/midi.ts](src/tools/midi.ts), [src/tools/settings.ts](src/tools/settings.ts), [src/tools/stats.ts](src/tools/stats.ts)
 - **Problem:** `resp.width as number` bez walidacji. Sim zwróci śmieć → NaN/undefined w odpowiedzi tool.
 - **Fix:** Zod schema dla każdej response (np. `ScreenshotResponseSchema`, `StatsResponseSchema`), `.parse()` przed castem.
@@ -229,7 +239,7 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 - **Fix opcja A:** Dodać `dry_run: boolean` (default true). Gdy false, tool zapisuje pliki do `dir`, sprawdza czy istnieją (refuse override unless `force`).
 - **Fix opcja B:** Wywalić scaffold z MCP — to czysty generator, lepiej do CLI/codegen.
 
-### [ ] 21. Redundantny helper `envelope()`
+### [x] 21. Redundantny helper `envelope()` ✅ runda 6
 - **Plik:** [src/index.ts:62-66](src/index.ts#L62-L66)
 - **Problem:** Większość tool-functions już zwraca `success`. Helper czasem dodaje, czasem nie. Konwencja niepewna.
 - **Fix:** Wymusić w typie zwrotnym tool-functions `{ success: boolean, ...}` jako required, wywalić envelope.
@@ -272,7 +282,5 @@ To obchodzi zależność od CLAUDE.md i memory — sygnał idzie kanałem MCP-pr
 Pozostałe (deferred — wymagają większego refaktoru lub mają niski ROI):
 - Resources/Prompts expansion (poz. 6) — workspace done; reszta (registry, manifesty, prompts) odłożona.
 - HTTP/SSE transport (poz. 26) — niche, stdio jest ok dla embedded dev.
-- TCP response Zod validation (poz. 19) — częściowo (screenshot+settings_set); stats/midi/settings_get pass-through. Diminishing returns.
-- Envelope helper cleanup (poz. 21) — kept as defensive no-op; refactor to drop it = pure churn.
 - Spójność osi platformowej w nazwach (poz. 8) — kosmetyka, zmiana łamie API.
 - MCP-native code search jako resources (poz. 25) — niespójne z innymi tool-based searches.

@@ -105,27 +105,22 @@ function makeProgressLogger(logger: string, extra: any): OnLine {
 // client/LLM can distinguish them from successful tool calls.
 // ═══════════════════════════════════════════════════════════════════════
 
-function jsonResponse(data: Record<string, unknown>) {
+function jsonResponse(data: object) {
   // Emit structuredContent in addition to text content.
   // - Clients with outputSchema validate structuredContent.
   // - Clients without it ignore the field per spec.
   // - LLM still sees the same JSON in `content` for backwards compat.
+  const dataAsRecord = data as Record<string, unknown>;
   const result: {
     content: Array<{ type: "text"; text: string }>;
     structuredContent: Record<string, unknown>;
     isError?: boolean;
   } = {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
-    structuredContent: data,
+    structuredContent: dataAsRecord,
   };
-  if (data.success === false) result.isError = true;
+  if (dataAsRecord.success === false) result.isError = true;
   return result;
-}
-
-/** Wrap a result so it always has a `success` field. */
-function envelope(data: Record<string, unknown>): Record<string, unknown> {
-  if ("success" in data) return data;
-  return { success: true, ...data };
 }
 
 function ok(data: Record<string, unknown> = {}) {
@@ -437,7 +432,7 @@ server.registerTool(
   },
   async ({ mode, build_type }, extra: any) => {
     const onLine = makeProgressLogger("build-pc", extra);
-    return jsonResponse(envelope({ ...(await crosspadBuild(mode, onLine, build_type, extra.signal)) }));
+    return jsonResponse((await crosspadBuild(mode, onLine, build_type, extra.signal)));
   }
 );
 
@@ -478,7 +473,7 @@ server.registerTool(
     outputSchema: O_Kill,
     annotations: ANN_DESTRUCTIVE,
   },
-  async () => jsonResponse(envelope({ ...(await crosspadKill()) }))
+  async () => jsonResponse((await crosspadKill()))
 );
 
 server.registerTool(
@@ -489,7 +484,7 @@ server.registerTool(
     outputSchema: O_BuildCheck,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse(envelope({ ...crosspadBuildCheck() }))
+  async () => jsonResponse(crosspadBuildCheck())
 );
 
 
@@ -511,7 +506,7 @@ server.registerTool(
   },
   async ({ mode }, extra: any) => {
     const onLine = makeProgressLogger("build-idf", extra);
-    return jsonResponse(envelope({ ...(await crosspadIdfBuild(mode, onLine, extra.signal)) }));
+    return jsonResponse((await crosspadIdfBuild(mode, onLine, extra.signal)));
   }
 );
 
@@ -527,7 +522,7 @@ server.registerTool(
   },
   async ({ port }, extra: any) => {
     const onLine = makeProgressLogger("flash-uart", extra);
-    return jsonResponse(envelope({ ...(await crosspadIdfFlash(port, onLine, extra.signal)) }));
+    return jsonResponse((await crosspadIdfFlash(port, onLine, extra.signal)));
   }
 );
 
@@ -545,7 +540,7 @@ server.registerTool(
   },
   async ({ port, firmware_path }, extra: any) => {
     const onLine = makeProgressLogger("flash-ota", extra);
-    return jsonResponse(envelope({ ...(await crosspadIdfOta(port, firmware_path, onLine, extra.signal)) }));
+    return jsonResponse((await crosspadIdfOta(port, firmware_path, onLine, extra.signal)));
   }
 );
 
@@ -569,15 +564,15 @@ server.registerTool(
       if (port) return err("Field 'port' is not used when target='pc'.");
       if (filter) return err("Field 'filter' is not used when target='pc'.");
       const onLine = makeProgressLogger("log-pc", extra);
-      return jsonResponse(envelope({
+      return jsonResponse({
         ...(await crosspadLog(timeout_seconds ?? 5, max_lines ?? 200, onLine, extra.signal)),
-      }));
+      });
     }
     // target === "idf"
     const onLine = makeProgressLogger("log-idf", extra);
-    return jsonResponse(envelope({
+    return jsonResponse({
       ...(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine, extra.signal)),
-    }));
+    });
   }
 );
 
@@ -589,7 +584,7 @@ server.registerTool(
     outputSchema: O_Devices,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse(envelope({ ...listDevices() }))
+  async () => jsonResponse(listDevices())
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -611,7 +606,7 @@ server.registerTool(
   },
   async ({ filter, list_only }, extra: any) => {
     const onLine = makeProgressLogger("test", extra);
-    return jsonResponse(envelope({ ...(await crosspadTest(filter, list_only, onLine, extra.signal)) }));
+    return jsonResponse((await crosspadTest(filter, list_only, onLine, extra.signal)));
   }
 );
 
@@ -720,7 +715,7 @@ server.registerTool(
         : action === "key"
         ? { action, keycode: keycode! }
         : { action };
-    return jsonResponse(envelope({ ...(await crosspadInput(params)) }));
+    return jsonResponse((await crosspadInput(params)));
   }
 );
 
@@ -760,7 +755,7 @@ server.registerTool(
     }
     if (missing) return err(missing);
 
-    return jsonResponse(envelope({
+    return jsonResponse({
       ...(await crosspadMidiSend({
         type,
         channel,
@@ -770,7 +765,7 @@ server.registerTool(
         value,
         program,
       })),
-    }));
+    });
   }
 );
 
@@ -786,7 +781,7 @@ server.registerTool(
     outputSchema: O_Stats,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse(envelope({ ...(await crosspadStats()) }))
+  async () => jsonResponse((await crosspadStats()))
 );
 
 server.registerTool(
@@ -801,7 +796,7 @@ server.registerTool(
     outputSchema: O_SettingsGet,
     annotations: ANN_READ_ONLY,
   },
-  async ({ category }) => jsonResponse(envelope({ ...(await crosspadSettingsGet(category)) }))
+  async ({ category }) => jsonResponse((await crosspadSettingsGet(category)))
 );
 
 server.registerTool(
@@ -817,7 +812,7 @@ server.registerTool(
     outputSchema: O_SettingsSet,
     annotations: ANN_DESTRUCTIVE,
   },
-  async ({ key, value }) => jsonResponse(envelope({ ...(await crosspadSettingsSet(key, value)) }))
+  async ({ key, value }) => jsonResponse((await crosspadSettingsSet(key, value)))
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -869,7 +864,7 @@ server.registerTool(
     annotations: ANN_DESTRUCTIVE_OPEN,
   },
   async ({ submodule, repo, branch }) =>
-    jsonResponse(envelope({ ...crosspadSubmoduleUpdate(submodule, repo, branch) }))
+    jsonResponse(crosspadSubmoduleUpdate(submodule, repo, branch))
 );
 
 server.registerTool(
@@ -886,7 +881,7 @@ server.registerTool(
     annotations: ANN_DESTRUCTIVE,
   },
   async ({ repo, message, files }) =>
-    jsonResponse(envelope({ ...crosspadCommit(repo, message, files) }))
+    jsonResponse(crosspadCommit(repo, message, files))
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -979,7 +974,7 @@ server.registerTool(
     annotations: ANN_READ_OPEN,
   },
   async ({ show_all }) =>
-    jsonResponse(envelope({ ...crosspadAppList(show_all) }))
+    jsonResponse(crosspadAppList(show_all))
 );
 
 server.registerTool(
@@ -997,7 +992,7 @@ server.registerTool(
   },
   async ({ platform, app_name, ref, force }, extra: any) => {
     const onLine = makeProgressLogger("apps-install", extra);
-    return jsonResponse(envelope({ ...(await crosspadAppInstall(app_name, platform, ref, force, onLine, extra.signal)) }));
+    return jsonResponse((await crosspadAppInstall(app_name, platform, ref, force, onLine, extra.signal)));
   }
 );
 
@@ -1014,7 +1009,7 @@ server.registerTool(
   },
   async ({ platform, app_name }, extra: any) => {
     const onLine = makeProgressLogger("apps-remove", extra);
-    return jsonResponse(envelope({ ...(await crosspadAppRemove(app_name, platform, onLine, extra.signal)) }));
+    return jsonResponse((await crosspadAppRemove(app_name, platform, onLine, extra.signal)));
   }
 );
 
@@ -1032,7 +1027,7 @@ server.registerTool(
   },
   async ({ platform, app_name, update_all }, extra: any) => {
     const onLine = makeProgressLogger("apps-update", extra);
-    return jsonResponse(envelope({ ...(await crosspadAppUpdate(platform, app_name, update_all, onLine, extra.signal)) }));
+    return jsonResponse((await crosspadAppUpdate(platform, app_name, update_all, onLine, extra.signal)));
   }
 );
 
@@ -1046,7 +1041,7 @@ server.registerTool(
   },
   async ({ platform }, extra: any) => {
     const onLine = makeProgressLogger("apps-sync", extra);
-    return jsonResponse(envelope({ ...(await crosspadAppSync(platform, onLine, extra.signal)) }));
+    return jsonResponse((await crosspadAppSync(platform, onLine, extra.signal)));
   }
 );
 
@@ -1105,6 +1100,74 @@ server.resource(
     };
   }
 );
+
+// ═══════════════════════════════════════════════════════════════════════
+// RESOURCES — apps registry & installed manifest per platform
+// One static resource per file-per-detected-platform. LLM/clients can
+// inspect raw JSON without spending a tool call. Resource set updates only
+// at server start (registries don't appear/disappear mid-session).
+// ═══════════════════════════════════════════════════════════════════════
+
+import fs from "fs";
+import path from "path";
+
+(() => {
+  const repos = _getRepos();
+  // Map repo name -> platform label for stable URIs.
+  const platformByRepo: Record<string, string> = {
+    "platform-idf": "idf",
+    "crosspad-pc": "pc",
+    "ESP32-S3": "esp32-s3",
+  };
+  for (const [repoName, root] of Object.entries(repos)) {
+    const platform = platformByRepo[repoName];
+    if (!platform) continue;
+
+    const registryPath = path.join(root, "app-registry.json");
+    if (fs.existsSync(registryPath)) {
+      const uri = `crosspad://apps/registry/${platform}`;
+      server.resource(
+        `crosspad-apps-registry-${platform}`,
+        uri,
+        {
+          description: `Raw app-registry.json from ${repoName} — declared apps, versions, platforms, requires.`,
+          mimeType: "application/json",
+        },
+        async () => ({
+          contents: [
+            {
+              uri,
+              mimeType: "application/json",
+              text: fs.readFileSync(registryPath, "utf-8"),
+            },
+          ],
+        }),
+      );
+    }
+
+    const manifestPath = path.join(root, "apps.json");
+    if (fs.existsSync(manifestPath)) {
+      const uri = `crosspad://apps/installed/${platform}`;
+      server.resource(
+        `crosspad-apps-installed-${platform}`,
+        uri,
+        {
+          description: `Raw apps.json (installed manifest) from ${repoName} — what's currently installed, ref, install/update timestamps.`,
+          mimeType: "application/json",
+        },
+        async () => ({
+          contents: [
+            {
+              uri,
+              mimeType: "application/json",
+              text: fs.readFileSync(manifestPath, "utf-8"),
+            },
+          ],
+        }),
+      );
+    }
+  }
+})();
 
 // ═══════════════════════════════════════════════════════════════════════
 // START
