@@ -61,7 +61,7 @@ WHY: these tools resolve repos dynamically from env vars, parse build output int
 DISCOVERY: if unsure whether a repo is detected, check the \`crosspad://workspace\` resource — it lists detected repos, current branches, dirty counts, and sim status.
 `.trim();
 
-const server = new McpServer(
+export const server = new McpServer(
   { name: "crosspad", version },
   { capabilities: { logging: {}, resources: {} }, instructions: SERVER_INSTRUCTIONS }
 );
@@ -197,12 +197,21 @@ const ANN_SIDE_EFFECT = { readOnlyHint: false, destructiveHint: false } as const
 
 const ErrorField = { error: z.string().optional() };
 
-const O_Build = {
+// Loose union — covers PC build (warnings_count + output_path), IDF build
+// (warnings[] + tail[] + auto_reconfigured) and the early-exit error envelope
+// ({success:false, error}). Only `success` is required; everything else is
+// optional so the MCP outputSchema validator accepts every code path.
+export const O_Build = {
   success: z.boolean(),
-  duration_seconds: z.number(),
-  errors: z.array(z.string()),
-  warnings_count: z.number().int(),
-  output_path: z.string(),
+  duration_seconds: z.number().optional(),
+  errors: z.array(z.string()).optional(),
+  // PC-only
+  warnings_count: z.number().int().optional(),
+  output_path: z.string().optional(),
+  // IDF-only
+  warnings: z.array(z.string()).optional(),
+  tail: z.array(z.string()).optional(),
+  auto_reconfigured: z.boolean().optional(),
   ...ErrorField,
 };
 
@@ -228,16 +237,6 @@ const O_BuildCheck = {
   reasons: z.array(z.string()),
   exe_exists: z.boolean(),
   exe_path: z.string(),
-  ...ErrorField,
-};
-
-const O_IdfBuild = {
-  success: z.boolean(),
-  duration_seconds: z.number(),
-  errors: z.array(z.string()),
-  warnings: z.array(z.string()),
-  tail: z.array(z.string()),
-  auto_reconfigured: z.boolean().optional(),
   ...ErrorField,
 };
 
@@ -482,7 +481,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_kill",
   {
-    description: "Stop the running PC simulator. Sends SIGTERM to processes named 'CrossPad'. Returns killed PIDs and whether the TCP control port stopped responding. Currently PC-only.",
+    description: "Stop the running PC simulator. Identifies the process by /proc/<pid>/exe match against the built binary (Linux) or pgrep -x basename (macOS/Windows), sends SIGTERM, waits up to 3s, then SIGKILL stragglers. Returns killed PIDs and whether anything still answers on the TCP control port. Currently PC-only.",
     inputSchema: {
       platform: PlatformPcOnly,
     },
@@ -1256,7 +1255,14 @@ async function main() {
   await server.connect(transport);
 }
 
-main().catch((err) => {
-  console.error("MCP server failed:", err);
-  process.exit(1);
-});
+// Run main() only when this module is the process entry point. Importing the
+// module from a test must NOT spin up the stdio transport.
+import { pathToFileURL } from "url";
+const isEntry = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isEntry) {
+  main().catch((err) => {
+    console.error("MCP server failed:", err);
+    process.exit(1);
+  });
+}
