@@ -60,6 +60,8 @@ describe("repo-actions module", () => {
 
       vi.doMock("../utils/git.js", () => ({
         getHead: vi.fn(() => "abc1234"),
+        listSubmodules: vi.fn(() => []),
+        findSubmodulePath: vi.fn(() => null),
       }));
 
       vi.doMock("fs", () => ({
@@ -86,21 +88,32 @@ describe("repo-actions module", () => {
       }));
 
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn((cmd: string) => {
-          if (cmd.includes("status")) {
-            return { success: true, stdout: "UU conflicted-file.cpp\n", stderr: "", exitCode: 0, durationMs: 0 };
+        runCommand: vi.fn(() => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
+      }));
+
+      // crosspadCommit uses spawnSync directly (via the local git() helper),
+      // not runCommand — so we must mock child_process for the status check.
+      vi.doMock("child_process", () => ({
+        spawnSync: vi.fn((cmd: string, args: string[]) => {
+          if (cmd === "git" && args[0] === "status") {
+            return { stdout: "UU conflicted-file.cpp\n", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
           }
-          return { success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
+          return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
         }),
       }));
 
       vi.doMock("../utils/git.js", () => ({
         getHead: vi.fn(() => "abc1234"),
+        listSubmodules: vi.fn(() => []),
+        findSubmodulePath: vi.fn(() => null),
       }));
 
       vi.doMock("fs", () => ({
         default: {
           existsSync: () => true,
+          mkdtempSync: vi.fn(() => "/tmp/crosspad-mock"),
+          writeFileSync: vi.fn(),
+          rmSync: vi.fn(),
         },
       }));
 
@@ -120,24 +133,34 @@ describe("repo-actions module", () => {
       }));
 
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn((cmd: string) => {
-          if (cmd.includes("status --porcelain")) {
-            return { success: true, stdout: " M unstaged.cpp\n", stderr: "", exitCode: 0, durationMs: 0 };
+        runCommand: vi.fn(() => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
+      }));
+
+      vi.doMock("child_process", () => ({
+        spawnSync: vi.fn((cmd: string, args: string[]) => {
+          if (cmd === "git" && args[0] === "status") {
+            // working tree dirty but nothing staged
+            return { stdout: " M unstaged.cpp\n", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
           }
-          if (cmd.includes("diff --cached")) {
-            return { success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
+          if (cmd === "git" && args[0] === "diff" && args.includes("--cached")) {
+            return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
           }
-          return { success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
+          return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
         }),
       }));
 
       vi.doMock("../utils/git.js", () => ({
         getHead: vi.fn(() => "abc1234"),
+        listSubmodules: vi.fn(() => []),
+        findSubmodulePath: vi.fn(() => null),
       }));
 
       vi.doMock("fs", () => ({
         default: {
           existsSync: () => true,
+          mkdtempSync: vi.fn(() => "/tmp/crosspad-mock"),
+          writeFileSync: vi.fn(),
+          rmSync: vi.fn(),
         },
       }));
 
