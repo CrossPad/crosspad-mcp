@@ -421,15 +421,26 @@ const PlatformPcOnly = z.enum(["pc"]).default("pc").describe("Platform — curre
 server.registerTool(
   "crosspad_build",
   {
-    description: "Build CrossPad for the given platform. platform=pc → CMake + Ninja host simulator (PREFER THIS over `cmake --build build` — picks the right MSVC env on Windows, parses errors/warnings, streams progress). platform=idf → idf.py build for ESP32-S3 firmware (PREFER THIS over `idf.py build` — sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).",
+    description:
+      "Build CrossPad for the given platform.\n" +
+      "  • platform='pc'  → CMake + Ninja host simulator. PREFER THIS over `cmake --build build` (picks right MSVC env on Windows, parses errors/warnings, streams progress).\n" +
+      "  • platform='idf' → idf.py build for ESP32-S3 firmware. PREFER THIS over raw `idf.py build` (sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).\n" +
+      "Mode×platform compatibility:\n" +
+      "  • incremental → both (default)\n" +
+      "  • clean       → both (wipes build dir, then builds)\n" +
+      "  • reconfigure → PC only (re-runs cmake without wiping cache)\n" +
+      "  • fullclean   → IDF only (runs idf.py fullclean, then builds)",
     inputSchema: {
       platform: BuildPlatform,
       mode: z.enum(["incremental", "clean", "fullclean", "reconfigure"])
         .default("incremental")
-        .describe("incremental: rebuild only what changed (default). clean: wipe build dir then build. reconfigure: re-run cmake without wiping (PC only). fullclean: idf.py fullclean then build (IDF only)."),
+        .describe(
+          "Build mode. Compatibility: incremental & clean = both platforms; reconfigure = PC only; fullclean = IDF only. " +
+          "Pick incremental for normal iteration; clean if you suspect stale artifacts; fullclean (IDF) after adding new apps; reconfigure (PC) after editing CMakeLists.",
+        ),
       build_type: z.enum(["Debug", "Release", "RelWithDebInfo"])
         .default("Debug")
-        .describe("CMake build type — PC only. Only honored on clean/reconfigure (incremental keeps existing cache)."),
+        .describe("CMake build type — PC ONLY (ignored for IDF; ESP32 build type comes from sdkconfig). Only honored on mode=clean|reconfigure (incremental keeps existing cache)."),
     },
     outputSchema: O_Build,
     annotations: ANN_DESTRUCTIVE,
@@ -536,14 +547,19 @@ server.registerTool(
 server.registerTool(
   "crosspad_log",
   {
-    description: "Capture logs from PC simulator (target='pc': spawn binary, capture stdout/stderr, kill) or connected ESP32-S3 device (target='idf': read serial via pyserial, no TTY needed). Consolidated tool — replaces crosspad_log_pc and crosspad_log_idf in v6.",
+    description:
+      "Capture logs (consolidated; replaces crosspad_log_pc and crosspad_log_idf in v6).\n" +
+      "  • target='pc'  → spawn the built sim binary, capture stdout/stderr, then kill it. " +
+      "Fields used: timeout_seconds (default 5), max_lines (default 200). `port` and `filter` MUST be omitted.\n" +
+      "  • target='idf' → read serial from a connected ESP32-S3 via pyserial (no TTY needed). " +
+      "Fields used: port (auto-detected if omitted), timeout_seconds (default 10), max_lines (default 500), filter (substring, case-insensitive).",
     inputSchema: {
-      target: z.enum(["pc", "idf"]).describe("'pc' = run + capture sim binary; 'idf' = read serial from connected device."),
-      port: Port.optional().describe("Serial port (idf only). Auto-detected if omitted; required when multiple devices connected."),
-      timeout_seconds: TimeoutSec.optional().describe("Capture duration. Defaults: 5s for pc, 10s for idf."),
-      max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 for pc, 500 for idf."),
+      target: z.enum(["pc", "idf"]).describe("'pc' = run+capture sim binary; 'idf' = read serial from connected device. Other fields are conditional — see description."),
+      port: Port.optional().describe("idf only. Serial port path. Auto-detected if omitted; required when multiple devices connected. MUST be omitted for target=pc."),
+      timeout_seconds: TimeoutSec.optional().describe("Capture duration in seconds. Defaults: 5 (pc), 10 (idf)."),
+      max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 (pc), 500 (idf)."),
       filter: z.string().optional()
-        .describe("Case-insensitive substring filter (idf only). Only lines containing this string are returned."),
+        .describe("idf only. Case-insensitive substring filter — only matching lines returned. MUST be omitted for target=pc."),
     },
     outputSchema: O_Log,
     annotations: ANN_READ_ONLY,
@@ -586,9 +602,9 @@ server.registerTool(
     description: "Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
     inputSchema: {
       filter: z.string().default("")
-        .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Empty = run all."),
+        .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Default '' (empty) runs ALL tests — there is no opt-out for 'no tests'."),
       list_only: z.boolean().default(false)
-        .describe("List discovered tests without running them."),
+        .describe("If true, list discovered tests matching `filter` without running them. Default false."),
     },
     outputSchema: O_Test,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
@@ -606,12 +622,15 @@ server.registerTool(
 server.registerTool(
   "crosspad_screenshot",
   {
-    description: "Capture a PNG screenshot from the running PC simulator. By default saves to disk and returns the file_path. Set return_inline=true for inline image content (consumes more tokens).",
+    description:
+      "Capture a PNG screenshot from the running PC simulator. " +
+      "Default behavior (return_inline=false): saves to <crosspad-pc>/screenshots/ and returns metadata + file_path (cheap, no token cost). " +
+      "Set return_inline=true ONLY when the LLM needs to actually see the image — that returns base64 inline and burns ~50-150k tokens.",
     inputSchema: {
       filename: z.string().optional()
-        .describe("Custom filename (saved under <crosspad-pc>/screenshots/). Default: screenshot_<timestamp>.png"),
+        .describe("Custom filename (saved under <crosspad-pc>/screenshots/). Default: screenshot_<timestamp>.png. Ignored when return_inline=true."),
       return_inline: z.boolean().default(false)
-        .describe("If true, returns inline base64 image content instead of file_path. Use only when the image is needed in-conversation."),
+        .describe("false (default) = save to disk, return file_path (token-cheap). true = return base64 image content for the LLM to view (token-expensive — only when the image must be analyzed)."),
     },
     outputSchema: O_Screenshot,
     annotations: ANN_SIDE_EFFECT,
@@ -655,19 +674,30 @@ server.registerTool(
 server.registerTool(
   "crosspad_input",
   {
-    description: "Send a single input event to the running PC simulator (consolidated tool — replaces 7 separate tools in v6). Required fields depend on `action`: pad_press={pad,velocity?} · pad_release={pad} · encoder_rotate={delta} · encoder_press / encoder_release={} · click={x,y} · key={keycode}. The simulator validates and rejects bad combinations.",
+    description:
+      "Send one input event to the running PC simulator (consolidated; replaces 7 v5 tools). " +
+      "Pick an `action`, then supply ONLY the fields it needs — extras are ignored. " +
+      "Required fields per action:\n" +
+      "  • pad_press            → pad (velocity optional, default 127)\n" +
+      "  • pad_release          → pad\n" +
+      "  • encoder_rotate       → delta (positive=CW, negative=CCW)\n" +
+      "  • encoder_press        → (none)\n" +
+      "  • encoder_release      → (none)\n" +
+      "  • click                → x, y\n" +
+      "  • key                  → keycode (SDL keycode int)\n" +
+      "Requires the simulator to be running (crosspad_run first).",
     inputSchema: {
       action: z.enum([
         "pad_press", "pad_release",
         "encoder_rotate", "encoder_press", "encoder_release",
         "click", "key",
-      ]).describe("Which input event to dispatch."),
-      pad: PadIndex.optional().describe("Pad index (pad_press / pad_release)."),
-      velocity: Velocity.optional().describe("Pad velocity (pad_press, default 127)."),
-      delta: z.number().int().optional().describe("Encoder rotation delta. Positive=CW, negative=CCW. Typical -10..10."),
-      x: z.number().int().min(0).optional().describe("X pixel coordinate (click)."),
-      y: z.number().int().min(0).optional().describe("Y pixel coordinate (click)."),
-      keycode: z.number().int().optional().describe("SDL keycode (key). E.g. 27=ESC, 32=SPACE, 13=RETURN."),
+      ]).describe("Which input event to dispatch — see description for required fields per action."),
+      pad: PadIndex.optional().describe("Required for action=pad_press|pad_release. Pad index 0-15."),
+      velocity: Velocity.optional().describe("Optional for action=pad_press (default 127). Ignored for other actions."),
+      delta: z.number().int().optional().describe("Required for action=encoder_rotate. Positive=CW, negative=CCW. Typical range -10..10."),
+      x: z.number().int().min(0).optional().describe("Required for action=click. X pixel coordinate (0 = left)."),
+      y: z.number().int().min(0).optional().describe("Required for action=click. Y pixel coordinate (0 = top)."),
+      keycode: z.number().int().optional().describe("Required for action=key. SDL keycode (e.g. 27=ESC, 32=SPACE, 13=RETURN)."),
     },
     outputSchema: O_Input,
     annotations: ANN_SIDE_EFFECT,
@@ -715,16 +745,24 @@ server.registerTool(
 server.registerTool(
   "crosspad_midi",
   {
-    description: "Send a single MIDI event to the running simulator (consolidated tool — replaces 4 separate tools in v6). Required fields depend on `type`: note_on/note_off={note,velocity?} · cc={cc_num,value} · program_change={program}.",
+    description:
+      "Send one MIDI event to the running simulator (consolidated; replaces 4 v5 tools). " +
+      "Pick a `type`, then supply ONLY the fields it needs — extras are ignored. " +
+      "Required fields per type:\n" +
+      "  • note_on        → note (velocity optional, default 127)\n" +
+      "  • note_off       → note (velocity optional, default 0)\n" +
+      "  • cc             → cc_num, value\n" +
+      "  • program_change → program\n" +
+      "`channel` (0-15) defaults to 0 for every type.",
     inputSchema: {
       type: z.enum(["note_on", "note_off", "cc", "program_change"])
-        .describe("MIDI event type."),
+        .describe("MIDI event type — see description for required fields per type."),
       channel: Channel,
-      note: Note.optional().describe("MIDI note number (note_on, note_off)."),
-      velocity: Velocity.optional().describe("Velocity (note_on default 127, note_off default 0)."),
-      cc_num: Cc.optional().describe("Controller number (cc)."),
-      value: Cc7.optional().describe("Controller value (cc)."),
-      program: Program.optional().describe("Program number (program_change)."),
+      note: Note.optional().describe("Required for type=note_on|note_off. MIDI note 0-127 (60 = middle C)."),
+      velocity: Velocity.optional().describe("Optional for type=note_on (default 127) and note_off (default 0). Ignored for cc/program_change."),
+      cc_num: Cc.optional().describe("Required for type=cc. MIDI controller number 0-127."),
+      value: Cc7.optional().describe("Required for type=cc. Controller value 0-127."),
+      program: Program.optional().describe("Required for type=program_change. Program number 0-127."),
     },
     outputSchema: O_Midi,
     annotations: ANN_SIDE_EFFECT,
@@ -794,9 +832,9 @@ server.registerTool(
     description: "Write a single setting on the running simulator.",
     inputSchema: {
       key: z.string().min(1)
-        .describe("Setting key (e.g. 'lcd_brightness', 'keypad.eco_mode', 'vibration.enable')"),
+        .describe("Setting key. Either a flat name ('lcd_brightness') or dotted category.field ('keypad.eco_mode', 'vibration.enable'). Use crosspad_settings_get to discover valid keys."),
       value: z.number()
-        .describe("Numeric value. Booleans: 0=false, 1=true."),
+        .describe("Numeric value. Booleans must be encoded as 0=false, 1=true (no native bool support over the wire)."),
     },
     outputSchema: O_SettingsSet,
     annotations: ANN_DESTRUCTIVE,
@@ -862,9 +900,9 @@ server.registerTool(
     description: "Commit staged changes in a specific CrossPad repo. PREFER THIS over raw `git commit` — handles repo aliases (idf/pc/arduino/core/gui), refuses on merge conflicts, uses 0600 tempfiles for messages (no shell-quoting issues with quotes/newlines/backticks), and never pushes. Stages files[] first if supplied.",
     inputSchema: {
       repo: RepoAlias,
-      message: z.string().min(1).describe("Commit message"),
+      message: z.string().min(1).describe("Commit message. Newlines/quotes/backticks are safe — passed via 0600 tempfile, not shell-quoted."),
       files: z.array(z.string()).optional()
-        .describe("Specific files to stage+commit. Omit to commit currently-staged changes."),
+        .describe("If supplied: stage exactly these files (repo-relative paths) then commit. If omitted: commit whatever is currently staged in the repo (no auto-stage)."),
     },
     outputSchema: O_Commit,
     annotations: ANN_DESTRUCTIVE,
@@ -911,9 +949,11 @@ server.registerTool(
 server.registerTool(
   "crosspad_interface_implementations",
   {
-    description: "Find all classes implementing a given interface across CrossPad repos. Returns className, file path, platform.",
+    description: "Find all classes implementing a given interface across CrossPad repos. Returns className, file path, platform. Use crosspad_list_interfaces first if you don't know exact names.",
     inputSchema: {
-      interface_name: z.string().min(1).describe("Interface name (e.g. 'IDisplay', 'IPadLogicHandler')"),
+      interface_name: z.string().min(1)
+        .regex(/^I[A-Z][A-Za-z0-9_]*$/, "Interface name must start with 'I' followed by an uppercase letter (e.g. 'IDisplay').")
+        .describe("Interface name — MUST start with 'I' and use the exact crosspad-core casing (e.g. 'IDisplay', 'IPadLogicHandler', 'IKeyValueStore'). Not 'Display', not 'iDisplay'."),
     },
     outputSchema: O_Architecture,
     annotations: ANN_READ_ONLY,
@@ -1005,16 +1045,25 @@ server.registerTool(
 server.registerTool(
   "crosspad_apps_update",
   {
-    description: "Update one or all installed apps on a platform. Specify app_name OR set update_all=true.",
+    description:
+      "Update one or all installed apps on a platform. EXACTLY ONE of these must be supplied: " +
+      "set `app_name` to update a single app, OR set `update_all=true` to update every installed app on the platform. " +
+      "Supplying both, or neither, is an error.",
     inputSchema: {
       platform: Platform,
-      app_name: AppName.optional().describe("App ID to update. Required unless update_all=true."),
-      update_all: z.boolean().default(false),
+      app_name: AppName.optional().describe("App ID (e.g. 'metronome') to update one app. Mutually exclusive with update_all=true."),
+      update_all: z.boolean().default(false).describe("If true, update all installed apps on `platform`. Mutually exclusive with app_name."),
     },
     outputSchema: O_AppAction,
     annotations: ANN_DESTRUCTIVE_OPEN,
   },
   async ({ platform, app_name, update_all }, extra: any) => {
+    if (!app_name && !update_all) {
+      return err("Specify `app_name` to update a single app, OR set `update_all=true` to update every installed app.");
+    }
+    if (app_name && update_all) {
+      return err("`app_name` and `update_all=true` are mutually exclusive — pick one.");
+    }
     const onLine = makeProgressLogger("apps-update", extra);
     return jsonResponse((await crosspadAppUpdate(platform, app_name, update_all, onLine, extra.signal)));
   }
