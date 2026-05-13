@@ -38,7 +38,7 @@ export async function crosspadMidiSend(params: MidiSendParams): Promise<MidiSend
       type: params.type,
       channel: params.channel,
       details: {},
-      error: "Simulator is not running. Use crosspad_build action=pc_run to start it.",
+      error: "Simulator is not running. Use crosspad_run to start it.",
     };
   }
 
@@ -66,7 +66,7 @@ export async function crosspadMidiSend(params: MidiSendParams): Promise<MidiSend
       if (velocity < 0 || velocity > 127) {
         return { success: false, type: params.type, channel: params.channel, details, error: "Velocity must be 0-127" };
       }
-      cmd = { cmd: "midi", type: "note_on", channel: params.channel, note, velocity };
+      cmd = { cmd: "midi_note_on", channel: params.channel, note, velocity };
       details.note = note;
       details.velocity = velocity;
       break;
@@ -78,35 +78,39 @@ export async function crosspadMidiSend(params: MidiSendParams): Promise<MidiSend
       if (note < 0 || note > 127) {
         return { success: false, type: params.type, channel: params.channel, details, error: "Note must be 0-127" };
       }
-      cmd = { cmd: "midi", type: "note_off", channel: params.channel, note, velocity };
+      cmd = { cmd: "midi_note_off", channel: params.channel, note, velocity };
       details.note = note;
       details.velocity = velocity;
       break;
     }
 
     case "cc": {
+      // Sim's RemoteControl protocol exposes midi_note_on / midi_note_off only.
+      // cc and program_change have no handler in crosspad-pc yet — fail fast
+      // with a clear message instead of letting the sim return "unknown command".
       const ccNum = params.cc_num ?? 0;
       const value = params.value ?? 0;
-      if (ccNum < 0 || ccNum > 127) {
-        return { success: false, type: params.type, channel: params.channel, details, error: "CC number must be 0-127" };
-      }
-      if (value < 0 || value > 127) {
-        return { success: false, type: params.type, channel: params.channel, details, error: "Value must be 0-127" };
-      }
-      cmd = { cmd: "midi", type: "cc", channel: params.channel, cc: ccNum, value };
       details.cc = ccNum;
       details.value = value;
-      break;
+      return {
+        success: false,
+        type: params.type,
+        channel: params.channel,
+        details,
+        error: "type='cc' is not yet supported by the PC simulator (RemoteControl has no midi_cc handler). Only note_on/note_off work today.",
+      };
     }
 
     case "program_change": {
       const program = params.program ?? 0;
-      if (program < 0 || program > 127) {
-        return { success: false, type: params.type, channel: params.channel, details, error: "Program must be 0-127" };
-      }
-      cmd = { cmd: "midi", type: "program_change", channel: params.channel, program };
       details.program = program;
-      break;
+      return {
+        success: false,
+        type: params.type,
+        channel: params.channel,
+        details,
+        error: "type='program_change' is not yet supported by the PC simulator (RemoteControl has no midi_program_change handler). Only note_on/note_off work today.",
+      };
     }
 
     default:

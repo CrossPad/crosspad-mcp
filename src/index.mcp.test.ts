@@ -14,17 +14,22 @@ vi.mock("./tools/build.js", () => ({
 vi.mock("./tools/idf-build.js", () => ({
   crosspadIdfBuild: vi.fn(),
 }));
+vi.mock("./tools/build-check.js", () => ({
+  crosspadBuildCheck: vi.fn(),
+}));
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { crosspadBuild, crosspadKill } from "./tools/build.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
+import { crosspadBuildCheck } from "./tools/build-check.js";
 import { server } from "./index.js";
 
 const mockedPcBuild = vi.mocked(crosspadBuild);
 const mockedIdfBuild = vi.mocked(crosspadIdfBuild);
 const mockedKill = vi.mocked(crosspadKill);
+const mockedBuildCheck = vi.mocked(crosspadBuildCheck);
 
 let client: Client;
 
@@ -122,6 +127,41 @@ describe("crosspad_build via MCP API", () => {
       success: false,
       errors: ["compile error: foo.c:1:1"],
     });
+  });
+});
+
+describe("crosspad_check via MCP API", () => {
+  it("wrapper injects success=true and exe_path so structuredContent passes outputSchema (regression)", async () => {
+    // Handler intentionally returns NEITHER `success` NOR `exe_path` — those
+    // are wrapper responsibilities. Before the fix this round-trip threw:
+    //   Output validation error: success expected boolean, received undefined
+    //   exe_path expected string, received undefined
+    mockedBuildCheck.mockReturnValueOnce({
+      needs_reconfigure: false,
+      needs_rebuild: false,
+      exe_exists: true,
+      exe_age_seconds: 42,
+      reasons: ["Build appears up to date"],
+      submodule_changes: {},
+      new_source_files: [],
+    });
+
+    const r = await client.callTool({
+      name: "crosspad_check",
+      arguments: { platform: "pc" },
+    });
+
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toMatchObject({
+      success: true,
+      needs_rebuild: false,
+      exe_exists: true,
+      reasons: ["Build appears up to date"],
+    });
+    // exe_path must be a non-empty string injected by the wrapper
+    const sc = r.structuredContent as Record<string, unknown>;
+    expect(typeof sc.exe_path).toBe("string");
+    expect((sc.exe_path as string).length).toBeGreaterThan(0);
   });
 });
 

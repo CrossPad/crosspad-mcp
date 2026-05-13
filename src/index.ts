@@ -10,6 +10,7 @@ const { version } = require("../package.json");
 
 import { crosspadBuild, crosspadRun, crosspadKill } from "./tools/build.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
+import { BIN_EXE as _BIN_EXE } from "./config.js";
 import { crosspadLog } from "./tools/log.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
 import { crosspadIdfFlash, crosspadIdfOta } from "./tools/idf-flash.js";
@@ -512,7 +513,7 @@ server.registerTool(
     outputSchema: O_BuildCheck,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse(crosspadBuildCheck())
+  async () => jsonResponse({ success: true, exe_path: _BIN_EXE, ...crosspadBuildCheck() })
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -746,14 +747,14 @@ server.registerTool(
   "crosspad_midi",
   {
     description:
-      "Send one MIDI event to the running simulator (consolidated; replaces 4 v5 tools). " +
+      "Send one MIDI event to the running PC simulator (consolidated; replaces 4 v5 tools). " +
       "Pick a `type`, then supply ONLY the fields it needs — extras are ignored. " +
       "Required fields per type:\n" +
       "  • note_on        → note (velocity optional, default 127)\n" +
       "  • note_off       → note (velocity optional, default 0)\n" +
-      "  • cc             → cc_num, value\n" +
-      "  • program_change → program\n" +
-      "`channel` (0-15) defaults to 0 for every type.",
+      "  • cc             → cc_num, value   ⚠️ NOT YET SUPPORTED BY PC SIM (no midi_cc handler — call fails fast)\n" +
+      "  • program_change → program          ⚠️ NOT YET SUPPORTED BY PC SIM (no midi_program_change handler — call fails fast)\n" +
+      "`channel` (0-15) defaults to 0 for every type. Only note_on/note_off actually reach the sim today.",
     inputSchema: {
       type: z.enum(["note_on", "note_off", "cc", "program_change"])
         .describe("MIDI event type — see description for required fields per type."),
