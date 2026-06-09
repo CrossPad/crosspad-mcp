@@ -272,9 +272,10 @@ const O_Devices = {
   devices: z.array(z.object({
     port: z.string(),
     description: z.string().optional(),
-    vid: z.string().optional(),
-    pid: z.string().optional(),
+    vid: z.number().int().optional(),
+    pid: z.number().int().optional(),
     is_crosspad: z.boolean(),
+    kind: z.enum(["esp-native", "stm-bridge"]).nullable().optional(),
   }).passthrough()),
   crosspad_count: z.number().int().optional(),
   ...ErrorField,
@@ -523,7 +524,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_flash",
   {
-    description: "Flash firmware to a connected CrossPad device. transport='uart' uses idf.py flash (device must be in bootloader mode). transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required). Requires prior crosspad_build platform=idf.",
+    description: "Flash ESP firmware to a connected CrossPad device. transport='uart' uses idf.py flash (device must be in bootloader mode). transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required). Requires prior crosspad_build platform=idf. Works on both CrossPad generations: rev <2.0 (ESP native USB) and rev 2.0 (port is the STM32 CDC bridge — STM emulates the esptool DTR/RTS auto-reset and forwards the flash to the ESP over LPUART2; rev-2.0 STM must be in passthrough mode, i.e. NOT booted with pad-4 held).",
     inputSchema: {
       transport: z.enum(["uart", "ota"]).describe("'uart' = bootloader-mode flash via idf.py; 'ota' = USB-CDC OTA flash via ota_flash.py."),
       port: Port.optional(),
@@ -561,11 +562,13 @@ server.registerTool(
       max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 (pc), 500 (idf)."),
       filter: z.string().optional()
         .describe("idf only. Case-insensitive substring filter — only matching lines returned. MUST be omitted for target=pc."),
+      reset_to_boot: z.boolean().optional()
+        .describe("idf only. Pulse the device reset (esptool DTR/RTS sequence, works through the STM bridge) before capturing, so the log starts at boot t=0. Use for boot-time profiling. Default false (passive read of the running device)."),
     },
     outputSchema: O_Log,
     annotations: ANN_READ_ONLY,
   },
-  async ({ target, port, timeout_seconds, max_lines, filter }, extra: any) => {
+  async ({ target, port, timeout_seconds, max_lines, filter, reset_to_boot }, extra: any) => {
     if (target === "pc") {
       if (port) return err("Field 'port' is not used when target='pc'.");
       if (filter) return err("Field 'filter' is not used when target='pc'.");
@@ -577,7 +580,7 @@ server.registerTool(
     // target === "idf"
     const onLine = makeProgressLogger("log-idf", extra);
     return jsonResponse({
-      ...(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine, extra.signal)),
+      ...(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine, extra.signal, reset_to_boot ?? false)),
     });
   }
 );
@@ -585,7 +588,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_devices",
   {
-    description: "List all connected USB serial devices. Identifies CrossPad devices (Espressif VID 0x303a, PID 0x3456) separately from other ports.",
+    description: "List all connected USB serial devices. Identifies CrossPad devices separately and tags each with `kind`: 'esp-native' (rev <2.0, ESP32-S3 native USB, VID 0x303a/PID 0x3456) or 'stm-bridge' (rev 2.0, STM32 composite CDC+MIDI bridge, VID 0x0483/PID 0x5740 — STM programs the ESP over LPUART2).",
     inputSchema: {},
     outputSchema: O_Devices,
     annotations: ANN_READ_ONLY,

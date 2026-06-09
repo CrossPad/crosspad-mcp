@@ -51,6 +51,27 @@ describe("device discovery", () => {
     });
   });
 
+  describe("classifyCrosspad", () => {
+    it("tags ESP32-S3 native USB as esp-native (rev <2.0)", async () => {
+      vi.doMock("../config.js", () => ({ IS_WINDOWS: false, IS_MAC: false }));
+      const { classifyCrosspad } = await import("./device.js");
+      expect(classifyCrosspad(0x303a, 0x3456)).toBe("esp-native");
+    });
+
+    it("tags STM32 composite bridge as stm-bridge (rev 2.0)", async () => {
+      vi.doMock("../config.js", () => ({ IS_WINDOWS: false, IS_MAC: false }));
+      const { classifyCrosspad } = await import("./device.js");
+      expect(classifyCrosspad(0x0483, 0x5740)).toBe("stm-bridge");
+    });
+
+    it("returns null for unrelated devices (incl. STM DFU)", async () => {
+      vi.doMock("../config.js", () => ({ IS_WINDOWS: false, IS_MAC: false }));
+      const { classifyCrosspad } = await import("./device.js");
+      expect(classifyCrosspad(0x0483, 0xdf11)).toBeNull(); // STM system DFU
+      expect(classifyCrosspad(0x1234, 0x5678)).toBeNull();
+    });
+  });
+
   describe("listDevices result structure", () => {
     it("returns DeviceListResult with correct shape", async () => {
       vi.doMock("../config.js", () => ({
