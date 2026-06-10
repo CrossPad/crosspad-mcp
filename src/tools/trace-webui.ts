@@ -10,6 +10,18 @@ function uiHtmlPath(): string { return path.resolve(__dirname, "..", "..", "trac
 
 export function buildUiUrl(port: number): string { return `http://localhost:${port}/`; }
 
+/** Allow a WS upgrade only from a loopback Origin, or when no Origin is sent
+ *  (native/non-browser clients). Defends against cross-site WebSocket hijacking. */
+export function originIsLoopback(info: { origin?: string }): boolean {
+  if (!info.origin) return true;
+  try {
+    const h = new URL(info.origin).hostname;
+    return h === "localhost" || h === "127.0.0.1" || h === "::1";
+  } catch {
+    return false;
+  }
+}
+
 export class TraceWebUi {
   private server: http.Server | null = null;
   private wss: WebSocketServer | null = null;
@@ -30,7 +42,10 @@ export class TraceWebUi {
         }
         res.writeHead(404); res.end();
       });
-      this.wss = new WebSocketServer({ server: this.server });
+      // Reject cross-site WebSocket hijacking: only accept upgrades from a
+      // loopback Origin (the local UI) or no Origin at all (non-browser clients,
+      // e.g. the headless test harness, which never send an Origin header).
+      this.wss = new WebSocketServer({ server: this.server, verifyClient: originIsLoopback });
       this.wss.on("connection", (ws) => {
         this.clients.add(ws);
         ws.send(JSON.stringify({ type: "hello", signals: session.buffer.signalNames() }));
@@ -38,7 +53,9 @@ export class TraceWebUi {
       });
       session.onFrame((f: Frame) => this.broadcast(f));
       this.server.on("error", reject);
-      this.server.listen(preferredPort, () => {
+      // Bind to loopback only — the trace UI exposes live firmware variable
+      // values and must never be reachable from the LAN.
+      this.server.listen(preferredPort, "127.0.0.1", () => {
         this.port = (this.server!.address() as any).port;
         resolve(buildUiUrl(this.port));
       });
