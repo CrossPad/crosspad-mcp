@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CrossPad SWD Trace</title>
+<style>
+ body{font:13px monospace;margin:0;background:#111;color:#ddd}
+ #wrap{display:flex;height:100vh}
+ #side{width:240px;padding:8px;overflow:auto;border-right:1px solid #333}
+ #main{flex:1;display:flex;flex-direction:column}
+ canvas{flex:1;background:#000}
+ .sw{width:10px;height:10px;border-radius:2px;display:inline-block}
+ button{background:#222;color:#ddd;border:1px solid #444;padding:3px 8px;cursor:pointer}
+ #bar{padding:4px;display:flex;gap:6px;border-bottom:1px solid #333;align-items:center}
+ table{width:100%;border-collapse:collapse}
+ td{padding:1px 3px}
+</style></head>
+<body><div id="wrap">
+ <div id="side"><h3>Signals</h3><table id="tbl"></table></div>
+ <div id="main">
+  <div id="bar">
+   <button id="pause">Pause</button><button id="auto">Auto Y</button>
+   <span id="stat"></span>
+  </div>
+  <canvas id="cv"></canvas>
+ </div>
+</div>
+<script>
+const palette=["#4af","#fa4","#4f8","#f48","#af4","#8af","#fd4","#f84"];
+const sigs=new Map(); // name -> {color,on,data:[{t,v}],min,max}
+let paused=false, viewT0=null, viewT1=null;
+const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
+function fit(){cv.width=cv.clientWidth;cv.height=cv.clientHeight;} window.addEventListener("resize",fit); fit();
+const ws=new WebSocket("ws://"+location.host);
+ws.onmessage=(e)=>{const m=JSON.parse(e.data);
+ if(m.type==="hello"){m.signals.forEach((n,i)=>addSig(n,i));}
+ else if(m.type==="sample" && !paused){for(const k in m.values)push(k,m.t,m.values[k]);}
+ else if(m.type==="status"){document.getElementById("stat").textContent="device: "+m.device_state;}
+};
+function addSig(n,i){if(sigs.has(n))return;sigs.set(n,{color:palette[i%palette.length],on:true,data:[],min:Infinity,max:-Infinity});buildTable();}
+function push(n,t,v){const s=sigs.get(n);if(!s)return;s.data.push({t,v});if(s.data.length>100000)s.data.shift();if(v<s.min)s.min=v;if(v>s.max)s.max=v;}
+function buildTable(){const tb=document.getElementById("tbl");tb.innerHTML="";
+ for(const [n,s] of sigs){const tr=document.createElement("tr");
+  tr.innerHTML=`<td><span class=sw style="background:${s.color}"></span></td>`+
+   `<td><input type=checkbox ${s.on?"checked":""} data-n="${n}"></td>`+
+   `<td>${n}</td><td id="v-${cssid(n)}"></td>`;tb.appendChild(tr);}
+ tb.querySelectorAll("input").forEach(c=>c.onchange=()=>{sigs.get(c.dataset.n).on=c.checked;});}
+function cssid(n){return n.replace(/[^a-z0-9]/gi,"_");}
+document.getElementById("pause").onclick=()=>{paused=!paused;};
+document.getElementById("auto").onclick=()=>{viewT0=null;viewT1=null;};
+cv.addEventListener("wheel",(e)=>{e.preventDefault();const [t0,t1]=curRange();const span=t1-t0;const f=e.deltaY<0?0.8:1.25;const cx=t0+span*(e.offsetX/cv.width);viewT0=cx-(cx-t0)*f;viewT1=cx+(t1-cx)*f;},{passive:false});
+let drag=null;cv.addEventListener("mousedown",(e)=>drag={x:e.offsetX,r:curRange()});
+window.addEventListener("mouseup",()=>drag=null);
+cv.addEventListener("mousemove",(e)=>{if(!drag)return;const [t0,t1]=drag.r;const span=t1-t0;const dt=(e.offsetX-drag.x)/cv.width*span;viewT0=t0-dt;viewT1=t1-dt;});
+function curRange(){let lo=Infinity,hi=-Infinity;for(const[,s]of sigs)for(const p of s.data){if(p.t<lo)lo=p.t;if(p.t>hi)hi=p.t;}if(!isFinite(lo))return[0,1];if(viewT0!=null)return[viewT0,viewT1];return[lo,hi];}
+function render(){requestAnimationFrame(render);ctx.clearRect(0,0,cv.width,cv.height);
+ const [t0,t1]=curRange();const span=(t1-t0)||1;
+ let ylo=Infinity,yhi=-Infinity;
+ for(const[,s]of sigs){if(!s.on)continue;for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<ylo)ylo=p.v;if(p.v>yhi)yhi=p.v;}}
+ if(!isFinite(ylo)){ylo=0;yhi=1;} const yspan=(yhi-ylo)||1;
+ const X=(t)=>(t-t0)/span*cv.width, Y=(v)=>cv.height-(v-ylo)/yspan*cv.height;
+ for(const[n,s]of sigs){if(!s.on)continue;ctx.strokeStyle=s.color;ctx.beginPath();let first=true;
+  for(const p of s.data){if(p.t<t0||p.t>t1)continue;const x=X(p.t),y=Y(p.v);first?ctx.moveTo(x,y):ctx.lineTo(x,y);first=false;}
+  ctx.stroke();const cell=document.getElementById("v-"+cssid(n));if(cell&&s.data.length)cell.textContent=s.data[s.data.length-1].v;}
+}
+render();
+</script></body></html>
