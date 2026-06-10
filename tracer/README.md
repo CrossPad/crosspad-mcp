@@ -4,10 +4,10 @@ A single-file Python daemon (`swd_tracer.py`) that communicates with the CrossPa
 
 ## Output contract
 
-- **stdout**: machine-readable JSON only — one JSON object per invocation.
+- **stdout**: machine-readable JSON/NDJSON only — one JSON object per line.
 - **stderr**: human-readable logs, progress, and error messages only.
 
-Never mix JSON output with log lines on stdout. The Node bridge scans stdout for the JSON line and ignores everything else.
+Never mix JSON output with log lines on stdout. The Node bridge scans stdout for JSON lines.
 
 ## Dependencies
 
@@ -65,7 +65,7 @@ Fields:
 | `name` | string | Symbol name as it appears in DWARF. |
 | `address` | number | Absolute RAM address (decimal integer). |
 | `encoding` | string | Base-type encoding: `uint`, `int`, `uchar`, `char`, `bool`, `float`, `address`. |
-| `size` | number | Byte size of the variable (or total array size). |
+| `size` | number | Byte size of the variable (or total array size for arrays, element size for indexed access). |
 
 Results are de-duplicated and sorted by address.
 
@@ -78,9 +78,143 @@ Example — query `s_vbat_mv`:
 # stdout: {"symbols": [{"name": "s_vbat_mv", "address": 536885450, "encoding": "uint", "size": 2}]}
 ```
 
-## Future subcommands
+---
 
-More subcommands are planned for later milestones:
+### `trace` — live SWD poll loop (non-halting)
 
-- **`trace`** — start a live SWD memory poll loop, streaming JSON events to stdout.
-- **`device-state`** — one-shot snapshot of key device registers and variable values.
+Connects to the target via pyOCD, polls the requested signals by reading RAM while the core continues to run, and emits one NDJSON frame per sample on stdout. Optionally writes a `.cptrace` file. Stops when `{"cmd":"stop"}` is received on stdin.
+
+```bash
+python swd_tracer.py trace \
+  --elf <firmware.elf> \
+  --signals <sig1,sig2,...> \
+  [--rate <Hz>] \
+  [--out <file.cptrace>] \
+  [--probe <unique_id>]
+```
+
+#### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--elf PATH` | (required) | Debug ELF for DWARF symbol resolution. |
+| `--signals LIST` | (required) | Comma-separated signal names (see below). |
+| `--rate HZ` | `0` (max) | Target poll rate in Hz. `0` means poll as fast as possible. |
+| `--out PATH` | `None` | If given, also append samples to a `.cptrace` binary file. |
+| `--probe UID` | `None` | ST-Link unique ID string; omit to auto-select the first probe. |
+
+#### Signal name syntax — `name[index]`
+
+Signal names may include an array index: `s_inputs[0]`, `s_adc_raw[3]`.
+
+Resolution rules:
+1. Parse `base` and optional `[index]` from the spec.
+2. Look up `base` in the DWARF symbol table (exact match).
+3. `address = base.address + index * base.size` (element size from DWARF).
+4. A plain `name` (no brackets) resolves directly.
+5. Unknown `base` → an `error` frame is emitted and the command exits.
+
+Example: if `s_inputs` is at address `0x20001000` with element size 1, then `s_inputs[3]` resolves to address `0x20001003`.
+
+#### NDJSON output frames (stdout)
+
+One JSON object per line. Three frame types:
+
+**`sample`** — one reading of all polled signals:
+
+```json
+{"type": "sample", "t": 0.012345, "values": {"s_vbat_mv": 3742, "s_inputs[0]": 255}}
+```
+
+| Field | Description |
+|---|---|
+| `type` | `"sample"` |
+| `t` | Seconds since trace start (float, 6 decimal places). |
+| `values` | Object mapping each signal spec to its decoded integer or float value. |
+
+**`status`** — device or session state change:
+
+```json
+{"type": "status", "device_state": "stop_suspected", "t": 1.234}
+{"type": "status", "device_state": "stopped", "samples": 1234}
+```
+
+| `device_state` | Meaning |
+|---|---|
+| `stop_suspected` | A memory read faulted — the STM32 is probably in STOP mode. Polling pauses 200 ms and resumes. No halt is issued. |
+| `stopped` | Normal exit after receiving `{"cmd":"stop"}`. `samples` field holds total sample count. |
+
+**`error`** — fatal signal resolution failure:
+
+```json
+{"type": "error", "error": "unknown symbols: bad_name,also_bad"}
+```
+
+Emitted and the process exits if any requested signal cannot be found in the DWARF symbol table.
+
+#### Stopping the daemon
+
+Write `{"cmd":"stop"}` followed by a newline to the daemon's stdin:
+
+```bash
+echo '{"cmd":"stop"}' | <daemon process stdin>
+```
+
+The daemon drains the current poll iteration, closes the `.cptrace` file if open, disconnects from the probe, and emits a final `status/stopped` frame before exiting.
+
+#### `.cptrace` file format
+
+Binary-framed header followed by line-delimited JSON body rows.
+
+```
+Offset  Size  Content
+0       4     Magic: ASCII "CPTR"
+4       4     Header length N (little-endian uint32)
+8       N     JSON signal list: {"signals":[{"name":…,"encoding":…,"size":…},…]}
+8+N     …     Body rows, one per sample, each: JSON{"t":…,"v":{…}}\n
+```
+
+The binary header allows fast seeking to the body start and easy validation. Body rows are line-JSON for simplicity and recoverability (a partial write is still parseable up to the last complete line).
+
+#### Example
+
+```bash
+/path/to/venv/bin/python swd_tracer.py trace \
+  --elf ~/GIT/CrossPad_STM32_r20/build/Debug/CrossPad_STM32_r20.elf \
+  --signals s_vbat_mv,s_inputs[0],s_inputs[1] \
+  --rate 100 \
+  --out /tmp/session.cptrace \
+  2>/tmp/trace.log &
+DAEMON_PID=$!
+
+# ... let it run for a few seconds ...
+
+echo '{"cmd":"stop"}' >&${DAEMON_PID}_stdin
+```
+
+stdout while running:
+
+```
+{"type": "sample", "t": 0.000012, "values": {"s_vbat_mv": 3742, "s_inputs[0]": 255, "s_inputs[1]": 0}}
+{"type": "sample", "t": 0.010034, "values": {"s_vbat_mv": 3741, "s_inputs[0]": 255, "s_inputs[1]": 0}}
+...
+{"type": "status", "device_state": "stopped", "samples": 200}
+```
+
+#### pyOCD target name note
+
+The daemon passes `target_override: "stm32g0b1xx"` to pyOCD's `ConnectHelper`. This is NOT a built-in pyOCD target — the Keil CMSIS DFP pack must be installed first:
+
+```bash
+pyocd pack install Keil.STM32G0xx_DFP
+```
+
+After installation, pyOCD accepts part-specific names such as `stm32g0b1retx` (the RETx variant used on CrossPad r20). If you use a different flash-size variant (CB/CC/CE), substitute the appropriate part name.
+
+You can verify available names after pack install:
+
+```bash
+pyocd list --targets | grep -i g0b1
+```
+
+If the target still fails to connect, pass the specific part name via `--probe` or by editing `target_override` in `cmd_trace`.
