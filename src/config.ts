@@ -34,8 +34,12 @@ const CROSSPAD_GUI_ROOT =
 // STM32 firmware (CrossPad r20 single-board target). Separate repo, not a
 // submodule of the others — but its code (sleep/power/reg-map/charger) is part
 // of day-to-day development, so symbol search / repo status should cover it.
-const CROSSPAD_STM_ROOT =
+export const CROSSPAD_STM_ROOT =
   process.env.CROSSPAD_STM_ROOT || path.join(GIT_DIR, "CrossPad_STM32_r20");
+
+// Trace defaults (overridable later via user config at call sites).
+export const STM_ELF_DEFAULT = path.join(CROSSPAD_STM_ROOT, "build", "Debug", "CrossPad_STM32_r20.elf");
+export const TRACE_DIR_DEFAULT = path.join(CROSSPAD_STM_ROOT, "traces");
 
 
 // ═══════════════════════════════════════════════════════════════════════
