@@ -41,6 +41,6 @@ export async function listSymbols(query?: string, elf?: string, signal?: AbortSi
   if (query) argv.push("--query", query);
   let out = "";
   await runArgvStream(resolvedPython(), [daemonPath(), ...argv], process.cwd(),
-    (_s, line) => { out += line + "\n"; }, 30_000, signal);
+    (s, line) => { if (s === "stdout") out += line + "\n"; }, 30_000, signal);
   return parseSymbolsOutput(out);
 }
