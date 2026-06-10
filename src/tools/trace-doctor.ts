@@ -90,6 +90,10 @@ function resolvedPython(): string {
   return resolveConfigValue("pyocd_python", "CROSSPAD_TRACE_PYTHON", process.env.CROSSPAD_TRACE_PYTHON, "python3");
 }
 
+/**
+ * Production wiring: reads the actual filesystem, runs st-info, and imports
+ * pyocd to validate the environment. Safe to call even when tools are absent.
+ */
 export function realProbe(): DoctorProbe {
   return {
     pyocdInstalled: () => {
