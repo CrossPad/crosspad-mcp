@@ -159,10 +159,10 @@ def cmd_trace(args):
                 return
     threading.Thread(target=stdin_reader, daemon=True).start()
 
-    log(f"connecting probe (serial={args.probe or 'auto'})...")
+    log(f"connecting probe (serial={args.probe or 'auto'}, target={args.target})...")
     with ConnectHelper.session_with_chosen_probe(
             unique_id=args.probe or None,
-            options={"target_override": "stm32g0b1xx"}) as session:
+            options={"target_override": args.target}) as session:
         target = session.target
         log("connected; polling (non-halting)")
         t0 = time.monotonic()
@@ -210,6 +210,10 @@ def main():
     tp.add_argument("--rate", type=float, default=0.0)  # 0 = as fast as possible
     tp.add_argument("--out", default=None)
     tp.add_argument("--probe", default=None)
+    tp.add_argument("--target", default="cortex_m",
+                    help="pyOCD target_override. Default 'cortex_m' (generic; no CMSIS pack needed, "
+                         "sufficient for RAM polling). For part-specific features install the pack "
+                         "(pyocd pack install stm32g0b1) and pass e.g. --target stm32g0b1retx.")
     tp.set_defaults(func=cmd_trace)
 
     args = ap.parse_args()
