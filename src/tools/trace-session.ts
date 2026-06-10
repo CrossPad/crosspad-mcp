@@ -61,6 +61,9 @@ export class TraceSession {
     this.deviceState = "running";
     this.proc.stdout?.on("data", (c: Buffer) => this.ingest(c.toString()));
     this.proc.on("exit", () => { this.deviceState = "exited"; this.proc = null; });
+    // A bad interpreter path (race after doctor) emits 'error' — handle it so it
+    // never bubbles up as an uncaught exception that crashes the MCP server.
+    this.proc.on("error", (e) => { this.deviceState = "spawn_failed: " + e.message; this.proc = null; });
   }
 
   private ingest(text: string): void {
@@ -72,6 +75,7 @@ export class TraceSession {
       if (!f) continue;
       if (f.type === "sample") { this.buffer.push({ t: f.t, values: f.values }); this.deviceState = "running"; }
       else if (f.type === "status") this.deviceState = f.device_state;
+      else if (f.type === "error") this.deviceState = "error: " + f.error;
       this.onFrameExtra?.(f);
     }
   }
@@ -84,11 +88,17 @@ export class TraceSession {
   }
 
   stop(): void {
-    if (!this.proc) return;
-    try { this.proc.stdin?.write(JSON.stringify({ cmd: "stop" }) + "\n"); } catch { /* */ }
-    const p = this.proc;
-    setTimeout(() => { try { p.kill("SIGTERM"); } catch { /* */ } }, 1500);
+    // Always tear down the web UI first — even if the daemon already self-exited
+    // (connect failure / crash / target reset set this.proc = null), so we never
+    // orphan the listening port and EADDRINUSE the next session's dashboard.
     this.webui?.stop();
+    this.webui = null;
+    this.uiUrl = null;
+    if (this.proc) {
+      try { this.proc.stdin?.write(JSON.stringify({ cmd: "stop" }) + "\n"); } catch { /* */ }
+      const p = this.proc;
+      setTimeout(() => { try { p.kill("SIGTERM"); } catch { /* */ } }, 1500);
+    }
   }
 
   isRunning(): boolean { return this.proc !== null; }

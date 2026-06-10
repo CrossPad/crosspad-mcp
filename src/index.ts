@@ -303,9 +303,6 @@ const O_Trace = {
   file_path: z.string().optional(),
   ui_url: z.string().optional(),
   key: z.string().optional(),
-  regs: z.record(z.string(), z.unknown()).optional(),
-  decoded: z.record(z.string(), z.unknown()).optional(),
-  accessible: z.boolean().optional(),
   ...ErrorField,
 };
 
@@ -656,7 +653,7 @@ server.registerTool(
       rate_hz: z.number().int().min(0).max(2000).optional().describe("start: target sample rate (0 = as fast as the probe allows). Actual Fs is reported."),
       swo: z.array(z.string()).optional().describe("start (EXPERIMENTAL): map ITM stimulus ports to signal names, e.g. ['0:phase','1:isr_us']. Requires firmware that emits ITM on the SWO pin (NOT present in current CrossPad firmware — UNTESTED against real ITM). Omit for plain RAM polling. Fails soft: if SWV init fails, polling continues normally."),
       query: z.string().optional().describe("symbols: case-insensitive substring filter."),
-      key: z.string().optional().describe("config_set: one of stm_root|stm_elf_path|pyocd_python|probe_serial|trace_dir."),
+      key: z.string().optional().describe("config_set: one of stm_elf_path|pyocd_python|probe_serial|trace_dir."),
       value: z.string().optional().describe("config_set: the value to persist."),
       window_from: z.number().optional().describe("read: start time (s) of the window."),
       window_to: z.number().optional().describe("read: end time (s) of the window."),
@@ -673,7 +670,7 @@ server.registerTool(
         return ok({ action, ok: r.ok, issues: r.issues, device_state: r.probe ? "connected" : "no_probe" });
       }
       case "config_set": {
-        const allowed = ["stm_root", "stm_elf_path", "pyocd_python", "probe_serial", "trace_dir"];
+        const allowed = ["stm_elf_path", "pyocd_python", "probe_serial", "trace_dir"];
         if (!key || !allowed.includes(key)) return err(`config_set requires key in ${allowed.join("|")}`);
         if (value === undefined) return err("config_set requires `value`.");
         setConfigValue(key as keyof UserConfig, value);

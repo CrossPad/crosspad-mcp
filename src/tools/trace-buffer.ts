@@ -34,6 +34,7 @@ export class TraceBuffer {
     }
     if (pts.length <= maxPoints) return pts;
     const last = pts[pts.length - 1];
+    if (maxPoints <= 1) return [last];
     const stride = Math.ceil(pts.length / maxPoints);
     const out: Point[] = [];
     for (let i = 0; i < pts.length - 1; i += stride) {

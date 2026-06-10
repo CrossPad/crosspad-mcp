@@ -244,66 +244,74 @@ def cmd_trace(args):
     threading.Thread(target=stdin_reader, daemon=True).start()
 
     log(f"connecting probe (serial={args.probe or 'auto'}, target={args.target})...")
-    with ConnectHelper.session_with_chosen_probe(
-            unique_id=args.probe or None,
-            options={"target_override": args.target}) as session:
-        target = session.target
-        log("connected; polling (non-halting)")
+    n = 0
+    # Outer guard: probe-connect failure (e.g. probe busy — doctor can't detect
+    # this, st-info only proves presence) must surface as a clean error frame,
+    # not an uncaught traceback. The trace file always closes (outer finally).
+    try:
+        with ConnectHelper.session_with_chosen_probe(
+                unique_id=args.probe or None,
+                options={"target_override": args.target}) as session:
+            target = session.target
+            log("connected; polling (non-halting)")
 
-        # --- EXPERIMENTAL: set up SWV reader (only when --swo was given) ---
-        swo_reader, swo_sink = None, None
-        if swo_map:
-            swo_reader, swo_sink = _setup_swo(session, args.cpu_hz, args.swo_hz)
-            # If _setup_swo failed, swo_reader/swo_sink are both None and the loop
-            # below will behave identically to the no-swo path.
+            # --- EXPERIMENTAL: set up SWV reader (only when --swo was given) ---
+            swo_reader, swo_sink = None, None
+            if swo_map:
+                swo_reader, swo_sink = _setup_swo(session, args.cpu_hz, args.swo_hz)
+                # If _setup_swo failed, swo_reader/swo_sink are both None and the loop
+                # below will behave identically to the no-swo path.
 
-        t0 = time.monotonic()
-        n = 0
-        try:
-            while not stop["v"]:
-                cyc = time.monotonic()
-                values, in_stop = {}, False
-                for (start, length, members) in ranges:
+            t0 = time.monotonic()
+            try:
+                while not stop["v"]:
+                    cyc = time.monotonic()
+                    values, in_stop = {}, False
+                    for (start, length, members) in ranges:
+                        try:
+                            data = target.read_memory_block8(start, length)
+                        except Exception:
+                            in_stop = True
+                            break
+                        for (name, off, size, enc) in members:
+                            values[name] = _decode(data, off, size, enc)
+                    t = time.monotonic() - t0
+                    if in_stop:
+                        print(json.dumps({"type": "status", "device_state": "stop_suspected", "t": round(t, 6)}), flush=True)
+                        time.sleep(0.2)
+                        continue
+
+                    # --- EXPERIMENTAL: merge ITM values (no-op when swo_sink is None) ---
+                    if swo_sink is not None:
+                        for port, sig_name in swo_map.items():
+                            v = swo_sink.latest.get(port)
+                            if v is not None:
+                                values[sig_name] = v
+
+                    print(json.dumps({"type": "sample", "t": round(t, 6), "values": values}), flush=True)
+                    if fh:
+                        fh.write(json.dumps({"t": round(t, 6), "v": values}).encode() + b"\n")
+                    n += 1
+                    if target_dt:
+                        slp = target_dt - (time.monotonic() - cyc)
+                        if slp > 0:
+                            time.sleep(slp)
+            finally:
+                # Stop SWV reader if it was started (fail-soft: ignore errors).
+                if swo_reader is not None:
                     try:
-                        data = target.read_memory_block8(start, length)
-                    except Exception:
-                        in_stop = True
-                        break
-                    for (name, off, size, enc) in members:
-                        values[name] = _decode(data, off, size, enc)
-                t = time.monotonic() - t0
-                if in_stop:
-                    print(json.dumps({"type": "status", "device_state": "stop_suspected", "t": round(t, 6)}), flush=True)
-                    time.sleep(0.2)
-                    continue
-
-                # --- EXPERIMENTAL: merge ITM values (no-op when swo_sink is None) ---
-                if swo_sink is not None:
-                    for port, sig_name in swo_map.items():
-                        v = swo_sink.latest.get(port)
-                        if v is not None:
-                            values[sig_name] = v
-
-                print(json.dumps({"type": "sample", "t": round(t, 6), "values": values}), flush=True)
-                if fh:
-                    fh.write(json.dumps({"t": round(t, 6), "v": values}).encode() + b"\n")
-                n += 1
-                if target_dt:
-                    slp = target_dt - (time.monotonic() - cyc)
-                    if slp > 0:
-                        time.sleep(slp)
-        finally:
-            # Stop SWV reader if it was started (fail-soft: ignore errors).
-            if swo_reader is not None:
-                try:
-                    swo_reader.stop()
-                    log("[swo] SWV reader stopped.")
-                except Exception as e:
-                    log(f"[swo] error stopping SWV reader (ignored): {e}")
-            if fh:
-                fh.close()
-    log(f"stopped after {n} samples")
-    print(json.dumps({"type": "status", "device_state": "stopped", "samples": n}), flush=True)
+                        swo_reader.stop()
+                        log("[swo] SWV reader stopped.")
+                    except Exception as e:
+                        log(f"[swo] error stopping SWV reader (ignored): {e}")
+        log(f"stopped after {n} samples")
+        print(json.dumps({"type": "status", "device_state": "stopped", "samples": n}), flush=True)
+    except Exception as e:
+        log(f"trace connect/run failed: {e}")
+        print(json.dumps({"type": "error", "error": str(e)}), flush=True)
+    finally:
+        if fh:
+            fh.close()
 
 # --- device-state mode -------------------------------------------------------
 

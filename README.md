@@ -110,8 +110,8 @@ action=config_set  key=stm_elf_path  value=/path/to/CrossPad_STM32_r20.elf
 | `status` | Poll `device_state`, `sample_count`, `actual_fs`, `signals` without blocking. |
 | `read` | Downsampled time-series + per-signal stats (min/max/avg/slope). Safe to call frequently — max 200 points per signal by default. |
 | `save` | Export the in-memory buffer to CSV (`file_path` returned). |
-| `device_state` | Deep STOP/low-power register dump (Milestone 7, not yet implemented). |
-| `ui` | Returns the localhost dashboard URL (Milestone 5, not yet implemented). |
+| `device_state` | Deep STOP/low-power register dump (PWR/RCC/SCB/DBGMCU), decoded SLEEPDEEP/LPMS — does not halt the core. |
+| `ui` | Returns the localhost dashboard URL (live table + zoom/pan plots). |
 
 Signal names accept array indexing: `s_inputs[0]`, `s_adc_raw[3]`.
 

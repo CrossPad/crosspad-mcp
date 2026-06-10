@@ -4,7 +4,6 @@ import os from "os";
 import path from "path";
 
 export interface UserConfig {
-  stm_root?: string;
   stm_elf_path?: string;
   pyocd_python?: string;
   probe_serial?: string;

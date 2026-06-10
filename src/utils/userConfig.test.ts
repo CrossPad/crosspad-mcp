@@ -47,12 +47,12 @@ describe("resolveConfigValue", () => {
 
 describe("setConfigValue", () => {
   it("creates the file and persists a value", () => {
-    setConfigValue("stm_root", "/home/u/fw");
-    expect(JSON.parse(fs.readFileSync(cfgPath, "utf-8"))).toEqual({ stm_root: "/home/u/fw" });
+    setConfigValue("trace_dir", "/home/u/fw");
+    expect(JSON.parse(fs.readFileSync(cfgPath, "utf-8"))).toEqual({ trace_dir: "/home/u/fw" });
   });
   it("merges into existing config without clobbering other keys", () => {
-    fs.writeFileSync(cfgPath, JSON.stringify({ stm_root: "/a" }));
+    fs.writeFileSync(cfgPath, JSON.stringify({ trace_dir: "/a" }));
     setConfigValue("stm_elf_path", "/a/x.elf");
-    expect(loadUserConfig()).toEqual({ stm_root: "/a", stm_elf_path: "/a/x.elf" });
+    expect(loadUserConfig()).toEqual({ trace_dir: "/a", stm_elf_path: "/a/x.elf" });
   });
 });

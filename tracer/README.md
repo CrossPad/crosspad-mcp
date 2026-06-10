@@ -301,18 +301,21 @@ If SWV initialisation fails (e.g. the probe does not support SWO, the target lac
 
 #### pyOCD target name note
 
-The daemon passes `target_override: "stm32g0b1xx"` to pyOCD's `ConnectHelper`. This is NOT a built-in pyOCD target — the Keil CMSIS DFP pack must be installed first:
+The daemon defaults to `--target cortex_m`, the generic Cortex-M target built into
+pyOCD. It needs **no CMSIS pack** and is sufficient for everything this tool does
+(non-halting RAM polling + the absolute-address register reads in `device-state`).
+This default is verified working on an ST-Link V2 + STM32G0Bx.
+
+A part-specific target is **optional** — only needed if you want pyOCD's
+part-aware features (flash programming, named peripherals, ITM/TPIU descriptors
+for SWO). To use one, install the Keil DFP pack and pass the part name:
 
 ```bash
 pyocd pack install Keil.STM32G0xx_DFP
+pyocd pack find g0b1            # list available part names
+# then, e.g.:
+swd_tracer.py trace ... --target stm32g0b1retx
 ```
 
-After installation, pyOCD accepts part-specific names such as `stm32g0b1retx` (the RETx variant used on CrossPad r20). If you use a different flash-size variant (CB/CC/CE), substitute the appropriate part name.
-
-You can verify available names after pack install:
-
-```bash
-pyocd list --targets | grep -i g0b1
-```
-
-If the target still fails to connect, pass the specific part name via `--probe` or by editing `target_override` in `cmd_trace`.
+The RETx variant matches CrossPad r20; substitute the CB/CC/CE part if your flash
+size differs.
