@@ -1306,6 +1306,47 @@ server.resource(
 );
 
 // ═══════════════════════════════════════════════════════════════════════
+// crosspad://trace — live SWD trace session status. Cheap snapshot the LLM
+// can read without a tool call to learn whether a trace is running, the
+// device state, achieved Fs, signals, and the dashboard URL.
+// ═══════════════════════════════════════════════════════════════════════
+
+server.resource(
+  "crosspad-trace",
+  "crosspad://trace",
+  {
+    description: "Live SWD trace session status: active flag, device_state, sample_count, achieved Fs, traced signals, and the web UI URL. Returns {active:false} when idle.",
+    mimeType: "application/json",
+  },
+  async () => {
+    const s = getActiveSession();
+    const payload = s
+      ? {
+          active: true,
+          device_state: s.deviceState,
+          sample_count: s.buffer.count(),
+          actual_fs: (() => {
+            const elapsed = (performance.now() - s.startedAt) / 1000;
+            return elapsed > 0 ? s.buffer.count() / elapsed : 0;
+          })(),
+          signals: s.buffer.signalNames(),
+          file_path: s.filePath ?? null,
+          ui_url: s.uiUrl ?? null,
+        }
+      : { active: false };
+    return {
+      contents: [
+        {
+          uri: "crosspad://trace",
+          mimeType: "application/json",
+          text: JSON.stringify(payload, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
 // RESOURCES — apps registry & installed manifest per platform
 // One static resource per file-per-detected-platform. LLM/clients can
 // inspect raw JSON without spending a tool call. Resource set updates only
