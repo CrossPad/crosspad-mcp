@@ -735,7 +735,13 @@ server.registerTool(
       case "device_state": {
         const r = await getDeviceState(extra.signal);
         if (!r.success) return err(r.error ?? "device_state read failed", { action });
-        return ok({ action, ...r });
+        // Pack regs/decoded into `stats` (a schema field) so they survive
+        // outputSchema validation — O_Trace has no top-level regs/decoded keys.
+        return ok({
+          action,
+          device_state: r.accessible ? "accessible" : "inaccessible",
+          stats: { regs: r.regs, decoded: r.decoded, accessible: r.accessible },
+        });
       }
       case "ui": {
         const s = getActiveSession();
