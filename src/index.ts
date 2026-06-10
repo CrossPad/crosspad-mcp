@@ -687,7 +687,9 @@ server.registerTool(
         const sess = new TraceSession({ signals, rateHz: rate_hz ?? 0 });
         sess.start();
         setActiveSession(sess);
-        return ok({ action, device_state: sess.deviceState, signals, file_path: sess.filePath ?? undefined });
+        let uiUrl: string | undefined;
+        try { uiUrl = await sess.startUi(); } catch { /* UI optional */ }
+        return ok({ action, device_state: sess.deviceState, signals, file_path: sess.filePath ?? undefined, ui_url: uiUrl });
       }
       case "stop": {
         const s = getActiveSession();
@@ -727,8 +729,12 @@ server.registerTool(
       }
       case "device_state":
         return err("device_state deep dump not implemented yet (Milestone 7).", { action });
-      case "ui":
-        return err("web UI not implemented yet (Milestone 5).", { action });
+      case "ui": {
+        const s = getActiveSession();
+        if (!s) return err("No active trace — start one first.");
+        const url = await s.startUi();
+        return ok({ action, ui_url: url });
+      }
       case "add":
       case "remove":
         return err("add/remove not in v1 — stop and start with the new signal set.", { action });

@@ -5,6 +5,7 @@ import { TraceBuffer } from "./trace-buffer.js";
 import { daemonPath, resolvedPython, resolvedElf } from "./trace-symbols.js";
 import { resolveConfigValue } from "../utils/userConfig.js";
 import { TRACE_DIR_DEFAULT } from "../config.js";
+import { TraceWebUi } from "./trace-webui.js";
 
 export type Frame =
   | { type: "sample"; t: number; values: Record<string, number> }
@@ -32,6 +33,8 @@ export class TraceSession {
   deviceState = "starting";
   startedAt = 0;
   filePath: string | null = null;
+  webui: TraceWebUi | null = null;
+  uiUrl: string | null = null;
   private stdoutBuf = "";
   private onFrameExtra: ((f: Frame) => void) | null = null;
 
@@ -69,11 +72,19 @@ export class TraceSession {
     }
   }
 
+  async startUi(): Promise<string> {
+    if (this.uiUrl) return this.uiUrl;
+    this.webui = new TraceWebUi();
+    this.uiUrl = await this.webui.start(this);
+    return this.uiUrl;
+  }
+
   stop(): void {
     if (!this.proc) return;
     try { this.proc.stdin?.write(JSON.stringify({ cmd: "stop" }) + "\n"); } catch { /* */ }
     const p = this.proc;
     setTimeout(() => { try { p.kill("SIGTERM"); } catch { /* */ } }, 1500);
+    this.webui?.stop();
   }
 
   isRunning(): boolean { return this.proc !== null; }
