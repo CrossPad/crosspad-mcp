@@ -5,6 +5,16 @@ Subcommands:
   symbols  --elf PATH [--query STR]      -> prints JSON {symbols:[...]} and exits
   trace    --elf PATH --signals NAMES [--rate HZ] [--out FILE] [--probe UID]
                                          -> NDJSON frames on stdout until stdin {"cmd":"stop"}
+           Optional SWO/ITM:
+             --swo PORT:NAME[,...]        -> EXPERIMENTAL: decode ITM stimulus ports onto named
+                                            signals.  Requires firmware that emits ITM data on the
+                                            SWO pin — the current CrossPad firmware does NOT do this,
+                                            so this path is UNTESTED against a real ITM source.
+                                            If SWV initialisation fails the daemon continues with
+                                            plain RAM polling (fail-soft).
+             --cpu-hz HZ                  -> core clock for SWO baud derivation (default 64000000).
+             --swo-hz HZ                  -> desired SWO baud (must match firmware TPIU config,
+                                            default 2000000).
 
 Output contract: machine JSON/NDJSON on stdout, human logs on stderr ONLY.
 """
@@ -82,7 +92,65 @@ def cmd_symbols(args):
     print(json.dumps({"symbols": syms}))
 
 # --- trace mode ---------------------------------------------------------------
-import re, struct, threading, time
+import io, re, struct, threading, time
+
+# ---------------------------------------------------------------------------
+# EXPERIMENTAL: SWO / ITM sink (only used when --swo is passed)
+# ---------------------------------------------------------------------------
+
+class _ITMValueSink:
+    """Collects the latest ITM stimulus-port word.
+
+    Implements the TraceEventSink interface (receive(event)) without
+    subclassing so that the import of pyocd.trace.sink is deferred to the
+    --swo code path and never touched on the negative (plain-polling) path.
+
+    Thread-safe-ish: dict writes are GIL-guarded on CPython.
+    """
+    def __init__(self):
+        self.latest = {}  # port:int -> value:int
+
+    def receive(self, event):
+        try:
+            from pyocd.trace.events import TraceITMEvent
+            if isinstance(event, TraceITMEvent):
+                self.latest[event.port] = event.data
+        except Exception:
+            pass  # never crash the probe thread
+
+
+def _setup_swo(session, cpu_hz, swo_hz):
+    """Wire up SWVReader with our custom ITM sink.
+
+    Strategy: call SWVReader.init() with a dummy StringIO console (so the
+    standard SWVEventSink is constructed), then immediately replace the
+    parser's connected sink with our own _ITMValueSink.  This is the only
+    way to inject a custom sink given pyOCD 0.44's SWVReader.init() API
+    (signature: init(sys_clock, swo_clock, console:TextIO) -> bool).
+
+    Returns (reader, sink) on success, (None, None) on any failure.
+    The function is fail-soft: it logs to stderr and never raises.
+    """
+    try:
+        from pyocd.trace.swv import SWVReader
+        sink = _ITMValueSink()
+        reader = SWVReader(session, 0)
+        dummy_console = io.StringIO()
+        ok = reader.init(cpu_hz, swo_hz, dummy_console)
+        if not ok:
+            # init() already printed a pyOCD warning; add our own context.
+            log("[swo] SWVReader.init() returned False (probe/target may lack SWO support); "
+                "continuing with plain RAM polling only.")
+            return None, None
+        # Redirect the parser's downstream sink to ours.
+        # reader._parser is a SWOParser; SWOParser.connect(sink) replaces _sink.
+        reader._parser.connect(sink)
+        log(f"[swo] SWV reader started (cpu_hz={cpu_hz}, swo_hz={swo_hz}); "
+            "ITM data will be merged into sample frames when available.")
+        return reader, sink
+    except Exception as e:
+        log(f"[swo] setup failed, continuing with polling only: {e}")
+        return None, None
 
 _NP = struct.Struct("<I")  # little-endian u32 for the file header length prefix
 _SIG_RE = re.compile(r"^([A-Za-z_]\w*)(?:\[(\d+)\])?$")
@@ -137,6 +205,22 @@ def cmd_trace(args):
         return
     ranges = _coalesce(resolved)
 
+    # --- EXPERIMENTAL: parse --swo mapping (negative path: swo_map is empty) ---
+    swo_map = {}  # port:int -> signal_name:str
+    if args.swo:
+        for spec in args.swo.split(","):
+            spec = spec.strip()
+            if not spec:
+                continue
+            try:
+                port_str, sig_name = spec.split(":", 1)
+                swo_map[int(port_str)] = sig_name
+            except (ValueError, TypeError):
+                log(f"[swo] ignoring malformed port:name spec: {spec!r}")
+        if swo_map:
+            log(f"[swo] EXPERIMENTAL: ITM port mapping: {swo_map}  "
+                "(requires firmware that emits ITM on SWO — NOT present in current CrossPad firmware)")
+
     fh = open(args.out, "wb") if args.out else None
     if fh:
         hdr = json.dumps({"signals": [{"name": s["name"], "encoding": s["encoding"], "size": s["size"]} for s in resolved]}).encode()
@@ -165,34 +249,59 @@ def cmd_trace(args):
             options={"target_override": args.target}) as session:
         target = session.target
         log("connected; polling (non-halting)")
+
+        # --- EXPERIMENTAL: set up SWV reader (only when --swo was given) ---
+        swo_reader, swo_sink = None, None
+        if swo_map:
+            swo_reader, swo_sink = _setup_swo(session, args.cpu_hz, args.swo_hz)
+            # If _setup_swo failed, swo_reader/swo_sink are both None and the loop
+            # below will behave identically to the no-swo path.
+
         t0 = time.monotonic()
         n = 0
-        while not stop["v"]:
-            cyc = time.monotonic()
-            values, in_stop = {}, False
-            for (start, length, members) in ranges:
+        try:
+            while not stop["v"]:
+                cyc = time.monotonic()
+                values, in_stop = {}, False
+                for (start, length, members) in ranges:
+                    try:
+                        data = target.read_memory_block8(start, length)
+                    except Exception:
+                        in_stop = True
+                        break
+                    for (name, off, size, enc) in members:
+                        values[name] = _decode(data, off, size, enc)
+                t = time.monotonic() - t0
+                if in_stop:
+                    print(json.dumps({"type": "status", "device_state": "stop_suspected", "t": round(t, 6)}), flush=True)
+                    time.sleep(0.2)
+                    continue
+
+                # --- EXPERIMENTAL: merge ITM values (no-op when swo_sink is None) ---
+                if swo_sink is not None:
+                    for port, sig_name in swo_map.items():
+                        v = swo_sink.latest.get(port)
+                        if v is not None:
+                            values[sig_name] = v
+
+                print(json.dumps({"type": "sample", "t": round(t, 6), "values": values}), flush=True)
+                if fh:
+                    fh.write(json.dumps({"t": round(t, 6), "v": values}).encode() + b"\n")
+                n += 1
+                if target_dt:
+                    slp = target_dt - (time.monotonic() - cyc)
+                    if slp > 0:
+                        time.sleep(slp)
+        finally:
+            # Stop SWV reader if it was started (fail-soft: ignore errors).
+            if swo_reader is not None:
                 try:
-                    data = target.read_memory_block8(start, length)
-                except Exception:
-                    in_stop = True
-                    break
-                for (name, off, size, enc) in members:
-                    values[name] = _decode(data, off, size, enc)
-            t = time.monotonic() - t0
-            if in_stop:
-                print(json.dumps({"type": "status", "device_state": "stop_suspected", "t": round(t, 6)}), flush=True)
-                time.sleep(0.2)
-                continue
-            print(json.dumps({"type": "sample", "t": round(t, 6), "values": values}), flush=True)
+                    swo_reader.stop()
+                    log("[swo] SWV reader stopped.")
+                except Exception as e:
+                    log(f"[swo] error stopping SWV reader (ignored): {e}")
             if fh:
-                fh.write(json.dumps({"t": round(t, 6), "v": values}).encode() + b"\n")
-            n += 1
-            if target_dt:
-                slp = target_dt - (time.monotonic() - cyc)
-                if slp > 0:
-                    time.sleep(slp)
-        if fh:
-            fh.close()
+                fh.close()
     log(f"stopped after {n} samples")
     print(json.dumps({"type": "status", "device_state": "stopped", "samples": n}), flush=True)
 
@@ -214,6 +323,19 @@ def main():
                     help="pyOCD target_override. Default 'cortex_m' (generic; no CMSIS pack needed, "
                          "sufficient for RAM polling). For part-specific features install the pack "
                          "(pyocd pack install stm32g0b1) and pass e.g. --target stm32g0b1retx.")
+    tp.add_argument("--swo", default=None,
+                    help="EXPERIMENTAL: comma list of port:name mappings for ITM stimulus ports, "
+                         "e.g. '0:phase,1:isr_us'.  Requires firmware that emits ITM data on the "
+                         "SWO pin (NOT present in current CrossPad firmware — UNTESTED against real "
+                         "ITM).  Omit for plain RAM polling.  If SWV init fails the daemon continues "
+                         "polling (fail-soft).")
+    tp.add_argument("--cpu-hz", type=int, default=64_000_000,
+                    help="Core clock frequency in Hz for SWO baud derivation (SWO path only). "
+                         "Default 64000000 (STM32G0 max).  Must match the actual firmware clock — "
+                         "CrossPad r20 runs at 64 MHz but confirm in the .ioc/.clock config.")
+    tp.add_argument("--swo-hz", type=int, default=2_000_000,
+                    help="Desired SWO output baud in Hz (SWO path only). Default 2000000. "
+                         "Must match the TPIU_ACPR configuration in the firmware.")
     tp.set_defaults(func=cmd_trace)
 
     args = ap.parse_args()

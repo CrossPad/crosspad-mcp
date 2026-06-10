@@ -25,7 +25,7 @@ export function parseFrame(line: string): Frame | null {
   } catch { return null; }
 }
 
-export interface SessionOpts { signals: string[]; rateHz: number; elf?: string; outFile?: string; capacity?: number; }
+export interface SessionOpts { signals: string[]; rateHz: number; elf?: string; outFile?: string; capacity?: number; swo?: string[]; }
 
 export class TraceSession {
   private proc: ChildProcess | null = null;
@@ -52,6 +52,10 @@ export class TraceSession {
       "--signals", this.opts.signals.join(","), "--rate", String(this.opts.rateHz), "--out", this.filePath];
     const probe = resolveConfigValue("probe_serial", "CROSSPAD_PROBE_SERIAL", process.env.CROSSPAD_PROBE_SERIAL, "");
     if (probe) argv.push("--probe", probe);
+    // EXPERIMENTAL: SWO/ITM channel decode (opt-in; fail-soft in daemon).
+    if (this.opts.swo && this.opts.swo.length > 0) {
+      argv.push("--swo", this.opts.swo.join(","));
+    }
     this.proc = spawn(resolvedPython(), argv, { stdio: ["pipe", "pipe", "pipe"] });
     this.startedAt = performance.now();
     this.deviceState = "running";

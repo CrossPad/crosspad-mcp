@@ -650,6 +650,7 @@ server.registerTool(
       action: TraceAction,
       signals: z.array(z.string()).optional().describe("start: variable names from `symbols` (e.g. ['s_vbat_mv','s_inputs[0]'])."),
       rate_hz: z.number().int().min(0).max(2000).optional().describe("start: target sample rate (0 = as fast as the probe allows). Actual Fs is reported."),
+      swo: z.array(z.string()).optional().describe("start (EXPERIMENTAL): map ITM stimulus ports to signal names, e.g. ['0:phase','1:isr_us']. Requires firmware that emits ITM on the SWO pin (NOT present in current CrossPad firmware — UNTESTED against real ITM). Omit for plain RAM polling. Fails soft: if SWV init fails, polling continues normally."),
       query: z.string().optional().describe("symbols: case-insensitive substring filter."),
       key: z.string().optional().describe("config_set: one of stm_root|stm_elf_path|pyocd_python|probe_serial|trace_dir."),
       value: z.string().optional().describe("config_set: the value to persist."),
@@ -661,7 +662,7 @@ server.registerTool(
     outputSchema: O_Trace,
     annotations: ANN_SIDE_EFFECT,
   },
-  async ({ action, signals, rate_hz, query, key, value, window_from, window_to, max_points, format }, extra: any) => {
+  async ({ action, signals, rate_hz, swo, query, key, value, window_from, window_to, max_points, format }, extra: any) => {
     switch (action) {
       case "doctor": {
         const r = runDoctor(realProbe());
@@ -684,7 +685,7 @@ server.registerTool(
         if (getActiveSession()?.isRunning()) return err("A trace is already running — stop it first.");
         const doc = runDoctor(realProbe());
         if (!doc.ok) return err("Doctor reported blocking issues — resolve them first.", { action, issues: doc.issues });
-        const sess = new TraceSession({ signals, rateHz: rate_hz ?? 0 });
+        const sess = new TraceSession({ signals, rateHz: rate_hz ?? 0, swo });
         sess.start();
         setActiveSession(sess);
         let uiUrl: string | undefined;

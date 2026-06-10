@@ -201,6 +201,60 @@ stdout while running:
 {"type": "status", "device_state": "stopped", "samples": 200}
 ```
 
+---
+
+### EXPERIMENTAL: SWO / ITM channel decode
+
+> **Status: EXPERIMENTAL — opt-in only, UNTESTED against a real ITM source.**
+> The current CrossPad firmware does NOT emit ITM data on the SWO pin.
+> This feature exists for future use when firmware-side ITM instrumentation is added.
+
+#### What it does
+
+When `--swo` is passed, the daemon additionally starts a pyOCD `SWVReader` background thread that reads raw SWO bytes from the probe, passes them through the `SWOParser`, and captures the decoded ITM stimulus-port values in a per-port accumulator.  On each poll cycle the latest captured value for each mapped port is merged into the `values` object of the outgoing sample frame alongside the normal RAM-polled signals.
+
+#### Syntax
+
+```
+--swo PORT:NAME[,PORT:NAME,...]
+```
+
+Each token maps an ITM stimulus port number to a signal name that will appear in the `values` field of each `sample` frame.
+
+Examples:
+```bash
+# Map ITM port 0 → "dbg_phase", port 1 → "isr_us"
+python swd_tracer.py trace \
+  --elf firmware.elf \
+  --signals s_vbat_mv \
+  --swo 0:dbg_phase,1:isr_us \
+  --rate 100
+```
+
+The MCP tool exposes this as:
+```json
+{ "action": "start", "signals": ["s_vbat_mv"], "swo": ["0:dbg_phase", "1:isr_us"] }
+```
+
+#### Additional flags (SWO path only)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--cpu-hz` | `64000000` | Core clock frequency in Hz for SWO baud derivation. **Must match the actual firmware clock.** CrossPad r20 runs at 64 MHz; confirm in the `.ioc` / CubeMX clock config. |
+| `--swo-hz` | `2000000` | Desired SWO output baud in Hz. **Must match `TPIU_ACPR` configured in the firmware.** |
+
+These are kept at daemon-level defaults and are not currently plumbed through the MCP `swo[]` input (they can be added when there is a real firmware source to test against).
+
+#### Fail-soft behaviour
+
+If SWV initialisation fails (e.g. the probe does not support SWO, the target lacks ITM/TPIU, or the SWO clock cannot be set), the daemon logs a message to stderr and continues with plain RAM polling — it never crashes.  ITM ports that receive no data simply produce no entry in `values` for that cycle.
+
+#### pyOCD 0.44 API note
+
+`SWVReader.init(sys_clock, swo_clock, console:TextIO) -> bool` — the console parameter is accepted for text output but the ITM sink is injected by re-connecting the internal `SWOParser` to our `_ITMValueSink` after `init()` returns.
+
+---
+
 #### pyOCD target name note
 
 The daemon passes `target_override: "stm32g0b1xx"` to pyOCD's `ConnectHelper`. This is NOT a built-in pyOCD target — the Keil CMSIS DFP pack must be installed first:
