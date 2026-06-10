@@ -21,6 +21,31 @@ export interface SymbolSearchResult {
 }
 
 /**
+ * Vendored / third-party / generated directories. Symbol search skips files
+ * under any of these path segments by default — without this, a query like
+ * "ota" drowns in LVGL `rotate`/`total` matches and a query like "Animation"
+ * mixes thorvg/FT800 internals with real CrossPad code. Pass include_vendored
+ * to scan them anyway.
+ */
+const VENDOR_SEGMENTS = [
+  // ESP / LVGL / graphics vendoring
+  "lvgl", "managed_components", "thorvg", "nema_gfx", "FT800-FT813",
+  "stb_image", "demos", "examples",
+  // Arduino / display libs
+  "TFT_eSPI",
+  // STM32 CubeMX / ST vendoring (firmware repo)
+  "Drivers", "Middlewares", "CMSIS",
+  // generic third-party / generated
+  "third_party", "vendor", "node_modules", "build", ".pio",
+];
+const VENDOR_DIR_RE = new RegExp(`(^|/)(${VENDOR_SEGMENTS.join("|")})(/|$)`);
+
+/** @internal exported for testing */
+export function isVendoredPath(file: string): boolean {
+  return VENDOR_DIR_RE.test(file);
+}
+
+/**
  * Build a regex pattern that matches definition lines containing the query.
  * Each kind has a specific pattern that only matches declarations/definitions.
  */
@@ -68,6 +93,7 @@ export function crosspadSearchSymbols(
   repos: string[] = ["all"],
   maxResults: number = 50,
   contextLines: number = 0,
+  includeVendored: boolean = false,
 ): SymbolSearchResult {
   const results: SymbolResult[] = [];
 
@@ -125,6 +151,7 @@ export function crosspadSearchSymbols(
         }
 
         if (!matchFile || !matchContent) continue;
+        if (!includeVendored && isVendoredPath(matchFile)) continue;
 
         // Apply same filters as non-context mode
         if (/^\s*(class|struct)\s+\w+\s*;/.test(matchContent)) continue;
@@ -165,6 +192,8 @@ export function crosspadSearchSymbols(
         const [, file, lineStr, content] = match;
         const lineNum = parseInt(lineStr, 10);
         const trimmedContent = content.trim();
+
+        if (!includeVendored && isVendoredPath(file)) continue;
 
         if (/^\s*(class|struct)\s+\w+\s*;/.test(trimmedContent)) continue;
         if (/^\s*#include/.test(trimmedContent)) continue;

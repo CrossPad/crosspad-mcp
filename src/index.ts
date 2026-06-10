@@ -922,21 +922,23 @@ server.registerTool(
 server.registerTool(
   "crosspad_search_symbols",
   {
-    description: "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. PREFER THIS over raw `grep -r` or `git grep` — it filters to definitions only (skips call sites/declarations), classifies kind, and aggregates across all 5 repos automatically. Substring match: 'Foo' matches FooBar, MyFoo.",
+    description: "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. PREFER THIS over raw `grep -r` or `git grep` — it filters to definitions only (skips call sites/declarations), classifies kind, and aggregates across all repos automatically. Substring match: 'Foo' matches FooBar, MyFoo. Vendored/generated trees (lvgl, managed_components, thorvg, TFT_eSPI, STM Drivers/Middlewares/CMSIS, build, …) are skipped by default — pass include_vendored=true to scan them.",
     inputSchema: {
       query: z.string().min(1).describe("Symbol name (substring match, case-insensitive on filter)"),
       kind: z.enum(["class", "function", "macro", "enum", "typedef", "all"]).default("all"),
       repos: z.array(z.string()).default(["all"])
-        .describe("Repo names to scan, or ['all']. Names: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3."),
+        .describe("Repo names to scan, or ['all']. Names: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, stm32-r20."),
       max_results: z.number().int().min(1).max(500).default(50),
       context_lines: z.number().int().min(0).max(10).default(0)
         .describe("Surrounding lines per match (like grep -C). 0 = no context."),
+      include_vendored: z.boolean().default(false)
+        .describe("Scan vendored/generated trees too (lvgl, managed_components, STM Drivers/Middlewares, build, …). Default false — these are almost always noise."),
     },
     outputSchema: O_SearchSymbols,
     annotations: ANN_READ_ONLY,
   },
-  async ({ query, kind, repos, max_results, context_lines }) =>
-    jsonResponse({ success: true, ...crosspadSearchSymbols(query, kind, repos, max_results, context_lines) })
+  async ({ query, kind, repos, max_results, context_lines, include_vendored }) =>
+    jsonResponse({ success: true, ...crosspadSearchSymbols(query, kind, repos, max_results, context_lines, include_vendored) })
 );
 
 server.registerTool(
@@ -1223,7 +1225,7 @@ server.registerResource(
   "crosspad-symbol",
   new ResourceTemplate("crosspad://symbols/{repo}/{symbol}", { list: undefined }),
   {
-    description: "Resolve a single symbol by repo+name. URI: crosspad://symbols/<repo>/<symbol>. <repo> is one of: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, or 'all'. Returns JSON with matching definition(s) (class/function/macro/enum/typedef). For substring/wildcard search, use the crosspad_search_symbols tool.",
+    description: "Resolve a single symbol by repo+name. URI: crosspad://symbols/<repo>/<symbol>. <repo> is one of: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, stm32-r20, or 'all'. Returns JSON with matching definition(s) (class/function/macro/enum/typedef). For substring/wildcard search, use the crosspad_search_symbols tool.",
     mimeType: "application/json",
   },
   async (uri, variables) => {
