@@ -61,6 +61,7 @@ WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, pr
 - Sim interaction  → crosspad_screenshot, crosspad_input, crosspad_midi, crosspad_stats, crosspad_settings_get/set.
 - Apps (registry)  → crosspad_apps_list / install / remove / update / sync (NOT manual submodule git ops).
 - Commits          → crosspad_commit (NOT raw \`git commit\`) — handles multi-repo paths and refuses on merge conflicts.
+- SWD tracing    → crosspad_trace (STM32 firmware variable RT trace over ST-Link). Run action=doctor first; resolve issues; then action=symbols → start → read.
 
 WHY: these tools resolve repos dynamically from env vars, parse build output into structured errors[], stream progress, and refuse unsafe operations. Manual shell equivalents will work but lose this scaffolding and frequently break across the 5 repos.
 

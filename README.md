@@ -74,6 +74,59 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | `crosspad_flash` | Flash firmware to device (`transport: uart\|ota`, `port?`, `firmware_path?` ota-only) |
 | `crosspad_log` | Capture logs (`target`: pc=spawn binary / idf=read serial) |
 | `crosspad_devices` | List USB serial devices, flag CrossPads |
+| `crosspad_trace` | Real-time SWD variable trace over ST-Link (non-halting RAM polling) |
+
+### SWD tracing (crosspad_trace)
+
+Non-halting real-time trace of STM32G0B1 firmware variables via ST-Link — the same technique as ST-Studio/CubeMonitor but driven directly from the LLM session.
+
+**Prerequisites**
+
+Install pyocd and pyelftools into a Python venv:
+
+```bash
+python3 -m venv ~/.venv/pyocd
+~/.venv/pyocd/bin/pip install pyocd pyelftools
+```
+
+Point the server at that venv via `config_set` (or set it directly in `~/.config/crosspad-mcp/config.json`):
+
+```
+action=config_set  key=pyocd_python  value=~/.venv/pyocd/bin/python
+action=config_set  key=stm_elf_path  value=/path/to/CrossPad_STM32_r20.elf
+```
+
+**Linux udev note**: without a udev rule the ST-Link probe requires root. Add the official rules from pyocd or from ST (`/etc/udev/rules.d/50-cmsis-dap.rules` or equivalent) so your user can open the device without `sudo`.
+
+**Actions**
+
+| Action | Description |
+|--------|-------------|
+| `doctor` | Environment precheck — run this first. Returns `issues[]` with severity and suggested_fix for each problem. |
+| `config_set` | Persist a key/value to `~/.config/crosspad-mcp/config.json`. Keys: `stm_root`, `stm_elf_path`, `pyocd_python`, `probe_serial`, `trace_dir`. |
+| `symbols` | List or search traceable variables resolved from the Debug ELF (`query` for substring filter). |
+| `start` | Begin a background trace session (`signals[]`, `rate_hz`). Returns `file_path` of the on-disk `.cptrace` file. |
+| `stop` | End the active trace; returns final `sample_count` and `file_path`. |
+| `status` | Poll `device_state`, `sample_count`, `actual_fs`, `signals` without blocking. |
+| `read` | Downsampled time-series + per-signal stats (min/max/avg/slope). Safe to call frequently — max 200 points per signal by default. |
+| `save` | Export the in-memory buffer to CSV (`file_path` returned). |
+| `device_state` | Deep STOP/low-power register dump (Milestone 7, not yet implemented). |
+| `ui` | Returns the localhost dashboard URL (Milestone 5, not yet implemented). |
+
+Signal names accept array indexing: `s_inputs[0]`, `s_adc_raw[3]`.
+
+**Example — trace ADC rail and pad inputs**
+
+```
+action=doctor
+# resolve any blocking issues...
+action=symbols  query=s_vbat
+action=start    signals=["s_vbat_mv","s_inputs[0]"]  rate_hz=100
+action=status
+action=read     max_points=500
+action=save
+action=stop
+```
 
 ### Tests
 
