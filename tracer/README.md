@@ -203,6 +203,50 @@ stdout while running:
 
 ---
 
+### `device-state` — deep low-power / STOP register dump (non-halting)
+
+Reads a fixed set of STM32G0 / Cortex-M debug-bus registers and decodes key low-power bits to characterise whether the core is in run/sleep or STOP without auto-waking it (no halt, no DBGMCU debug-in-stop bits required).
+
+```bash
+python swd_tracer.py device-state [--probe UID] [--target cortex_m]
+```
+
+Options:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--probe UID` | `None` | ST-Link unique ID string; omit to auto-select the first probe. |
+| `--target` | `cortex_m` | pyOCD target override. `cortex_m` (generic) is sufficient — no CMSIS pack needed for plain register reads. |
+
+Registers read (`accessible` is `false` if any read faults — which itself indicates the core is in deep STOP):
+
+| Register | Address | Description |
+|---|---|---|
+| `PWR_CR1` | `0x40007000` | Power control 1 — `LPMS[2:0]` low-power mode select |
+| `PWR_SR1` | `0x40007010` | Power status 1 |
+| `RCC_CR` | `0x40021000` | RCC clock control — HSI/PLL on bits |
+| `RCC_CFGR` | `0x40021008` | RCC clock configuration |
+| `SCB_SCR` | `0xE000ED10` | System Control Register — `SLEEPDEEP` bit (bit 2) |
+| `DBGMCU_CR` | `0x40015804` | Debug MCU configuration |
+
+Decoded fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `SLEEPDEEP` | bool | `true` if `SCB_SCR[2]` is set — the next WFI/WFE will enter a deep sleep / STOP mode. |
+| `LPMS` | int (0-7) | Low-power mode select from `PWR_CR1[2:0]`. |
+| `interpretation` | string | `"run/sleep"` when `SLEEPDEEP=false`; `"STOP/low-power likely"` when `true`. |
+
+Output example (device running normally):
+
+```json
+{"type": "device_state", "regs": {"PWR_CR1": 776, "PWR_SR1": 0, "RCC_CR": 62915840, "RCC_CFGR": 18, "SCB_SCR": 0, "DBGMCU_CR": 0}, "decoded": {"SLEEPDEEP": false, "LPMS": 0, "interpretation": "run/sleep"}, "accessible": true}
+```
+
+The MCP tool exposes this as `crosspad_trace` with `action="device_state"` — it calls this subcommand and returns the `regs` and `decoded` objects in the response.
+
+---
+
 ### EXPERIMENTAL: SWO / ITM channel decode
 
 > **Status: EXPERIMENTAL — opt-in only, UNTESTED against a real ITM source.**

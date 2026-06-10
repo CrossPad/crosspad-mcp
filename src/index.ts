@@ -37,6 +37,7 @@ import {
 import { runDoctor, realProbe } from "./tools/trace-doctor.js";
 import { setConfigValue, type UserConfig } from "./utils/userConfig.js";
 import { listSymbols } from "./tools/trace-symbols.js";
+import { getDeviceState } from "./tools/trace-device.js";
 import { TraceSession, getActiveSession, setActiveSession } from "./tools/trace-session.js";
 import { writeCsv } from "./tools/trace-export.js";
 
@@ -302,6 +303,9 @@ const O_Trace = {
   file_path: z.string().optional(),
   ui_url: z.string().optional(),
   key: z.string().optional(),
+  regs: z.record(z.string(), z.unknown()).optional(),
+  decoded: z.record(z.string(), z.unknown()).optional(),
+  accessible: z.boolean().optional(),
   ...ErrorField,
 };
 
@@ -728,8 +732,11 @@ server.registerTool(
         writeCsv(csvPath, s.buffer, s.buffer.signalNames());
         return ok({ action, file_path: csvPath });
       }
-      case "device_state":
-        return err("device_state deep dump not implemented yet (Milestone 7).", { action });
+      case "device_state": {
+        const r = await getDeviceState(extra.signal);
+        if (!r.success) return err(r.error ?? "device_state read failed", { action });
+        return ok({ action, ...r });
+      }
       case "ui": {
         const s = getActiveSession();
         if (!s) return err("No active trace — start one first.");

@@ -305,6 +305,41 @@ def cmd_trace(args):
     log(f"stopped after {n} samples")
     print(json.dumps({"type": "status", "device_state": "stopped", "samples": n}), flush=True)
 
+# --- device-state mode -------------------------------------------------------
+
+_REGS = {
+    "PWR_CR1":   0x40007000,
+    "PWR_SR1":   0x40007010,
+    "RCC_CR":    0x40021000,
+    "RCC_CFGR":  0x40021008,
+    "SCB_SCR":   0xE000ED10,
+    "DBGMCU_CR": 0x40015804,
+}
+
+def cmd_device_state(args):
+    from pyocd.core.helpers import ConnectHelper
+    out = {"type": "device_state", "regs": {}, "decoded": {}, "accessible": True}
+    try:
+        with ConnectHelper.session_with_chosen_probe(unique_id=args.probe or None,
+              options={"target_override": args.target}) as session:
+            t = session.target
+            for name, addr in _REGS.items():
+                try:
+                    out["regs"][name] = t.read32(addr)
+                except Exception:
+                    out["regs"][name] = None
+                    out["accessible"] = False
+            scr = out["regs"].get("SCB_SCR") or 0
+            out["decoded"]["SLEEPDEEP"] = bool(scr & (1 << 2))
+            cr1 = out["regs"].get("PWR_CR1") or 0
+            out["decoded"]["LPMS"] = cr1 & 0x7  # low-power mode select (STM32G0 PWR_CR1[2:0])
+            out["decoded"]["interpretation"] = (
+              "STOP/low-power likely" if out["decoded"]["SLEEPDEEP"] else "run/sleep")
+    except Exception as e:
+        out["accessible"] = False
+        out["error"] = str(e)
+    print(json.dumps(out), flush=True)
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -337,6 +372,11 @@ def main():
                     help="Desired SWO output baud in Hz (SWO path only). Default 2000000. "
                          "Must match the TPIU_ACPR configuration in the firmware.")
     tp.set_defaults(func=cmd_trace)
+
+    dp = sub.add_parser("device-state")
+    dp.add_argument("--probe", default=None)
+    dp.add_argument("--target", default="cortex_m")
+    dp.set_defaults(func=cmd_device_state)
 
     args = ap.parse_args()
     args.func(args)
