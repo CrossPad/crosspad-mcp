@@ -301,6 +301,7 @@ const O_Trace = {
   stats: z.record(z.string(), z.unknown()).optional(),
   file_path: z.string().optional(),
   ui_url: z.string().optional(),
+  key: z.string().optional(),
   ...ErrorField,
 };
 
@@ -719,8 +720,7 @@ server.registerTool(
       case "save": {
         const s = getActiveSession();
         if (!s) return err("No active trace.");
-        const fmt = format ?? "csv";
-        if (fmt !== "csv") return err("Only format=csv is supported.");
+        // `format` is constrained to "csv" by the input schema — no runtime branch needed.
         const csvPath = (s.filePath ?? "/tmp/trace").replace(/\.cptrace$/, "") + ".csv";
         writeCsv(csvPath, s.buffer, s.buffer.signalNames());
         return ok({ action, file_path: csvPath });
