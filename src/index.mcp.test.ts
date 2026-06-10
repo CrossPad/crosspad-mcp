@@ -165,6 +165,21 @@ describe("crosspad_check via MCP API", () => {
   });
 });
 
+describe("crosspad_trace via MCP API", () => {
+  it("is registered and returns idle status when no trace is active", async () => {
+    const r = await client.callTool({
+      name: "crosspad_trace",
+      arguments: { action: "status" },
+    });
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toMatchObject({
+      success: true,
+      device_state: "idle",
+      sample_count: 0,
+    });
+  });
+});
+
 describe("crosspad_kill via MCP API", () => {
   it("validates idle path (was_running=false)", async () => {
     mockedKill.mockResolvedValueOnce({

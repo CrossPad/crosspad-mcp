@@ -34,6 +34,11 @@ import {
   crosspadAppUpdate,
   crosspadAppSync,
 } from "./tools/app-manager.js";
+import { runDoctor, realProbe } from "./tools/trace-doctor.js";
+import { setConfigValue, type UserConfig } from "./utils/userConfig.js";
+import { listSymbols } from "./tools/trace-symbols.js";
+import { TraceSession, getActiveSession, setActiveSession } from "./tools/trace-session.js";
+import { writeCsv } from "./tools/trace-export.js";
 
 import type { OnLine } from "./utils/exec.js";
 import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
@@ -278,6 +283,23 @@ const O_Devices = {
     kind: z.enum(["esp-native", "stm-bridge"]).nullable().optional(),
   }).passthrough()),
   crosspad_count: z.number().int().optional(),
+  ...ErrorField,
+};
+
+const O_Trace = {
+  success: z.boolean(),
+  action: z.string().optional(),
+  ok: z.boolean().optional(),
+  issues: z.array(z.record(z.string(), z.unknown())).optional(),
+  symbols: z.array(z.record(z.string(), z.unknown())).optional(),
+  device_state: z.string().optional(),
+  actual_fs: z.number().optional(),
+  sample_count: z.number().int().optional(),
+  signals: z.array(z.string()).optional(),
+  series: z.record(z.string(), z.unknown()).optional(),
+  stats: z.record(z.string(), z.unknown()).optional(),
+  file_path: z.string().optional(),
+  ui_url: z.string().optional(),
   ...ErrorField,
 };
 
@@ -594,6 +616,123 @@ server.registerTool(
     annotations: ANN_READ_ONLY,
   },
   async () => jsonResponse(listDevices())
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// SWD TRACER
+// ═══════════════════════════════════════════════════════════════════════
+
+const TraceAction = z.enum([
+  "doctor", "config_set", "symbols", "start", "stop",
+  "add", "remove", "status", "read", "save", "device_state", "ui",
+]);
+
+server.registerTool(
+  "crosspad_trace",
+  {
+    description:
+      "Real-time SWD tracer for the STM32G0B1 firmware (ST-Link). Non-halting RAM polling of firmware variables resolved from the Debug ELF (like ST-Studio/CubeMonitor). Pick an `action`:\n" +
+      "  • doctor       → environment precheck → issues[] (run this FIRST; resolve issues, then config_set).\n" +
+      "  • config_set   → persist a resolved path/serial to ~/.config/crosspad-mcp/config.json (key,value).\n" +
+      "  • symbols      → list/search traceable variables from the ELF (query optional).\n" +
+      "  • start        → begin a background trace (signals[], rate_hz).\n" +
+      "  • stop         → end the active trace.\n" +
+      "  • add/remove   → not in v1 (restart with the new signal set instead).\n" +
+      "  • status       → device_state (running/stop_suspected/exited), sample_count, actual_fs, signals.\n" +
+      "  • read         → recent samples downsampled + per-signal stats (cheap; safe for the LLM).\n" +
+      "  • save         → export the in-memory buffer to CSV (returns file_path).\n" +
+      "  • device_state → deep low-power/STOP register dump.\n" +
+      "  • ui           → returns the localhost dashboard URL.\n" +
+      "Signal names accept array indexing, e.g. 's_inputs[0]', 's_adc_raw[3]'.",
+    inputSchema: {
+      action: TraceAction,
+      signals: z.array(z.string()).optional().describe("start: variable names from `symbols` (e.g. ['s_vbat_mv','s_inputs[0]'])."),
+      rate_hz: z.number().int().min(0).max(2000).optional().describe("start: target sample rate (0 = as fast as the probe allows). Actual Fs is reported."),
+      query: z.string().optional().describe("symbols: case-insensitive substring filter."),
+      key: z.string().optional().describe("config_set: one of stm_root|stm_elf_path|pyocd_python|probe_serial|trace_dir."),
+      value: z.string().optional().describe("config_set: the value to persist."),
+      window_from: z.number().optional().describe("read: start time (s) of the window."),
+      window_to: z.number().optional().describe("read: end time (s) of the window."),
+      max_points: z.number().int().min(1).max(5000).optional().describe("read: max points per signal (default 200)."),
+      format: z.enum(["csv"]).optional().describe("save: export format (csv)."),
+    },
+    outputSchema: O_Trace,
+    annotations: ANN_SIDE_EFFECT,
+  },
+  async ({ action, signals, rate_hz, query, key, value, window_from, window_to, max_points, format }, extra: any) => {
+    switch (action) {
+      case "doctor": {
+        const r = runDoctor(realProbe());
+        return ok({ action, ok: r.ok, issues: r.issues, device_state: r.probe ? "connected" : "no_probe" });
+      }
+      case "config_set": {
+        const allowed = ["stm_root", "stm_elf_path", "pyocd_python", "probe_serial", "trace_dir"];
+        if (!key || !allowed.includes(key)) return err(`config_set requires key in ${allowed.join("|")}`);
+        if (value === undefined) return err("config_set requires `value`.");
+        setConfigValue(key as keyof UserConfig, value);
+        return ok({ action, key, file_path: "~/.config/crosspad-mcp/config.json" });
+      }
+      case "symbols": {
+        const r = await listSymbols(query, undefined, extra.signal);
+        if (!r.success) return err(r.error ?? "symbol resolution failed", { action });
+        return ok({ action, symbols: r.symbols });
+      }
+      case "start": {
+        if (!signals || signals.length === 0) return err("start requires non-empty signals[].");
+        if (getActiveSession()?.isRunning()) return err("A trace is already running — stop it first.");
+        const doc = runDoctor(realProbe());
+        if (!doc.ok) return err("Doctor reported blocking issues — resolve them first.", { action, issues: doc.issues });
+        const sess = new TraceSession({ signals, rateHz: rate_hz ?? 0 });
+        sess.start();
+        setActiveSession(sess);
+        return ok({ action, device_state: sess.deviceState, signals, file_path: sess.filePath ?? undefined });
+      }
+      case "stop": {
+        const s = getActiveSession();
+        if (!s) return err("No active trace.");
+        const count = s.buffer.count();
+        s.stop();
+        setActiveSession(null);
+        return ok({ action, sample_count: count, file_path: s.filePath ?? undefined });
+      }
+      case "status": {
+        const s = getActiveSession();
+        if (!s) return ok({ action, device_state: "idle", sample_count: 0 });
+        const n = s.buffer.count();
+        const elapsed = (performance.now() - s.startedAt) / 1000;
+        return ok({ action, device_state: s.deviceState, sample_count: n, actual_fs: elapsed > 0 ? n / elapsed : 0, signals: s.buffer.signalNames() });
+      }
+      case "read": {
+        const s = getActiveSession();
+        if (!s) return err("No active trace.");
+        const mp = max_points ?? 200;
+        const win = (window_from !== undefined || window_to !== undefined) ? { fromT: window_from, toT: window_to } : undefined;
+        const series: Record<string, unknown> = {};
+        const stats: Record<string, unknown> = {};
+        for (const sig of s.buffer.signalNames()) {
+          series[sig] = s.buffer.downsample(sig, mp, win);
+          stats[sig] = s.buffer.stats(sig);
+        }
+        return ok({ action, series, stats, device_state: s.deviceState, sample_count: s.buffer.count() });
+      }
+      case "save": {
+        const s = getActiveSession();
+        if (!s) return err("No active trace.");
+        const fmt = format ?? "csv";
+        if (fmt !== "csv") return err("Only format=csv is supported.");
+        const csvPath = (s.filePath ?? "/tmp/trace").replace(/\.cptrace$/, "") + ".csv";
+        writeCsv(csvPath, s.buffer, s.buffer.signalNames());
+        return ok({ action, file_path: csvPath });
+      }
+      case "device_state":
+        return err("device_state deep dump not implemented yet (Milestone 7).", { action });
+      case "ui":
+        return err("web UI not implemented yet (Milestone 5).", { action });
+      case "add":
+      case "remove":
+        return err("add/remove not in v1 — stop and start with the new signal set.", { action });
+    }
+  }
 );
 
 // ═══════════════════════════════════════════════════════════════════════
