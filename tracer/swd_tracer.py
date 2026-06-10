@@ -251,7 +251,10 @@ def cmd_trace(args):
     try:
         with ConnectHelper.session_with_chosen_probe(
                 unique_id=args.probe or None,
-                options={"target_override": args.target}) as session:
+                # connect_mode='attach' = do NOT halt the core on connect. pyOCD
+                # defaults to 'halt', which freezes RAM so every poll reads the
+                # same stale values. We want a live, running target.
+                options={"target_override": args.target, "connect_mode": "attach"}) as session:
             target = session.target
             log("connected; polling (non-halting)")
 
@@ -329,7 +332,7 @@ def cmd_device_state(args):
     out = {"type": "device_state", "regs": {}, "decoded": {}, "accessible": True}
     try:
         with ConnectHelper.session_with_chosen_probe(unique_id=args.probe or None,
-              options={"target_override": args.target}) as session:
+              options={"target_override": args.target, "connect_mode": "attach"}) as session:
             t = session.target
             for name, addr in _REGS.items():
                 try:
