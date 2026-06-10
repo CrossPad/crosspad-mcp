@@ -49,7 +49,8 @@ cv.addEventListener("wheel",(e)=>{e.preventDefault();const [t0,t1]=curRange();co
 let drag=null;cv.addEventListener("mousedown",(e)=>drag={x:e.offsetX,r:curRange()});
 window.addEventListener("mouseup",()=>drag=null);
 cv.addEventListener("mousemove",(e)=>{if(!drag)return;const [t0,t1]=drag.r;const span=t1-t0;const dt=(e.offsetX-drag.x)/cv.width*span;viewT0=t0-dt;viewT1=t1-dt;});
-function curRange(){let lo=Infinity,hi=-Infinity;for(const[,s]of sigs)for(const p of s.data){if(p.t<lo)lo=p.t;if(p.t>hi)hi=p.t;}if(!isFinite(lo))return[0,1];if(viewT0!=null)return[viewT0,viewT1];return[lo,hi];}
+let windowSec=15; // default live trailing window (seconds) — keeps the plot scrolling
+function curRange(){let lo=Infinity,hi=-Infinity;for(const[,s]of sigs)for(const p of s.data){if(p.t<lo)lo=p.t;if(p.t>hi)hi=p.t;}if(!isFinite(lo))return[0,1];if(viewT0!=null)return[viewT0,viewT1];return[Math.max(lo,hi-windowSec),hi];}
 function render(){requestAnimationFrame(render);ctx.clearRect(0,0,cv.width,cv.height);
  const [t0,t1]=curRange();const span=(t1-t0)||1;
  let ylo=Infinity,yhi=-Infinity;
