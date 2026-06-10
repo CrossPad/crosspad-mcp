@@ -8,7 +8,8 @@
     "crosspad-mcp-server": "dist/index.js"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "tracer/"
   ],
   "keywords": [
     "mcp",
