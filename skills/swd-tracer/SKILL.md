@@ -122,11 +122,13 @@ crosspad_trace action=read max_points=50
 | Out-of-bounds index silently "works" | It no longer does — `s_adc_raw[31]` on a `[15]` array is rejected. Use `symbols` to see real `dims`/`count`. |
 | Deep STOP / low-power analysis | `crosspad_trace action=device_state` dumps PWR/RCC/SCB regs + decodes SLEEPDEEP/LPMS. |
 | Permission/USB errors despite `lsusb` showing it | Missing udev rules — run `install-udev-rules.sh`, replug. |
-| Daemon won't die / port stuck | `stop` now escalates SIGTERM→SIGKILL and tears down the UI first; if a stale daemon lingers, `pkill -9 -f swd_tracer.py`. |
+| Daemon won't die / port stuck | `stop` escalates SIGTERM→SIGKILL on the daemon; the UI server is persistent and keeps listening (it is NOT torn down). If a stale daemon lingers, `pkill -9 -f swd_tracer.py`. |
 
 ## Notes
 
-- The web UI is loopback-only (127.0.0.1) and lives only while a trace runs.
+- The web UI is loopback-only (127.0.0.1). The dashboard server is **persistent**:
+  it stays up across start/stop cycles (showing a `trace_end` banner while idle),
+  so an open tab survives between traces.
 - `start` waits for the daemon's first frame and reports the *real* state
   (`running` / `connecting` / `error`), not an optimistic guess.
 - One active trace per server — `stop` before starting a different signal set,

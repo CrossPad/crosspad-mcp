@@ -70,6 +70,26 @@ export class TraceSession {
   }
 
   onFrame(cb: (f: Frame) => void): void { this.onFrameExtra = cb; }
+  /** Detach the frame sink so late `sample`/`status` frames during a shutdown
+   *  race aren't rebroadcast after `trace_end`, and the consumer (Dashboard)
+   *  doesn't hold this session longer than necessary. */
+  offFrame(): void { this.onFrameExtra = null; }
+
+  // Fired once when the daemon process is truly gone (clean exit, kill, or
+  // spawn error). Lets callers defer teardown (dashboard unbind, clearing the
+  // active session) until the probe is actually free — see §11.5.
+  private stoppedCbs: (() => void)[] = [];
+  /** Register a callback for when the daemon process has fully exited. If the
+   *  process is already gone, fires synchronously. */
+  onStopped(cb: () => void): void {
+    if (this.proc === null) { cb(); return; }
+    this.stoppedCbs.push(cb);
+  }
+  private fireStopped(): void {
+    const cbs = this.stoppedCbs;
+    this.stoppedCbs = [];
+    for (const cb of cbs) { try { cb(); } catch { /* */ } }
+  }
 
   /** The ELF this session traces against (explicit opt or the configured default).
    *  Used by the web UI's /symbols endpoint so autocomplete matches the trace. */
@@ -104,6 +124,7 @@ export class TraceSession {
       this.proc = null;
       this.clearKillTimers();
       this.resolveFirstFrame(null);
+      this.fireStopped();
     });
   }
 
@@ -142,6 +163,7 @@ export class TraceSession {
     this.clearKillTimers();
     // Unblock any start() still waiting — the process is gone.
     this.resolveFirstFrame(null);
+    this.fireStopped();
   }
 
   private ingest(text: string): void {

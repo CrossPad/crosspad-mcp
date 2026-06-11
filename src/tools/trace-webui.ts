@@ -131,7 +131,12 @@ export class Dashboard {
   /** §12.1 detach the current trace: broadcast trace_end, go idle. The server
    *  KEEPS listening (clients stay connected, ready for the next trace). */
   unbind(): void {
+    const prev = this.currentSession;
     this.currentSession = null;
+    // Detach our frame sink so late sample/status frames from the dying session
+    // (shutdown race) aren't rebroadcast after trace_end, and we don't pin the
+    // session reference past its life.
+    prev?.offFrame();
     this.broadcast({ type: "trace_end" } as any);
   }
 

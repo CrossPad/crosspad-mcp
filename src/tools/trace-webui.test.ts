@@ -86,6 +86,7 @@ function fakeSession(names: string[] = ["a", "b"]) {
     addSignals: vi.fn(async () => names),
     removeSignals: vi.fn(async () => names),
     onFrame: vi.fn((cb: (f: any) => void) => { frameCb = cb; }),
+    offFrame: vi.fn(() => { frameCb = null; }),
     elfPath: () => "/tmp/session.elf",
     buffer: { signalNames: () => names },
     emit: (f: any) => frameCb?.(f),

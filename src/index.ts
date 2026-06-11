@@ -748,11 +748,18 @@ server.registerTool(
         const s = getActiveSession();
         if (!s) return err("No active trace.");
         const count = s.buffer.count();
-        // §12.1: stop the daemon, then unbind the persistent dashboard (server
-        // STAYS UP so the tab survives) and clear the active session.
+        // §11.5/§12.1: initiate teardown, but defer unbinding the dashboard and
+        // clearing the active session until the daemon has REALLY exited (the
+        // stop→SIGTERM→SIGKILL escalation can take ~4.5s). Clearing early would
+        // let a racing `start` spawn a second daemon onto the still-busy probe
+        // and make `status` report idle mid-teardown. onStopped fires
+        // synchronously if the process is already gone.
+        const d = getDashboard();
+        s.onStopped(() => {
+          d.unbind();
+          if (getActiveSession() === s) setActiveSession(null);
+        });
         s.stop();
-        getDashboard().unbind();
-        setActiveSession(null);
         return ok({ action, sample_count: count, file_path: s.filePath ?? undefined });
       }
       case "status": {
