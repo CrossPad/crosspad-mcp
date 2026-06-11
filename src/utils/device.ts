@@ -12,9 +12,28 @@ import fs from "fs";
 import path from "path";
 import { IS_WINDOWS, IS_MAC } from "../config.js";
 
-// CrossPad USB identifiers
+// CrossPad USB identifiers.
+//
+// Two hardware generations expose the board over USB differently:
+//   • rev <2.0 ("esp-native"): the ESP32-S3 is the USB device — native
+//     USB-Serial/JTAG. esptool/idf.py talk to the ESP directly.
+//   • rev  2.0 ("stm-bridge"): the STM32G0B1 is the USB device — a composite
+//     CDC+MIDI port. The STM bridges USB-CDC ↔ LPUART2 to the ESP and emulates
+//     the esptool DTR/RTS auto-reset (STM acts as the programmer). idf.py/esptool
+//     flash the ESP *through* the STM CDC port exactly as if it were native.
 const ESPRESSIF_VID = 0x303a;
-const CROSSPAD_PID = 0x3456;
+const ESP_NATIVE_PID = 0x3456;
+const STM_VID = 0x0483; // STMicroelectronics
+const STM_BRIDGE_PID = 0x5740; // CrossPad r20 composite CDC+MIDI bridge
+
+export type CrosspadKind = "esp-native" | "stm-bridge";
+
+/** Returns the CrossPad generation for a USB VID/PID, or null if not a CrossPad. */
+export function classifyCrosspad(vid: number, pid: number): CrosspadKind | null {
+  if (vid === ESPRESSIF_VID && pid === ESP_NATIVE_PID) return "esp-native";
+  if (vid === STM_VID && pid === STM_BRIDGE_PID) return "stm-bridge";
+  return null;
+}
 
 export interface CrosspadDevice {
   port: string;
@@ -24,6 +43,8 @@ export interface CrosspadDevice {
   description: string;
   manufacturer: string | null;
   is_crosspad: boolean;
+  /** Which CrossPad generation this is (null when not a CrossPad). */
+  kind: CrosspadKind | null;
 }
 
 export interface DeviceListResult {
@@ -64,15 +85,19 @@ function listPortsViaPython(): CrosspadDevice[] | null {
       mfr: string | null;
     }> = JSON.parse(output.trim());
 
-    return raw.map((r) => ({
-      port: r.port,
-      vid: r.vid ?? 0,
-      pid: r.pid ?? 0,
-      serial_number: r.serial,
-      description: r.desc,
-      manufacturer: r.mfr,
-      is_crosspad: r.vid === ESPRESSIF_VID && r.pid === CROSSPAD_PID,
-    }));
+    return raw.map((r) => {
+      const kind = classifyCrosspad(r.vid ?? 0, r.pid ?? 0);
+      return {
+        port: r.port,
+        vid: r.vid ?? 0,
+        pid: r.pid ?? 0,
+        serial_number: r.serial,
+        description: r.desc,
+        manufacturer: r.mfr,
+        is_crosspad: kind !== null,
+        kind,
+      };
+    });
   } catch {
     return null;
   }
@@ -111,6 +136,7 @@ function listPortsLinuxSysfs(): CrosspadDevice[] {
     const manufacturer = readTextFile(path.join(usbDevicePath, "manufacturer"));
     const product = readTextFile(path.join(usbDevicePath, "product"));
 
+    const kind = classifyCrosspad(vid, pid);
     devices.push({
       port: `/dev/${name}`,
       vid,
@@ -118,7 +144,8 @@ function listPortsLinuxSysfs(): CrosspadDevice[] {
       serial_number: serial,
       description: product ?? name,
       manufacturer,
-      is_crosspad: vid === ESPRESSIF_VID && pid === CROSSPAD_PID,
+      is_crosspad: kind !== null,
+      kind,
     });
   }
 
@@ -193,6 +220,7 @@ function collectMacDevices(
         const port = findMacPort(serial, item._name);
 
         if (port) {
+          const kind = classifyCrosspad(vid, pid);
           out.push({
             port,
             vid,
@@ -200,7 +228,8 @@ function collectMacDevices(
             serial_number: serial,
             description: item._name ?? "USB Device",
             manufacturer: item.manufacturer ?? null,
-            is_crosspad: vid === ESPRESSIF_VID && pid === CROSSPAD_PID,
+            is_crosspad: kind !== null,
+            kind,
           });
         }
       }
@@ -266,6 +295,7 @@ function listPortsWindows(): CrosspadDevice[] {
       const pid = pidMatch ? parseInt(pidMatch[1], 16) : 0;
       const port = comMatch ? comMatch[1] : "COM?";
 
+      const kind = classifyCrosspad(vid, pid);
       return {
         port,
         vid,
@@ -273,7 +303,8 @@ function listPortsWindows(): CrosspadDevice[] {
         serial_number: null,
         description: item.Name,
         manufacturer: null,
-        is_crosspad: vid === ESPRESSIF_VID && pid === CROSSPAD_PID,
+        is_crosspad: kind !== null,
+        kind,
       };
     }).filter((d: CrosspadDevice) => d.vid > 0);
   } catch {
@@ -338,7 +369,7 @@ export function findCrosspadPort(port?: string): {
   }
 
   if (devices.length > 1) {
-    const portList = devices.map((d) => `  ${d.port} (${d.description})`).join("\n");
+    const portList = devices.map((d) => `  ${d.port} (${d.description}) [${d.kind}]`).join("\n");
     return {
       port: "",
       error: `Multiple CrossPad devices found. Specify port:\n${portList}`,

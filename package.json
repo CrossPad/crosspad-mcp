@@ -8,7 +8,11 @@
     "crosspad-mcp-server": "dist/index.js"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "tracer/",
+    "skills/",
+    ".claude-plugin/",
+    ".mcp.json"
   ],
   "keywords": [
     "mcp",
@@ -37,16 +41,20 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "ws": "^8.21.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.7.0",
     "vitest": "^4.1.3"
   },
   "overrides": {
-    "hono": "^4.12.16",
+    "hono": "^4.12.21",
     "ip-address": "^10.1.1",
-    "postcss": "^8.5.10"
+    "postcss": "^8.5.10",
+    "qs": "^6.15.2",
+    "fast-uri": "^3.1.2"
   }
 }

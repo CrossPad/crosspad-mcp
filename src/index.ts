@@ -10,6 +10,7 @@ const { version } = require("../package.json");
 
 import { crosspadBuild, crosspadRun, crosspadKill } from "./tools/build.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
+import { BIN_EXE as _BIN_EXE } from "./config.js";
 import { crosspadLog } from "./tools/log.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
 import { crosspadIdfFlash, crosspadIdfOta } from "./tools/idf-flash.js";
@@ -33,6 +34,13 @@ import {
   crosspadAppUpdate,
   crosspadAppSync,
 } from "./tools/app-manager.js";
+import { runDoctor, realProbe } from "./tools/trace-doctor.js";
+import { setConfigValue, type UserConfig } from "./utils/userConfig.js";
+import { listSymbols } from "./tools/trace-symbols.js";
+import { getDeviceState } from "./tools/trace-device.js";
+import { TraceSession, getActiveSession, setActiveSession } from "./tools/trace-session.js";
+import { getDashboard, openInBrowser, buildUiUrl } from "./tools/trace-webui.js";
+import { writeCsv } from "./tools/trace-export.js";
 
 import type { OnLine } from "./utils/exec.js";
 import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
@@ -45,6 +53,8 @@ import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
 const SERVER_INSTRUCTIONS = `
 You have access to the CrossPad MCP server, which exposes purpose-built tools for the CrossPad embedded music controller monorepo (repos: crosspad-pc, platform-idf, ESP32-S3, crosspad-core, crosspad-gui, plus app submodules).
 
+NEW TO A CROSSPAD REPO OR SETTING UP? Use the \`crosspad\` skill first — it maps the ecosystem (repos, MCP tools, roles), walks install/config, and routes to per-role guides + an FAQ. Run \`bash scripts/doctor.sh\` from that skill to check your environment.
+
 WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, prefer the crosspad_* tools over raw shell equivalents:
 
 - Inspecting code  → crosspad_search_symbols (NOT \`grep -r\`); crosspad_list_interfaces; crosspad_interface_implementations.
@@ -55,6 +65,7 @@ WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, pr
 - Sim interaction  → crosspad_screenshot, crosspad_input, crosspad_midi, crosspad_stats, crosspad_settings_get/set.
 - Apps (registry)  → crosspad_apps_list / install / remove / update / sync (NOT manual submodule git ops).
 - Commits          → crosspad_commit (NOT raw \`git commit\`) — handles multi-repo paths and refuses on merge conflicts.
+- SWD tracing    → crosspad_trace (STM32 firmware variable RT trace over ST-Link). Run action=doctor first; resolve issues; then action=symbols → start → read.
 
 WHY: these tools resolve repos dynamically from env vars, parse build output into structured errors[], stream progress, and refuse unsafe operations. Manual shell equivalents will work but lose this scaffolding and frequently break across the 5 repos.
 
@@ -271,11 +282,33 @@ const O_Devices = {
   devices: z.array(z.object({
     port: z.string(),
     description: z.string().optional(),
-    vid: z.string().optional(),
-    pid: z.string().optional(),
+    vid: z.number().int().optional(),
+    pid: z.number().int().optional(),
     is_crosspad: z.boolean(),
+    kind: z.enum(["esp-native", "stm-bridge"]).nullable().optional(),
   }).passthrough()),
   crosspad_count: z.number().int().optional(),
+  ...ErrorField,
+};
+
+const O_Trace = {
+  success: z.boolean(),
+  action: z.string().optional(),
+  ok: z.boolean().optional(),
+  issues: z.array(z.record(z.string(), z.unknown())).optional(),
+  symbols: z.array(z.record(z.string(), z.unknown())).optional(),
+  device_state: z.string().optional(),
+  actual_fs: z.number().optional(),
+  sample_count: z.number().int().optional(),
+  signals: z.array(z.string()).optional(),
+  series: z.record(z.string(), z.unknown()).optional(),
+  stats: z.record(z.string(), z.unknown()).optional(),
+  file_path: z.string().optional(),
+  ui_url: z.string().optional(),
+  key: z.string().optional(),
+  // §11.6: last few daemon stderr lines, surfaced when device_state is an
+  // error / probe_lost / exited so the caller sees *why* without a re-run.
+  stderr_tail: z.string().optional(),
   ...ErrorField,
 };
 
@@ -421,15 +454,26 @@ const PlatformPcOnly = z.enum(["pc"]).default("pc").describe("Platform — curre
 server.registerTool(
   "crosspad_build",
   {
-    description: "Build CrossPad for the given platform. platform=pc → CMake + Ninja host simulator (PREFER THIS over `cmake --build build` — picks the right MSVC env on Windows, parses errors/warnings, streams progress). platform=idf → idf.py build for ESP32-S3 firmware (PREFER THIS over `idf.py build` — sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).",
+    description:
+      "Build CrossPad for the given platform.\n" +
+      "  • platform='pc'  → CMake + Ninja host simulator. PREFER THIS over `cmake --build build` (picks right MSVC env on Windows, parses errors/warnings, streams progress).\n" +
+      "  • platform='idf' → idf.py build for ESP32-S3 firmware. PREFER THIS over raw `idf.py build` (sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).\n" +
+      "Mode×platform compatibility:\n" +
+      "  • incremental → both (default)\n" +
+      "  • clean       → both (wipes build dir, then builds)\n" +
+      "  • reconfigure → PC only (re-runs cmake without wiping cache)\n" +
+      "  • fullclean   → IDF only (runs idf.py fullclean, then builds)",
     inputSchema: {
       platform: BuildPlatform,
       mode: z.enum(["incremental", "clean", "fullclean", "reconfigure"])
         .default("incremental")
-        .describe("incremental: rebuild only what changed (default). clean: wipe build dir then build. reconfigure: re-run cmake without wiping (PC only). fullclean: idf.py fullclean then build (IDF only)."),
+        .describe(
+          "Build mode. Compatibility: incremental & clean = both platforms; reconfigure = PC only; fullclean = IDF only. " +
+          "Pick incremental for normal iteration; clean if you suspect stale artifacts; fullclean (IDF) after adding new apps; reconfigure (PC) after editing CMakeLists.",
+        ),
       build_type: z.enum(["Debug", "Release", "RelWithDebInfo"])
         .default("Debug")
-        .describe("CMake build type — PC only. Only honored on clean/reconfigure (incremental keeps existing cache)."),
+        .describe("CMake build type — PC ONLY (ignored for IDF; ESP32 build type comes from sdkconfig). Only honored on mode=clean|reconfigure (incremental keeps existing cache)."),
     },
     outputSchema: O_Build,
     annotations: ANN_DESTRUCTIVE,
@@ -501,7 +545,7 @@ server.registerTool(
     outputSchema: O_BuildCheck,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse(crosspadBuildCheck())
+  async () => jsonResponse({ success: true, exe_path: _BIN_EXE, ...crosspadBuildCheck() })
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -511,7 +555,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_flash",
   {
-    description: "Flash firmware to a connected CrossPad device. transport='uart' uses idf.py flash (device must be in bootloader mode). transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required). Requires prior crosspad_build platform=idf.",
+    description: "Flash ESP firmware to a connected CrossPad device. transport='uart' uses idf.py flash (device must be in bootloader mode). transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required). Requires prior crosspad_build platform=idf. Works on both CrossPad generations: rev <2.0 (ESP native USB) and rev 2.0 (port is the STM32 CDC bridge — STM emulates the esptool DTR/RTS auto-reset and forwards the flash to the ESP over LPUART2; rev-2.0 STM must be in passthrough mode, i.e. NOT booted with pad-4 held).",
     inputSchema: {
       transport: z.enum(["uart", "ota"]).describe("'uart' = bootloader-mode flash via idf.py; 'ota' = USB-CDC OTA flash via ota_flash.py."),
       port: Port.optional(),
@@ -536,19 +580,26 @@ server.registerTool(
 server.registerTool(
   "crosspad_log",
   {
-    description: "Capture logs from PC simulator (target='pc': spawn binary, capture stdout/stderr, kill) or connected ESP32-S3 device (target='idf': read serial via pyserial, no TTY needed). Consolidated tool — replaces crosspad_log_pc and crosspad_log_idf in v6.",
+    description:
+      "Capture logs (consolidated; replaces crosspad_log_pc and crosspad_log_idf in v6).\n" +
+      "  • target='pc'  → spawn the built sim binary, capture stdout/stderr, then kill it. " +
+      "Fields used: timeout_seconds (default 5), max_lines (default 200). `port` and `filter` MUST be omitted.\n" +
+      "  • target='idf' → read serial from a connected ESP32-S3 via pyserial (no TTY needed). " +
+      "Fields used: port (auto-detected if omitted), timeout_seconds (default 10), max_lines (default 500), filter (substring, case-insensitive).",
     inputSchema: {
-      target: z.enum(["pc", "idf"]).describe("'pc' = run + capture sim binary; 'idf' = read serial from connected device."),
-      port: Port.optional().describe("Serial port (idf only). Auto-detected if omitted; required when multiple devices connected."),
-      timeout_seconds: TimeoutSec.optional().describe("Capture duration. Defaults: 5s for pc, 10s for idf."),
-      max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 for pc, 500 for idf."),
+      target: z.enum(["pc", "idf"]).describe("'pc' = run+capture sim binary; 'idf' = read serial from connected device. Other fields are conditional — see description."),
+      port: Port.optional().describe("idf only. Serial port path. Auto-detected if omitted; required when multiple devices connected. MUST be omitted for target=pc."),
+      timeout_seconds: TimeoutSec.optional().describe("Capture duration in seconds. Defaults: 5 (pc), 10 (idf)."),
+      max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 (pc), 500 (idf)."),
       filter: z.string().optional()
-        .describe("Case-insensitive substring filter (idf only). Only lines containing this string are returned."),
+        .describe("idf only. Case-insensitive substring filter — only matching lines returned. MUST be omitted for target=pc."),
+      reset_to_boot: z.boolean().optional()
+        .describe("idf only. Pulse the device reset (esptool DTR/RTS sequence, works through the STM bridge) before capturing, so the log starts at boot t=0. Use for boot-time profiling. Default false (passive read of the running device)."),
     },
     outputSchema: O_Log,
     annotations: ANN_READ_ONLY,
   },
-  async ({ target, port, timeout_seconds, max_lines, filter }, extra: any) => {
+  async ({ target, port, timeout_seconds, max_lines, filter, reset_to_boot }, extra: any) => {
     if (target === "pc") {
       if (port) return err("Field 'port' is not used when target='pc'.");
       if (filter) return err("Field 'filter' is not used when target='pc'.");
@@ -560,7 +611,7 @@ server.registerTool(
     // target === "idf"
     const onLine = makeProgressLogger("log-idf", extra);
     return jsonResponse({
-      ...(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine, extra.signal)),
+      ...(await crosspadIdfMonitor(port, timeout_seconds ?? 10, max_lines ?? 500, filter, onLine, extra.signal, reset_to_boot ?? false)),
     });
   }
 );
@@ -568,12 +619,206 @@ server.registerTool(
 server.registerTool(
   "crosspad_devices",
   {
-    description: "List all connected USB serial devices. Identifies CrossPad devices (Espressif VID 0x303a, PID 0x3456) separately from other ports.",
+    description: "List all connected USB serial devices. Identifies CrossPad devices separately and tags each with `kind`: 'esp-native' (rev <2.0, ESP32-S3 native USB, VID 0x303a/PID 0x3456) or 'stm-bridge' (rev 2.0, STM32 composite CDC+MIDI bridge, VID 0x0483/PID 0x5740 — STM programs the ESP over LPUART2).",
     inputSchema: {},
     outputSchema: O_Devices,
     annotations: ANN_READ_ONLY,
   },
   async () => jsonResponse(listDevices())
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// SWD TRACER
+// ═══════════════════════════════════════════════════════════════════════
+
+// §12.4 injectable browser opener — defaults to the real platform opener but is
+// overridable (setTraceBrowserOpener) so a unit test can assert auto-open is
+// called/skipped without launching a real browser. Returns true if it spawned.
+let traceBrowserOpener: (url: string) => boolean = openInBrowser;
+export function setTraceBrowserOpener(fn: (url: string) => boolean): void { traceBrowserOpener = fn; }
+
+const TraceAction = z.enum([
+  "doctor", "config_set", "symbols", "start", "stop",
+  "add", "remove", "status", "read", "save", "device_state", "ui",
+]);
+
+server.registerTool(
+  "crosspad_trace",
+  {
+    description:
+      "Real-time SWD tracer for the STM32G0B1 firmware (ST-Link). Non-halting RAM polling of firmware variables resolved from the Debug ELF (like ST-Studio/CubeMonitor). Pick an `action`:\n" +
+      "  • doctor       → environment precheck → issues[] (run this FIRST; resolve issues, then config_set).\n" +
+      "  • config_set   → persist a resolved path/serial to ~/.config/crosspad-mcp/config.json (key,value).\n" +
+      "  • symbols      → list/search traceable variables from the ELF (query optional).\n" +
+      "  • start        → begin a background trace (signals[], rate_hz).\n" +
+      "  • stop         → end the active trace.\n" +
+      "  • add/remove   → mutate the live poll set of the active trace (signals[]); returns the current signal set.\n" +
+      "  • status       → device_state (running/stop_suspected/exited), sample_count, actual_fs, signals.\n" +
+      "  • read         → recent samples downsampled + per-signal stats (cheap; safe for the LLM).\n" +
+      "  • save         → export the in-memory buffer to CSV (returns file_path).\n" +
+      "  • device_state → deep low-power/STOP register dump.\n" +
+      "  • ui           → returns the localhost dashboard URL.\n" +
+      "Signal names accept array indexing, e.g. 's_inputs[0]', 's_adc_raw[3]'.",
+    inputSchema: {
+      action: TraceAction,
+      signals: z.array(z.string()).optional().describe("start: variable names from `symbols` (e.g. ['s_vbat_mv','s_inputs[0]'])."),
+      rate_hz: z.number().int().min(0).max(2000).optional().describe("start: target sample rate (0 = as fast as the probe allows). Actual Fs is reported."),
+      swo: z.array(z.string()).optional().describe("start (EXPERIMENTAL): map ITM stimulus ports to signal names, e.g. ['0:phase','1:isr_us']. Requires firmware that emits ITM on the SWO pin (NOT present in current CrossPad firmware — UNTESTED against real ITM). Omit for plain RAM polling. Fails soft: if SWV init fails, polling continues normally."),
+      query: z.string().optional().describe("symbols: case-insensitive substring filter."),
+      key: z.string().optional().describe("config_set: one of stm_elf_path|pyocd_python|probe_serial|trace_dir."),
+      value: z.string().optional().describe("config_set: the value to persist."),
+      window_from: z.number().optional().describe("read: start time (s) of the window."),
+      window_to: z.number().optional().describe("read: end time (s) of the window."),
+      max_points: z.number().int().min(1).max(5000).optional().describe("read: max points per signal (default 200)."),
+      format: z.enum(["csv"]).optional().describe("save: export format (csv)."),
+    },
+    outputSchema: O_Trace,
+    annotations: ANN_SIDE_EFFECT,
+  },
+  async ({ action, signals, rate_hz, swo, query, key, value, window_from, window_to, max_points, format }, extra: any) => {
+    switch (action) {
+      case "doctor": {
+        const r = await runDoctor(realProbe());
+        return ok({ action, ok: r.ok, issues: r.issues, device_state: r.probe ? "connected" : "no_probe" });
+      }
+      case "config_set": {
+        const allowed = ["stm_elf_path", "pyocd_python", "probe_serial", "trace_dir"];
+        if (!key || !allowed.includes(key)) return err(`config_set requires key in ${allowed.join("|")}`);
+        if (value === undefined) return err("config_set requires `value`.");
+        setConfigValue(key as keyof UserConfig, value);
+        return ok({ action, key, file_path: "~/.config/crosspad-mcp/config.json" });
+      }
+      case "symbols": {
+        const r = await listSymbols(query, undefined, extra.signal);
+        if (!r.success) return err(r.error ?? "symbol resolution failed", { action });
+        return ok({ action, symbols: r.symbols });
+      }
+      case "start": {
+        if (!signals || signals.length === 0) return err("start requires non-empty signals[].");
+        if (getActiveSession()?.isRunning()) return err("A trace is already running — stop it first.");
+        const doc = await runDoctor(realProbe());
+        if (!doc.ok) {
+          // §11.7: a vanished probe gets a distinct, actionable refusal.
+          if (doc.issues.some((i) => i.id === "no_probe_detected")) {
+            return err("No ST-Link detected on USB — replug the probe and retry (verify with `pyocd list` / `lsusb`).", { action, issues: doc.issues, device_state: "no_probe" });
+          }
+          return err("Doctor reported blocking issues — resolve them first.", { action, issues: doc.issues });
+        }
+        const sess = new TraceSession({ signals, rateHz: rate_hz ?? 0, swo });
+        sess.start();
+        setActiveSession(sess);
+        // §12.1/§12.4: ensure the PERSISTENT dashboard server is up (idempotent —
+        // reuses it across traces), auto-open the browser ONLY if no client is
+        // already connected (covers an external browser AND a VS Code Simple
+        // Browser tab opened on a previous trace), then bind this session so its
+        // frames broadcast to the UI (also emits trace_start).
+        const dashboard = getDashboard();
+        let uiUrl: string | undefined;
+        try {
+          uiUrl = await dashboard.ensureStarted();
+          if (!dashboard.hasClients()) traceBrowserOpener(uiUrl);
+          dashboard.bind(sess);
+        } catch { /* UI optional — never block a trace on the dashboard */ }
+        // §11.6: don't lie. Wait for the first real frame and report what the
+        // daemon actually did (connect can fail fast → error/exit) instead of an
+        // optimistic "running" that masks a dead connect.
+        const first = await sess.waitForFirstFrame(3000);
+        if (first?.type === "error") {
+          // Connect failed — the daemon already exited. Clear the active session
+          // and surface the daemon's error + stderr tail. Unbind the dashboard
+          // (server stays up) so the next trace starts from a clean idle state.
+          sess.stop();
+          dashboard.unbind();
+          setActiveSession(null);
+          return err(`Trace connect failed: ${first.error}`, { action, device_state: "error: " + first.error, stderr_tail: sess.stderrTail(5) || undefined });
+        }
+        if (first && (first.type === "signals" || first.type === "sample")) {
+          return ok({ action, device_state: "running", signals, file_path: sess.filePath ?? undefined, ui_url: uiUrl });
+        }
+        // No frame within the window. If the proc already died, it's a failure;
+        // otherwise it's still connecting (honest) — caller can poll status.
+        if (!sess.isRunning()) {
+          dashboard.unbind();
+          setActiveSession(null);
+          return err(`Trace daemon exited before producing data (${sess.deviceState}).`, { action, device_state: sess.deviceState, stderr_tail: sess.stderrTail(5) || undefined });
+        }
+        return ok({ action, device_state: "connecting", signals, file_path: sess.filePath ?? undefined, ui_url: uiUrl });
+      }
+      case "stop": {
+        const s = getActiveSession();
+        if (!s) return err("No active trace.");
+        const count = s.buffer.count();
+        // §12.1: stop the daemon, then unbind the persistent dashboard (server
+        // STAYS UP so the tab survives) and clear the active session.
+        s.stop();
+        getDashboard().unbind();
+        setActiveSession(null);
+        return ok({ action, sample_count: count, file_path: s.filePath ?? undefined });
+      }
+      case "status": {
+        const s = getActiveSession();
+        if (!s) return ok({ action, device_state: "idle", sample_count: 0 });
+        const n = s.buffer.count();
+        const elapsed = (performance.now() - s.startedAt) / 1000;
+        // §11.6: when the daemon is unhealthy, fold in the last stderr lines so
+        // the caller sees *why* without re-running.
+        const ds = s.deviceState;
+        const unhealthy = ds.startsWith("error") || ds === "probe_lost" || ds === "exited" || ds.startsWith("spawn_failed");
+        const tail = unhealthy ? (s.stderrTail(5) || undefined) : undefined;
+        return ok({ action, device_state: ds, sample_count: n, actual_fs: elapsed > 0 ? n / elapsed : 0, signals: s.buffer.signalNames(), stderr_tail: tail });
+      }
+      case "read": {
+        const s = getActiveSession();
+        if (!s) return err("No active trace.");
+        const mp = max_points ?? 200;
+        const win = (window_from !== undefined || window_to !== undefined) ? { fromT: window_from, toT: window_to } : undefined;
+        const series: Record<string, unknown> = {};
+        const stats: Record<string, unknown> = {};
+        for (const sig of s.buffer.signalNames()) {
+          series[sig] = s.buffer.downsample(sig, mp, win);
+          stats[sig] = s.buffer.stats(sig);
+        }
+        return ok({ action, series, stats, device_state: s.deviceState, sample_count: s.buffer.count() });
+      }
+      case "save": {
+        const s = getActiveSession();
+        if (!s) return err("No active trace.");
+        // `format` is constrained to "csv" by the input schema — no runtime branch needed.
+        const csvPath = (s.filePath ?? "/tmp/trace").replace(/\.cptrace$/, "") + ".csv";
+        writeCsv(csvPath, s.buffer, s.buffer.signalNames());
+        return ok({ action, file_path: csvPath });
+      }
+      case "device_state": {
+        const r = await getDeviceState(extra.signal);
+        if (!r.success) return err(r.error ?? "device_state read failed", { action });
+        // Pack regs/decoded into `stats` (a schema field) so they survive
+        // outputSchema validation — O_Trace has no top-level regs/decoded keys.
+        return ok({
+          action,
+          device_state: r.accessible ? "accessible" : "inaccessible",
+          stats: { regs: r.regs, decoded: r.decoded, accessible: r.accessible },
+        });
+      }
+      case "ui": {
+        // §12.1: the dashboard is persistent and independent of any trace — just
+        // ensure the server is up and hand back the url. Works even when idle
+        // (no active trace): the UI shows a "waiting for trace…" state and
+        // /symbols falls back to the default ELF for autocomplete.
+        const url = await getDashboard().ensureStarted();
+        return ok({ action, ui_url: url });
+      }
+      case "add":
+      case "remove": {
+        const s = getActiveSession();
+        if (!s || !s.isRunning()) return err("No active trace — start one first.", { action });
+        if (!signals || signals.length === 0) return err(`${action} requires non-empty signals[].`, { action });
+        // §4/§6: await the post-reconcile set (so the response reflects array
+        // expansion and dropped `unresolved` specs, not the pre-reconcile guess).
+        const reconciled = action === "add" ? await s.addSignals(signals) : await s.removeSignals(signals);
+        return ok({ action, signals: reconciled });
+      }
+    }
+  }
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -586,9 +831,9 @@ server.registerTool(
     description: "Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
     inputSchema: {
       filter: z.string().default("")
-        .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Empty = run all."),
+        .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Default '' (empty) runs ALL tests — there is no opt-out for 'no tests'."),
       list_only: z.boolean().default(false)
-        .describe("List discovered tests without running them."),
+        .describe("If true, list discovered tests matching `filter` without running them. Default false."),
     },
     outputSchema: O_Test,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
@@ -606,12 +851,15 @@ server.registerTool(
 server.registerTool(
   "crosspad_screenshot",
   {
-    description: "Capture a PNG screenshot from the running PC simulator. By default saves to disk and returns the file_path. Set return_inline=true for inline image content (consumes more tokens).",
+    description:
+      "Capture a PNG screenshot from the running PC simulator. " +
+      "Default behavior (return_inline=false): saves to <crosspad-pc>/screenshots/ and returns metadata + file_path (cheap, no token cost). " +
+      "Set return_inline=true ONLY when the LLM needs to actually see the image — that returns base64 inline and burns ~50-150k tokens.",
     inputSchema: {
       filename: z.string().optional()
-        .describe("Custom filename (saved under <crosspad-pc>/screenshots/). Default: screenshot_<timestamp>.png"),
+        .describe("Custom filename (saved under <crosspad-pc>/screenshots/). Default: screenshot_<timestamp>.png. Ignored when return_inline=true."),
       return_inline: z.boolean().default(false)
-        .describe("If true, returns inline base64 image content instead of file_path. Use only when the image is needed in-conversation."),
+        .describe("false (default) = save to disk, return file_path (token-cheap). true = return base64 image content for the LLM to view (token-expensive — only when the image must be analyzed)."),
     },
     outputSchema: O_Screenshot,
     annotations: ANN_SIDE_EFFECT,
@@ -655,19 +903,30 @@ server.registerTool(
 server.registerTool(
   "crosspad_input",
   {
-    description: "Send a single input event to the running PC simulator (consolidated tool — replaces 7 separate tools in v6). Required fields depend on `action`: pad_press={pad,velocity?} · pad_release={pad} · encoder_rotate={delta} · encoder_press / encoder_release={} · click={x,y} · key={keycode}. The simulator validates and rejects bad combinations.",
+    description:
+      "Send one input event to the running PC simulator (consolidated; replaces 7 v5 tools). " +
+      "Pick an `action`, then supply ONLY the fields it needs — extras are ignored. " +
+      "Required fields per action:\n" +
+      "  • pad_press            → pad (velocity optional, default 127)\n" +
+      "  • pad_release          → pad\n" +
+      "  • encoder_rotate       → delta (positive=CW, negative=CCW)\n" +
+      "  • encoder_press        → (none)\n" +
+      "  • encoder_release      → (none)\n" +
+      "  • click                → x, y\n" +
+      "  • key                  → keycode (SDL keycode int)\n" +
+      "Requires the simulator to be running (crosspad_run first).",
     inputSchema: {
       action: z.enum([
         "pad_press", "pad_release",
         "encoder_rotate", "encoder_press", "encoder_release",
         "click", "key",
-      ]).describe("Which input event to dispatch."),
-      pad: PadIndex.optional().describe("Pad index (pad_press / pad_release)."),
-      velocity: Velocity.optional().describe("Pad velocity (pad_press, default 127)."),
-      delta: z.number().int().optional().describe("Encoder rotation delta. Positive=CW, negative=CCW. Typical -10..10."),
-      x: z.number().int().min(0).optional().describe("X pixel coordinate (click)."),
-      y: z.number().int().min(0).optional().describe("Y pixel coordinate (click)."),
-      keycode: z.number().int().optional().describe("SDL keycode (key). E.g. 27=ESC, 32=SPACE, 13=RETURN."),
+      ]).describe("Which input event to dispatch — see description for required fields per action."),
+      pad: PadIndex.optional().describe("Required for action=pad_press|pad_release. Pad index 0-15."),
+      velocity: Velocity.optional().describe("Optional for action=pad_press (default 127). Ignored for other actions."),
+      delta: z.number().int().optional().describe("Required for action=encoder_rotate. Positive=CW, negative=CCW. Typical range -10..10."),
+      x: z.number().int().min(0).optional().describe("Required for action=click. X pixel coordinate (0 = left)."),
+      y: z.number().int().min(0).optional().describe("Required for action=click. Y pixel coordinate (0 = top)."),
+      keycode: z.number().int().optional().describe("Required for action=key. SDL keycode (e.g. 27=ESC, 32=SPACE, 13=RETURN)."),
     },
     outputSchema: O_Input,
     annotations: ANN_SIDE_EFFECT,
@@ -715,16 +974,24 @@ server.registerTool(
 server.registerTool(
   "crosspad_midi",
   {
-    description: "Send a single MIDI event to the running simulator (consolidated tool — replaces 4 separate tools in v6). Required fields depend on `type`: note_on/note_off={note,velocity?} · cc={cc_num,value} · program_change={program}.",
+    description:
+      "Send one MIDI event to the running PC simulator (consolidated; replaces 4 v5 tools). " +
+      "Pick a `type`, then supply ONLY the fields it needs — extras are ignored. " +
+      "Required fields per type:\n" +
+      "  • note_on        → note (velocity optional, default 127)\n" +
+      "  • note_off       → note (velocity optional, default 0)\n" +
+      "  • cc             → cc_num, value   ⚠️ NOT YET SUPPORTED BY PC SIM (no midi_cc handler — call fails fast)\n" +
+      "  • program_change → program          ⚠️ NOT YET SUPPORTED BY PC SIM (no midi_program_change handler — call fails fast)\n" +
+      "`channel` (0-15) defaults to 0 for every type. Only note_on/note_off actually reach the sim today.",
     inputSchema: {
       type: z.enum(["note_on", "note_off", "cc", "program_change"])
-        .describe("MIDI event type."),
+        .describe("MIDI event type — see description for required fields per type."),
       channel: Channel,
-      note: Note.optional().describe("MIDI note number (note_on, note_off)."),
-      velocity: Velocity.optional().describe("Velocity (note_on default 127, note_off default 0)."),
-      cc_num: Cc.optional().describe("Controller number (cc)."),
-      value: Cc7.optional().describe("Controller value (cc)."),
-      program: Program.optional().describe("Program number (program_change)."),
+      note: Note.optional().describe("Required for type=note_on|note_off. MIDI note 0-127 (60 = middle C)."),
+      velocity: Velocity.optional().describe("Optional for type=note_on (default 127) and note_off (default 0). Ignored for cc/program_change."),
+      cc_num: Cc.optional().describe("Required for type=cc. MIDI controller number 0-127."),
+      value: Cc7.optional().describe("Required for type=cc. Controller value 0-127."),
+      program: Program.optional().describe("Required for type=program_change. Program number 0-127."),
     },
     outputSchema: O_Midi,
     annotations: ANN_SIDE_EFFECT,
@@ -794,9 +1061,9 @@ server.registerTool(
     description: "Write a single setting on the running simulator.",
     inputSchema: {
       key: z.string().min(1)
-        .describe("Setting key (e.g. 'lcd_brightness', 'keypad.eco_mode', 'vibration.enable')"),
+        .describe("Setting key. Either a flat name ('lcd_brightness') or dotted category.field ('keypad.eco_mode', 'vibration.enable'). Use crosspad_settings_get to discover valid keys."),
       value: z.number()
-        .describe("Numeric value. Booleans: 0=false, 1=true."),
+        .describe("Numeric value. Booleans must be encoded as 0=false, 1=true (no native bool support over the wire)."),
     },
     outputSchema: O_SettingsSet,
     annotations: ANN_DESTRUCTIVE,
@@ -862,9 +1129,9 @@ server.registerTool(
     description: "Commit staged changes in a specific CrossPad repo. PREFER THIS over raw `git commit` — handles repo aliases (idf/pc/arduino/core/gui), refuses on merge conflicts, uses 0600 tempfiles for messages (no shell-quoting issues with quotes/newlines/backticks), and never pushes. Stages files[] first if supplied.",
     inputSchema: {
       repo: RepoAlias,
-      message: z.string().min(1).describe("Commit message"),
+      message: z.string().min(1).describe("Commit message. Newlines/quotes/backticks are safe — passed via 0600 tempfile, not shell-quoted."),
       files: z.array(z.string()).optional()
-        .describe("Specific files to stage+commit. Omit to commit currently-staged changes."),
+        .describe("If supplied: stage exactly these files (repo-relative paths) then commit. If omitted: commit whatever is currently staged in the repo (no auto-stage)."),
     },
     outputSchema: O_Commit,
     annotations: ANN_DESTRUCTIVE,
@@ -880,21 +1147,23 @@ server.registerTool(
 server.registerTool(
   "crosspad_search_symbols",
   {
-    description: "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. PREFER THIS over raw `grep -r` or `git grep` — it filters to definitions only (skips call sites/declarations), classifies kind, and aggregates across all 5 repos automatically. Substring match: 'Foo' matches FooBar, MyFoo.",
+    description: "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. PREFER THIS over raw `grep -r` or `git grep` — it filters to definitions only (skips call sites/declarations), classifies kind, and aggregates across all repos automatically. Substring match: 'Foo' matches FooBar, MyFoo. Vendored/generated trees (lvgl, managed_components, thorvg, TFT_eSPI, STM Drivers/Middlewares/CMSIS, build, …) are skipped by default — pass include_vendored=true to scan them.",
     inputSchema: {
       query: z.string().min(1).describe("Symbol name (substring match, case-insensitive on filter)"),
       kind: z.enum(["class", "function", "macro", "enum", "typedef", "all"]).default("all"),
       repos: z.array(z.string()).default(["all"])
-        .describe("Repo names to scan, or ['all']. Names: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3."),
+        .describe("Repo names to scan, or ['all']. Names: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, stm32-r20."),
       max_results: z.number().int().min(1).max(500).default(50),
       context_lines: z.number().int().min(0).max(10).default(0)
         .describe("Surrounding lines per match (like grep -C). 0 = no context."),
+      include_vendored: z.boolean().default(false)
+        .describe("Scan vendored/generated trees too (lvgl, managed_components, STM Drivers/Middlewares, build, …). Default false — these are almost always noise."),
     },
     outputSchema: O_SearchSymbols,
     annotations: ANN_READ_ONLY,
   },
-  async ({ query, kind, repos, max_results, context_lines }) =>
-    jsonResponse({ success: true, ...crosspadSearchSymbols(query, kind, repos, max_results, context_lines) })
+  async ({ query, kind, repos, max_results, context_lines, include_vendored }) =>
+    jsonResponse({ success: true, ...crosspadSearchSymbols(query, kind, repos, max_results, context_lines, include_vendored) })
 );
 
 server.registerTool(
@@ -911,9 +1180,11 @@ server.registerTool(
 server.registerTool(
   "crosspad_interface_implementations",
   {
-    description: "Find all classes implementing a given interface across CrossPad repos. Returns className, file path, platform.",
+    description: "Find all classes implementing a given interface across CrossPad repos. Returns className, file path, platform. Use crosspad_list_interfaces first if you don't know exact names.",
     inputSchema: {
-      interface_name: z.string().min(1).describe("Interface name (e.g. 'IDisplay', 'IPadLogicHandler')"),
+      interface_name: z.string().min(1)
+        .regex(/^I[A-Z][A-Za-z0-9_]*$/, "Interface name must start with 'I' followed by an uppercase letter (e.g. 'IDisplay').")
+        .describe("Interface name — MUST start with 'I' and use the exact crosspad-core casing (e.g. 'IDisplay', 'IPadLogicHandler', 'IKeyValueStore'). Not 'Display', not 'iDisplay'."),
     },
     outputSchema: O_Architecture,
     annotations: ANN_READ_ONLY,
@@ -1005,16 +1276,25 @@ server.registerTool(
 server.registerTool(
   "crosspad_apps_update",
   {
-    description: "Update one or all installed apps on a platform. Specify app_name OR set update_all=true.",
+    description:
+      "Update one or all installed apps on a platform. EXACTLY ONE of these must be supplied: " +
+      "set `app_name` to update a single app, OR set `update_all=true` to update every installed app on the platform. " +
+      "Supplying both, or neither, is an error.",
     inputSchema: {
       platform: Platform,
-      app_name: AppName.optional().describe("App ID to update. Required unless update_all=true."),
-      update_all: z.boolean().default(false),
+      app_name: AppName.optional().describe("App ID (e.g. 'metronome') to update one app. Mutually exclusive with update_all=true."),
+      update_all: z.boolean().default(false).describe("If true, update all installed apps on `platform`. Mutually exclusive with app_name."),
     },
     outputSchema: O_AppAction,
     annotations: ANN_DESTRUCTIVE_OPEN,
   },
   async ({ platform, app_name, update_all }, extra: any) => {
+    if (!app_name && !update_all) {
+      return err("Specify `app_name` to update a single app, OR set `update_all=true` to update every installed app.");
+    }
+    if (app_name && update_all) {
+      return err("`app_name` and `update_all=true` are mutually exclusive — pick one.");
+    }
     const onLine = makeProgressLogger("apps-update", extra);
     return jsonResponse((await crosspadAppUpdate(platform, app_name, update_all, onLine, extra.signal)));
   }
@@ -1082,6 +1362,49 @@ server.resource(
       contents: [
         {
           uri: "crosspad://workspace",
+          mimeType: "application/json",
+          text: JSON.stringify(payload, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// crosspad://trace — live SWD trace session status. Cheap snapshot the LLM
+// can read without a tool call to learn whether a trace is running, the
+// device state, achieved Fs, signals, and the dashboard URL.
+// ═══════════════════════════════════════════════════════════════════════
+
+server.resource(
+  "crosspad-trace",
+  "crosspad://trace",
+  {
+    description: "Live SWD trace session status: active flag, device_state, sample_count, achieved Fs, traced signals, and the web UI URL. Returns {active:false} when idle.",
+    mimeType: "application/json",
+  },
+  async () => {
+    const s = getActiveSession();
+    const payload = s
+      ? {
+          active: true,
+          device_state: s.deviceState,
+          sample_count: s.buffer.count(),
+          actual_fs: (() => {
+            const elapsed = (performance.now() - s.startedAt) / 1000;
+            return elapsed > 0 ? s.buffer.count() / elapsed : 0;
+          })(),
+          signals: s.buffer.signalNames(),
+          file_path: s.filePath ?? null,
+          // §12.1: the dashboard URL is owned by the persistent singleton; it's a
+          // stable loopback URL once any trace/ui action has started the server.
+          ui_url: getDashboard().port ? buildUiUrl(getDashboard().port) : null,
+        }
+      : { active: false };
+    return {
+      contents: [
+        {
+          uri: "crosspad://trace",
           mimeType: "application/json",
           text: JSON.stringify(payload, null, 2),
         },
@@ -1170,7 +1493,7 @@ server.registerResource(
   "crosspad-symbol",
   new ResourceTemplate("crosspad://symbols/{repo}/{symbol}", { list: undefined }),
   {
-    description: "Resolve a single symbol by repo+name. URI: crosspad://symbols/<repo>/<symbol>. <repo> is one of: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, or 'all'. Returns JSON with matching definition(s) (class/function/macro/enum/typedef). For substring/wildcard search, use the crosspad_search_symbols tool.",
+    description: "Resolve a single symbol by repo+name. URI: crosspad://symbols/<repo>/<symbol>. <repo> is one of: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, stm32-r20, or 'all'. Returns JSON with matching definition(s) (class/function/macro/enum/typedef). For substring/wildcard search, use the crosspad_search_symbols tool.",
     mimeType: "application/json",
   },
   async (uri, variables) => {

@@ -49,12 +49,26 @@ export interface MonitorResult {
  * Build a Python script that reads from serial port for a given duration.
  * Uses pyserial (available in IDF venv). No TTY dependency.
  */
-function buildSerialReaderScript(port: string, timeoutSeconds: number): string {
+function buildSerialReaderScript(port: string, timeoutSeconds: number, resetToBoot = false): string {
   // Escape for embedding in shell command
   const escapedPort = port.replace(/'/g, "\\'");
+  // Reset-to-run sequence via the STM bridge / esptool truth table:
+  //   DTR=0 → ESP IO0 high (run mode, NOT download), then pulse RTS to reset.
+  // This makes the capture start at boot t=0 instead of mid-run. Same DTR/RTS
+  // toggling esptool does on every connect.
+  const reset = resetToBoot
+    ? [
+        "ser.dtr = False",
+        "ser.rts = True",
+        "time.sleep(0.1)",
+        "ser.rts = False",
+        "ser.reset_input_buffer()",
+      ]
+    : [];
   return [
     "import serial, sys, time",
     `ser = serial.Serial('${escapedPort}', 115200, timeout=1)`,
+    ...reset,
     `end = time.time() + ${timeoutSeconds}`,
     "try:",
     "    while time.time() < end:",
@@ -78,6 +92,8 @@ function buildSerialReaderScript(port: string, timeoutSeconds: number): string {
  * @param maxLines - Maximum lines to return (default 500)
  * @param filter - Optional string filter — only return lines containing this
  * @param onLine - Streaming callback for real-time output
+ * @param resetToBoot - Pulse the bridge/esptool reset before capturing so the
+ *                       log starts at boot t=0 (for boot-time profiling)
  */
 export async function crosspadIdfMonitor(
   port: string | undefined,
@@ -86,6 +102,7 @@ export async function crosspadIdfMonitor(
   filter: string | undefined,
   onLine?: OnLine,
   signal?: AbortSignal,
+  resetToBoot = false,
 ): Promise<MonitorResult> {
   const startTime = Date.now();
 
@@ -139,7 +156,7 @@ export async function crosspadIdfMonitor(
     };
   }
 
-  const script = buildSerialReaderScript(targetPort, timeoutSeconds);
+  const script = buildSerialReaderScript(targetPort, timeoutSeconds, resetToBoot);
 
   return new Promise((resolve) => {
     const lines: string[] = [];

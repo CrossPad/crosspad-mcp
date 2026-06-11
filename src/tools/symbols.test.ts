@@ -5,7 +5,41 @@ import {
   extractSymbolName,
   escapeForRegex,
   escapeForShell,
+  isVendoredPath,
 } from "./symbols.js";
+
+describe("isVendoredPath", () => {
+  it("flags LVGL / managed_components / graphics vendoring", () => {
+    expect(isVendoredPath("lvgl/src/misc/lv_math.c")).toBe(true);
+    expect(isVendoredPath("crosspad-pc/lvgl/demos/benchmark/lv_demo_benchmark.c")).toBe(true);
+    expect(isVendoredPath("managed_components/lvgl__lvgl/src/lv_obj.c")).toBe(true);
+    expect(isVendoredPath("lvgl/libs/nema_gfx/include/nema_graphics.h")).toBe(true);
+    expect(isVendoredPath("lvgl/src/libs/thorvg/tvgAnimation.cpp")).toBe(true);
+    expect(isVendoredPath("lvgl/src/libs/FT800-FT813/EVE_commands.c")).toBe(true);
+  });
+
+  it("flags STM CubeMX / ST vendoring", () => {
+    expect(isVendoredPath("Drivers/STM32G0xx_HAL_Driver/Src/stm32g0xx_hal_adc.c")).toBe(true);
+    expect(isVendoredPath("Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_core.c")).toBe(true);
+    expect(isVendoredPath("Drivers/CMSIS/Device/ST/stm32g0xx.h")).toBe(true);
+  });
+
+  it("flags Arduino display libs, generated and third-party trees", () => {
+    expect(isVendoredPath("lib/TFT_eSPI/TFT_eSPI.cpp")).toBe(true);
+    expect(isVendoredPath("build/CMakeFiles/foo.c")).toBe(true);
+    expect(isVendoredPath(".pio/libdeps/x.cpp")).toBe(true);
+    expect(isVendoredPath("third_party/lib/x.c")).toBe(true);
+    expect(isVendoredPath("node_modules/x/y.js")).toBe(true);
+  });
+
+  it("keeps real CrossPad source", () => {
+    expect(isVendoredPath("lib/crosspad-core/src/pad/PadAnimator.cpp")).toBe(false);
+    expect(isVendoredPath("components/crosspad-core/include/crosspad/led/LedTypes.hpp")).toBe(false);
+    expect(isVendoredPath("app/src/sleep.c")).toBe(false);
+    expect(isVendoredPath("main/gui/charge_overlay.cpp")).toBe(false);
+    expect(isVendoredPath("Core/Src/main.c")).toBe(false);
+  });
+});
 
 describe("buildPattern", () => {
   it("generates class pattern for kind=class", () => {

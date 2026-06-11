@@ -55,7 +55,7 @@ export async function crosspadIdfFlash(
       port: "",
       duration_seconds: 0,
       output_tail: [],
-      error: "No build directory found. Run crosspad_build action=idf first.",
+      error: "No build directory found. Run crosspad_build platform=idf first.",
     };
   }
 
@@ -148,7 +148,7 @@ export async function crosspadIdfOta(
       port: "",
       duration_seconds: 0,
       output_tail: [],
-      error: `Firmware not found at ${fwPath}. Run crosspad_build action=idf first.`,
+      error: `Firmware not found at ${fwPath}. Run crosspad_build platform=idf first.`,
     };
   }
 

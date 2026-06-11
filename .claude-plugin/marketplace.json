@@ -1,0 +1,13 @@
+{
+  "name": "crosspad",
+  "owner": {
+    "name": "CrossPad"
+  },
+  "plugins": [
+    {
+      "name": "crosspad",
+      "source": "./",
+      "description": "crosspad-mcp server + the `crosspad` onboarding skill (ecosystem map, install/config, per-role guides) and the `swd-tracer` skill (STM32G0B1 real-time SWD tracing over ST-Link)."
+    }
+  ]
+}

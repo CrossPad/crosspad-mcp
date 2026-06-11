@@ -57,6 +57,24 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 }
 ```
 
+## Skills (start here)
+
+This package ships two Claude Code skills (bundled in the `crosspad` plugin):
+
+- **`crosspad`** — the entry point. An ecosystem map, install/config guide, per-role
+  guides (user / firmware dev / server contributor), a tool cheat-sheet, and an FAQ.
+  A fresh agent should read this first. Lives at `skills/crosspad/SKILL.md`;
+  run `bash skills/crosspad/scripts/doctor.sh` to check your environment.
+- **`swd-tracer`** — real-time SWD variable tracing for CrossPad r20 (STM32G0B1)
+  over ST-Link (see the SWD tracing section below).
+
+Install both as a plugin:
+
+```
+/plugin marketplace add CrossPad/crosspad-mcp     # or a local path to this repo
+/plugin install crosspad@crosspad
+```
+
 ## Tools (28) + resources
 
 > v8 unifies platform-axis tools: build/run/kill/check/flash now take `platform` (or `transport`) as an arg instead of being split per-platform. Migration table at the bottom of this file.
@@ -74,6 +92,83 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | `crosspad_flash` | Flash firmware to device (`transport: uart\|ota`, `port?`, `firmware_path?` ota-only) |
 | `crosspad_log` | Capture logs (`target`: pc=spawn binary / idf=read serial) |
 | `crosspad_devices` | List USB serial devices, flag CrossPads |
+| `crosspad_trace` | Real-time SWD variable trace over ST-Link (non-halting RAM polling) |
+
+### SWD tracing (crosspad_trace)
+
+Non-halting real-time trace of STM32G0B1 firmware variables via ST-Link — the same technique as ST-Studio/CubeMonitor but driven directly from the LLM session.
+
+**Recommended: the `swd-tracer` skill.** This repo ships a Claude Code skill
+(`skills/swd-tracer/`) + plugin manifest so a fresh agent automatically
+understands the tracer and can walk you through configuring every environment
+(pyOCD venv, config paths, udev rules, the Debug ELF) and the
+doctor→symbols→start→read→ui→stop workflow. Install it as a plugin:
+
+```
+/plugin marketplace add CrossPad/crosspad-mcp     # or a local path to this repo
+/plugin install crosspad@crosspad
+```
+
+The plugin bundles BOTH this MCP server and the skill, so a new machine gets the
+tracer end-to-end in one install. (Already running the server? The skill alone
+also lives at `skills/swd-tracer/SKILL.md`.)
+
+**Prerequisites** (the skill's `scripts/setup-venv.sh` automates this)
+
+Install pyocd and pyelftools into a Python venv (system Python is usually
+PEP-668 locked, so a venv is required):
+
+```bash
+bash skills/swd-tracer/scripts/setup-venv.sh
+# or manually:
+python3 -m venv ~/.local/share/crosspad-mcp/venv
+~/.local/share/crosspad-mcp/venv/bin/pip install "pyocd>=0.44" pyelftools
+```
+
+Point the server at that venv via `config_set` (or set it directly in `~/.config/crosspad-mcp/config.json`):
+
+```
+action=config_set  key=pyocd_python  value=~/.local/share/crosspad-mcp/venv/bin/python
+action=config_set  key=stm_elf_path  value=/path/to/CrossPad_STM32_r20.elf
+```
+
+**Linux udev note**: without a udev rule the ST-Link probe requires root. Run
+`bash skills/swd-tracer/scripts/install-udev-rules.sh` (writes
+`/etc/udev/rules.d/49-stlink.rules`, then replug the probe), or add the official
+rules from pyocd / ST so your user can open the device without `sudo`.
+
+**Actions**
+
+| Action | Description |
+|--------|-------------|
+| `doctor` | Environment precheck — run this first. Returns `issues[]` with severity and suggested_fix for each problem. |
+| `config_set` | Persist a key/value to `~/.config/crosspad-mcp/config.json`. Keys: `stm_elf_path`, `pyocd_python`, `probe_serial`, `trace_dir`. |
+| `symbols` | List or search traceable variables resolved from the Debug ELF (`query` for substring filter). Returns rich metadata (`kind`/`dims`/`count`/`members`). |
+| `start` | Begin a background trace session (`signals[]`, `rate_hz`). Returns `file_path` of the on-disk `.cptrace` file + the UI url. |
+| `stop` | End the active trace; returns final `sample_count` and `file_path`. |
+| `add` / `remove` | Edit the watched signal set on a **live** trace (`signals[]`) without restarting; returns the post-reconcile set. |
+| `status` | Poll `device_state`, `sample_count`, `actual_fs`, `signals` without blocking. |
+| `read` | Downsampled time-series + per-signal stats (min/max/avg/slope). Safe to call frequently — max 200 points per signal by default. |
+| `save` | Export the in-memory buffer to CSV (`file_path` returned). |
+| `device_state` | Deep STOP/low-power register dump (PWR/RCC/SCB/DBGMCU), decoded SLEEPDEEP/LPMS — does not halt the core. |
+| `ui` | Returns the localhost dashboard URL (live table + zoom/pan plots). |
+
+Signal names accept array indexing, struct members, and whole-array/slice
+expansion: `s_inputs[0]`, `s_adc_raw[3]`, `hpcd.Init.speed`, `s_adc_raw[*]`,
+`s_inputs[0:8]` (out-of-bounds indices are rejected against the DWARF length).
+
+**Example — trace ADC rail and pad inputs**
+
+```
+action=doctor
+# resolve any blocking issues...
+action=symbols  query=s_vbat
+action=start    signals=["s_vbat_mv","s_inputs[0]"]  rate_hz=100
+action=status
+action=read     max_points=500
+action=save
+action=stop
+```
 
 ### Tests
 

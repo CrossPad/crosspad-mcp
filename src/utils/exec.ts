@@ -295,6 +295,30 @@ export function runCommandStream(
 let cachedIdfEnv: CachedEnv | null = null;
 
 /**
+ * Neutralize Claude Code's injected `safe.bareRepository=explicit` git guard.
+ * The Claude Code harness sets GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n /
+ * GIT_CONFIG_VALUE_n on every subprocess it spawns (including this MCP server),
+ * forcing `safe.bareRepository=explicit`. With 'explicit', git refuses to
+ * operate on bare repositories, which breaks the ESP-IDF component manager's
+ * bare-repo dependency caches (`git config --get remote.origin.url` → exit 1).
+ *
+ * Command-line git config (which is what GIT_CONFIG_* becomes) outranks global
+ * config, so a user's `git config --global safe.bareRepository all` cannot win.
+ * We flip any safe.bareRepository entry to 'all' in the IDF build env only —
+ * this never touches the agent's own git invocations. Mutates and returns env.
+ */
+function neutralizeGitBareGuard(env: Record<string, string>): Record<string, string> {
+  const count = parseInt(env.GIT_CONFIG_COUNT ?? "", 10);
+  if (!Number.isFinite(count)) return env;
+  for (let i = 0; i < count; i++) {
+    if (env[`GIT_CONFIG_KEY_${i}`] === "safe.bareRepository") {
+      env[`GIT_CONFIG_VALUE_${i}`] = "all";
+    }
+  }
+  return env;
+}
+
+/**
  * Capture ESP-IDF environment. Cached for the lifetime of the server process.
  * - Windows: runs export.bat and parses `set` output
  * - Linux/Mac: sources export.sh and captures env via null-delimited output
@@ -320,6 +344,7 @@ export function getIdfEnv(): Record<string, string> {
         env[line.slice(0, eq)] = line.slice(eq + 1).trimEnd();
       }
     }
+    neutralizeGitBareGuard(env);
     cachedIdfEnv = { data: env, mtimeMs: mtime };
     return env;
   }
@@ -342,6 +367,7 @@ export function getIdfEnv(): Record<string, string> {
     }
   }
 
+  neutralizeGitBareGuard(env);
   cachedIdfEnv = { data: env, mtimeMs: mtime };
   return env;
 }

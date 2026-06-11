@@ -31,6 +31,16 @@ const CROSSPAD_CORE_ROOT =
 const CROSSPAD_GUI_ROOT =
   process.env.CROSSPAD_GUI_ROOT || path.join(GIT_DIR, "crosspad-gui");
 
+// STM32 firmware (CrossPad r20 single-board target). Separate repo, not a
+// submodule of the others — but its code (sleep/power/reg-map/charger) is part
+// of day-to-day development, so symbol search / repo status should cover it.
+export const CROSSPAD_STM_ROOT =
+  process.env.CROSSPAD_STM_ROOT || path.join(GIT_DIR, "CrossPad_STM32_r20");
+
+// Trace defaults (overridable later via user config at call sites).
+export const STM_ELF_DEFAULT = path.join(CROSSPAD_STM_ROOT, "build", "Debug", "CrossPad_STM32_r20.elf");
+export const TRACE_DIR_DEFAULT = path.join(CROSSPAD_STM_ROOT, "traces");
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // ESP-IDF SDK PATH — fallback chain
@@ -86,6 +96,7 @@ const REPO_CANDIDATES: Record<string, string> = {
   "crosspad-pc": CROSSPAD_PC_ROOT,
   "platform-idf": CROSSPAD_IDF_ROOT,
   "ESP32-S3": CROSSPAD_ARDUINO_ROOT,
+  "stm32-r20": CROSSPAD_STM_ROOT,
 };
 
 let cachedRepos: Record<string, string> | null = null;
