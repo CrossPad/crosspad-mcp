@@ -55,7 +55,7 @@ You have access to the CrossPad MCP server, which exposes purpose-built tools fo
 
 NEW TO A CROSSPAD REPO OR SETTING UP? Use the \`crosspad\` skill first — it maps the ecosystem (repos, MCP tools, roles), walks install/config, and routes to per-role guides + an FAQ. Run \`bash scripts/doctor.sh\` from that skill to check your environment.
 
-TOOL TAGS — a tool description starting with a bracket tag has a hardware/platform precondition: \`[PC sim]\` needs the host simulator built & running (crosspad_build platform=pc → crosspad_run); \`[ESP HW]\` needs a connected ESP32-S3 device; \`[STM HW]\` needs an ST-Link + STM32 board. Untagged tools (code search, repo/git, apps registry) need no hardware.
+TOOL TAGS — a tool description starting with a bracket tag has a platform/hardware precondition. Atomic tokens: \`[PC]\` = the crosspad-pc repo + host toolchain (build/test/inspect — no running sim); \`[PC sim]\` = a RUNNING simulator instance (launch it with crosspad_run first); \`[ESP HW]\` = a connected ESP32-S3 device; \`[STM HW]\` = an ST-Link + STM32 board. Tokens combine: \`+\` = both contexts at once (e.g. \`[PC + ESP]\`); \`|\` = either, depending on a param (e.g. \`[PC | ESP HW]\`). Untagged tools (code search, repo/git, apps registry) need no hardware.
 
 WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, prefer the crosspad_* tools over raw shell equivalents:
 
@@ -457,7 +457,7 @@ server.registerTool(
   "crosspad_build",
   {
     description:
-      "[PC + ESP] Build CrossPad for the given platform.\n" +
+      "[PC | ESP] Build CrossPad for the given platform.\n" +
       "  • platform='pc'  → CMake + Ninja host simulator. PREFER THIS over `cmake --build build` (picks right MSVC env on Windows, parses errors/warnings, streams progress).\n" +
       "  • platform='idf' → idf.py build for ESP32-S3 firmware. PREFER THIS over raw `idf.py build` (sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).\n" +
       "Mode×platform compatibility:\n" +
@@ -497,7 +497,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_run",
   {
-    description: "[PC sim] Launch the built simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if one is already responding on the TCP control port (use force=true to override). Fails if binary not built — call crosspad_build first. Currently PC-only (IDF firmware doesn't run on the host).",
+    description: "[PC] Launch the built simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if one is already responding on the TCP control port (use force=true to override). Fails if binary not built — call crosspad_build first. Currently PC-only (IDF firmware doesn't run on the host).",
     inputSchema: {
       platform: PlatformPcOnly,
       force: z.boolean().default(false)
@@ -540,7 +540,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_check",
   {
-    description: "[PC sim] Health check for a build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build to decide if rebuild needed. Currently PC-only.",
+    description: "[PC] Health check for a build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build to decide if rebuild needed. Currently PC-only.",
     inputSchema: {
       platform: PlatformPcOnly,
     },
@@ -583,7 +583,7 @@ server.registerTool(
   "crosspad_log",
   {
     description:
-      "[PC sim | ESP HW] Capture logs (consolidated; replaces crosspad_log_pc and crosspad_log_idf in v6).\n" +
+      "[PC | ESP HW] Capture logs (consolidated; replaces crosspad_log_pc and crosspad_log_idf in v6).\n" +
       "  • target='pc'  → spawn the built sim binary, capture stdout/stderr, then kill it. " +
       "Fields used: timeout_seconds (default 5), max_lines (default 200). `port` and `filter` MUST be omitted.\n" +
       "  • target='idf' → read serial from a connected ESP32-S3 via pyserial (no TTY needed). " +

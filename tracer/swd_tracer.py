@@ -52,11 +52,19 @@ def _iter_addr_globals(dwarf):
             info_die = die
             name = die.attributes.get("DW_AT_name")
             if name is None:
-                spec = die.attributes.get("DW_AT_specification") \
-                    or die.attributes.get("DW_AT_abstract_origin")
+                spec = (die.attributes.get("DW_AT_specification")
+                        or die.attributes.get("DW_AT_abstract_origin"))
                 if spec is not None:
+                    # The reference form decides the offset basis:
+                    # DW_FORM_ref_addr is an absolute .debug_info offset, so it
+                    # must NOT have cu_offset added; the CU-relative forms
+                    # (ref1/2/4/8/ref_udata) are relative to the CU and do.
                     try:
-                        info_die = cu.dwarfinfo.get_DIE_from_refaddr(spec.value + cu.cu_offset)
+                        if spec.form == "DW_FORM_ref_addr":
+                            refaddr = spec.value
+                        else:
+                            refaddr = spec.value + cu.cu_offset
+                        info_die = cu.dwarfinfo.get_DIE_from_refaddr(refaddr)
                         name = info_die.attributes.get("DW_AT_name")
                     except Exception:
                         pass
