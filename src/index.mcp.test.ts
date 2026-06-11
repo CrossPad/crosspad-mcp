@@ -56,7 +56,12 @@ vi.mock("./tools/trace-session.js", () => {
     start() { /* no daemon */ }
     async waitForFirstFrame() { this.deviceState = "running"; return { type: "sample", t: 0, values: {} }; }
     isRunning() { return true; }
-    stop() { /* daemon-only in real impl */ }
+    // The MCP `stop` handler defers teardown to onStopped (fires when the daemon
+    // truly exits). Model a daemon that exits promptly on stop so the test sees
+    // the deferred unbind/clear happen.
+    _stoppedCbs: (() => void)[] = [];
+    onStopped(cb: () => void) { this._stoppedCbs.push(cb); }
+    stop() { const cbs = this._stoppedCbs; this._stoppedCbs = []; for (const cb of cbs) cb(); }
     stderrTail() { return ""; }
   }
   return {

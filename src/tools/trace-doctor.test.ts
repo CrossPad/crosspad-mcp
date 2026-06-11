@@ -36,9 +36,22 @@ describe("runDoctor", () => {
     expect(r.issues.find((x) => x.id === "elf_missing")?.severity).toBe("blocking");
   });
 
-  it("flags missing probe as blocking", async () => {
-    const r = await runDoctor(probe({ stlinkProbe: () => ({ found: false }) }));
+  it("flags missing probe as blocking when no probeList check is wired", async () => {
+    const r = await runDoctor(probe({ stlinkProbe: () => ({ found: false }), probeList: undefined }));
     expect(r.issues.find((x) => x.id === "probe_missing")?.severity).toBe("blocking");
+    expect(r.ok).toBe(false);
+  });
+
+  it("does NOT block on st-info absence when pyocd probeList sees the probe", async () => {
+    // §11.7: st-info found:false can simply mean st-info isn't installed; the
+    // authoritative probeList (pyocd list) owns presence. No false probe_missing.
+    const r = await runDoctor(probe({
+      stlinkProbe: () => ({ found: false }),
+      probeList: async () => ({ present: true, toolAvailable: true }),
+    }));
+    expect(r.issues.find((x) => x.id === "probe_missing")).toBeUndefined();
+    expect(r.issues.find((x) => x.id === "no_probe_detected")).toBeUndefined();
+    expect(r.ok).toBe(true);
   });
 
   it("flags missing udev rules as warning (not blocking)", async () => {

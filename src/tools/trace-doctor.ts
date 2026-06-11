@@ -59,7 +59,12 @@ export async function runDoctor(p: DoctorProbe): Promise<DoctorResult> {
   }
 
   const probe = p.stlinkProbe();
-  if (!probe.found) {
+  // st-info's negative is authoritative ONLY when the §11.7 probeList check
+  // (`pyocd list` — the actual trace mechanism) isn't wired. stlinkProbe()
+  // returns found:false when st-info is merely *not installed*, which must not
+  // block tracing if pyocd can still enumerate the probe. When probeList is
+  // present it owns probe presence (below), so skip this redundant block.
+  if (!probe.found && !p.probeList) {
     issues.push({
       id: "probe_missing",
       severity: "blocking",

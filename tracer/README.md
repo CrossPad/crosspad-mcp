@@ -178,18 +178,24 @@ The binary header allows fast seeking to the body start and easy validation. Bod
 
 #### Example
 
+The daemon reads control commands (`add` / `remove` / `stop`) as NDJSON on its
+**stdin**, so drive it through a FIFO you keep open for writing:
+
 ```bash
+mkfifo /tmp/trace_in
 /path/to/venv/bin/python swd_tracer.py trace \
   --elf ~/GIT/CrossPad_STM32_r20/build/Debug/CrossPad_STM32_r20.elf \
   --signals s_vbat_mv,s_inputs[0],s_inputs[1] \
   --rate 100 \
   --out /tmp/session.cptrace \
-  2>/tmp/trace.log &
+  < /tmp/trace_in 2>/tmp/trace.log &
 DAEMON_PID=$!
+exec 3>/tmp/trace_in            # hold the write end open
 
 # ... let it run for a few seconds ...
 
-echo '{"cmd":"stop"}' >&${DAEMON_PID}_stdin
+echo '{"cmd":"stop"}' >&3       # graceful stop via the stdin protocol
+exec 3>&-; rm -f /tmp/trace_in  # (or just: kill "$DAEMON_PID")
 ```
 
 stdout while running:

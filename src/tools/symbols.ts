@@ -38,7 +38,10 @@ const VENDOR_SEGMENTS = [
   // generic third-party / generated
   "third_party", "vendor", "node_modules", "build", ".pio",
 ];
-const VENDOR_DIR_RE = new RegExp(`(^|/)(${VENDOR_SEGMENTS.join("|")})(/|$)`);
+// Escape each segment so metacharacters (e.g. the "." in ".pio") match
+// literally instead of as regex wildcards.
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const VENDOR_DIR_RE = new RegExp(`(^|/)(${VENDOR_SEGMENTS.map(escapeRe).join("|")})(/|$)`);
 
 /** @internal exported for testing */
 export function isVendoredPath(file: string): boolean {
