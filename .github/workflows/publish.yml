@@ -8,6 +8,12 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # A manual dispatch must not be able to mint the OIDC publish token from an
+    # arbitrary ref. Restrict workflow_dispatch to master; releases are always
+    # cut from a tag, so the release path is unrestricted.
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master')
     permissions:
       contents: read
       id-token: write
@@ -33,4 +39,4 @@ jobs:
       # No token: npm exchanges the GitHub OIDC id-token for a short-lived
       # publish credential via the package's configured Trusted Publisher.
       # Provenance is attached automatically under OIDC.
-      - run: npm publish --access public
+      - run: npm publish --access public --loglevel verbose
