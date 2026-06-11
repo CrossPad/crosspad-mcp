@@ -2,7 +2,7 @@
 // Client→Server protocol calls (structured output validation included).
 // Catches output-schema/result-shape drift that pure unit tests miss.
 
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 
 // Mock the build implementations BEFORE importing index.ts so the registered
 // handlers route through these stubs. Mock factories run hoisted by vitest.
@@ -78,6 +78,7 @@ import { crosspadBuild, crosspadKill } from "./tools/build.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
 import { server, setTraceBrowserOpener } from "./index.js";
+import { _setConfigPathForTest } from "./utils/userConfig.js";
 
 const mockedPcBuild = vi.mocked(crosspadBuild);
 const mockedIdfBuild = vi.mocked(crosspadIdfBuild);
@@ -244,9 +245,17 @@ describe("crosspad_trace §12 persistent dashboard + auto-open", () => {
     fakeDashboard.unbind.mockClear();
     fakeOpener.mockClear();
     setTraceBrowserOpener(fakeOpener);
+    // Isolate from the real ~/.config/crosspad-mcp/config.json so `ui_open`
+    // resolution is deterministic (empty config → env/default control the mode).
+    _setConfigPathForTest("/tmp/cp-mcp-test-no-such-config.json");
+    delete process.env.CROSSPAD_TRACE_UI_OPEN;
+  });
+  afterEach(() => {
+    _setConfigPathForTest(null);
+    delete process.env.CROSSPAD_TRACE_UI_OPEN;
   });
 
-  it("start auto-opens the browser when NO client is connected, then binds", async () => {
+  it("start (default ui_open=vscode) does NOT pop the system browser immediately — it binds and replies with the link (the agent presents it; a 30s watchdog is the fallback)", async () => {
     fakeDashboard.hasClients.mockReturnValue(false);
     const r = await client.callTool({
       name: "crosspad_trace",
@@ -255,11 +264,24 @@ describe("crosspad_trace §12 persistent dashboard + auto-open", () => {
     expect(r.isError).toBeFalsy();
     expect(r.structuredContent).toMatchObject({ success: true, device_state: "running", ui_url: "http://localhost:7373/" });
     expect(fakeDashboard.ensureStarted).toHaveBeenCalled();
+    expect(fakeOpener).not.toHaveBeenCalled();   // vscode mode: no immediate pop
+    expect(fakeDashboard.bind).toHaveBeenCalledTimes(1);
+  });
+
+  it("start with ui_open=browser opens the system browser immediately when no client is connected", async () => {
+    process.env.CROSSPAD_TRACE_UI_OPEN = "browser";
+    fakeDashboard.hasClients.mockReturnValue(false);
+    const r = await client.callTool({
+      name: "crosspad_trace",
+      arguments: { action: "start", signals: ["s_vbat_mv"] },
+    });
+    expect(r.isError).toBeFalsy();
     expect(fakeOpener).toHaveBeenCalledWith("http://localhost:7373/");
     expect(fakeDashboard.bind).toHaveBeenCalledTimes(1);
   });
 
-  it("start does NOT auto-open when a client is already connected (tab already open)", async () => {
+  it("start does NOT auto-open when a client is already connected (tab already open), even in browser mode", async () => {
+    process.env.CROSSPAD_TRACE_UI_OPEN = "browser";
     fakeDashboard.hasClients.mockReturnValue(true);
     const r = await client.callTool({
       name: "crosspad_trace",

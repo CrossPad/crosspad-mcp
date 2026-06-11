@@ -2,3 +2,4 @@ node_modules/
 dist/
 tracer/__pycache__/
 __pycache__/
+vscode-extension/*.vsix

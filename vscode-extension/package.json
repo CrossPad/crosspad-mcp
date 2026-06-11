@@ -1,0 +1,14 @@
+{
+  "name": "swd-tracer-bridge",
+  "displayName": "CrossPad SWD Tracer Bridge",
+  "description": "Opens the CrossPad SWD tracer dashboard in a VS Code Simple Browser tab when the tracer fires a vscode:// deep link (so `crosspad_trace action=start` auto-opens the live view inside the editor instead of the system browser).",
+  "publisher": "crosspad",
+  "version": "0.1.2",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/CrossPad/crosspad-mcp.git" },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {}
+}

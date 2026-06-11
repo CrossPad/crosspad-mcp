@@ -7,6 +7,23 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Frame, TraceSession } from "./trace-session.js";
 import { listSymbols, resolvedElf } from "./trace-symbols.js";
 
+/** Spawn the OS system-browser opener for an http url. Detached + never throws. */
+function spawnOpener(target: string): boolean {
+  const platform = process.platform;
+  try {
+    let cmd: string, args: string[];
+    if (platform === "darwin") { cmd = "open"; args = [target]; }
+    else if (platform === "win32") { cmd = "cmd"; args = ["/c", "start", "", target]; }
+    else { cmd = "xdg-open"; args = [target]; }
+    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+    child.on("error", () => { /* opener missing — best-effort, never throw */ });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 function uiHtmlPath(): string { return path.resolve(__dirname, "..", "..", "tracer", "ui", "index.html"); }
 
@@ -24,30 +41,16 @@ export function originIsLoopback(info: { origin?: string }): boolean {
   }
 }
 
-/** §12.4 best-effort browser opener. Spawns the platform opener detached so the
- *  MCP server never owns the browser process, swallows every failure (a missing
- *  opener / headless box must never throw), and SKIPS when:
- *   - CROSSPAD_TRACE_NO_BROWSER is set (explicit opt-out), or
- *   - on linux when neither DISPLAY nor WAYLAND_DISPLAY is set (headless — no GUI
- *     to pop, so xdg-open would just error).
- *  Returns true if an opener was actually spawned, false if skipped. */
+/** §12.4 best-effort open of the dashboard in the SYSTEM browser — the fallback
+ *  used by the `start` watchdog (§12.6) when nobody opened the in-editor link.
+ *  Routing/mode (vscode-link vs immediate vs none) is decided by the caller in
+ *  index.ts; this just does the actual system-browser open. SKIPS (returns
+ *  false) when CROSSPAD_TRACE_NO_BROWSER is set, or on linux with no
+ *  DISPLAY/WAYLAND_DISPLAY (headless). Never throws. */
 export function openInBrowser(url: string): boolean {
   if (process.env.CROSSPAD_TRACE_NO_BROWSER) return false;
-  const platform = process.platform;
-  if (platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return false;
-  try {
-    let cmd: string;
-    let args: string[];
-    if (platform === "darwin") { cmd = "open"; args = [url]; }
-    else if (platform === "win32") { cmd = "cmd"; args = ["/c", "start", "", url]; }
-    else { cmd = "xdg-open"; args = [url]; }
-    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
-    child.on("error", () => { /* opener missing — best-effort, never throw */ });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+  if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return false;
+  return spawnOpener(url);
 }
 
 /**

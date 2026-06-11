@@ -8,6 +8,11 @@ export interface UserConfig {
   pyocd_python?: string;
   probe_serial?: string;
   trace_dir?: string;
+  /** How `start` surfaces the live dashboard: "vscode" (default — agent replies
+   *  with the link; user clicks → VS Code Simple Browser via externalUriOpeners;
+   *  system-browser fallback after ~30s if unopened), "browser" (open the system
+   *  browser immediately), or "none" (never auto-open). */
+  ui_open?: string;
 }
 
 let testPathOverride: string | null = null;

@@ -85,6 +85,26 @@ stop                         → end the trace (always frees the probe)
 `actual_fs` (ST-Link V2 + pyOCD tops out ~480 Hz total across all ranges).
 Fewer/contiguous signals = higher Fs.
 
+### ALWAYS hand the user the dashboard link
+
+On every `start` (and whenever you start/restart a trace), **reply with the
+`ui_url` as a clickable link** — prominently, e.g.:
+
+> 📊 Live dashboard: **http://localhost:7373/** — click to open it in VS Code.
+
+This is the primary way the user opens the view. With the recommended VS Code
+setting `"workbench.externalUriOpeners": {"localhost:7373": "simpleBrowser"}`, a
+click opens the dashboard **inside VS Code (Simple Browser)**, not the system
+browser. Assume the driver may be seeing VS Code for the first time — give them
+the link every time, never make them hunt for it. The server is persistent, so
+once they click it the tab stays live across all later traces (it auto-reconnects).
+
+The tool also has a safety net: with `ui_open=vscode` (default), if **no client
+connects within ~30 s**, it auto-opens the system browser as a fallback so a
+first-timer is never left looking at nothing. `ui_open=browser` opens the system
+browser immediately; `ui_open=none` disables both. Set the fallback delay with
+`CROSSPAD_TRACE_OPEN_FALLBACK_MS`.
+
 ## Signal-spec syntax
 
 | Form | Resolves to |

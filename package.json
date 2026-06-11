@@ -11,6 +11,7 @@
     "dist/",
     "tracer/",
     "skills/",
+    "vscode-extension/",
     ".claude-plugin/",
     ".mcp.json"
   ],

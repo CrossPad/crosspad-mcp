@@ -35,7 +35,7 @@ import {
   crosspadAppSync,
 } from "./tools/app-manager.js";
 import { runDoctor, realProbe } from "./tools/trace-doctor.js";
-import { setConfigValue, type UserConfig } from "./utils/userConfig.js";
+import { setConfigValue, resolveConfigValue, type UserConfig } from "./utils/userConfig.js";
 import { listSymbols } from "./tools/trace-symbols.js";
 import { getDeviceState } from "./tools/trace-device.js";
 import { TraceSession, getActiveSession, setActiveSession } from "./tools/trace-session.js";
@@ -671,7 +671,7 @@ server.registerTool(
       rate_hz: z.number().int().min(0).max(2000).optional().describe("start: target sample rate (0 = as fast as the probe allows). Actual Fs is reported."),
       swo: z.array(z.string()).optional().describe("start (EXPERIMENTAL): map ITM stimulus ports to signal names, e.g. ['0:phase','1:isr_us']. Requires firmware that emits ITM on the SWO pin (NOT present in current CrossPad firmware — UNTESTED against real ITM). Omit for plain RAM polling. Fails soft: if SWV init fails, polling continues normally."),
       query: z.string().optional().describe("symbols: case-insensitive substring filter."),
-      key: z.string().optional().describe("config_set: one of stm_elf_path|pyocd_python|probe_serial|trace_dir."),
+      key: z.string().optional().describe("config_set: one of stm_elf_path|pyocd_python|probe_serial|trace_dir|ui_open. ui_open ∈ vscode(default: reply with the link → user clicks → opens in the VS Code Simple Browser; system-browser fallback after 30s if unopened)|browser(open system browser immediately)|none(never auto-open)."),
       value: z.string().optional().describe("config_set: the value to persist."),
       window_from: z.number().optional().describe("read: start time (s) of the window."),
       window_to: z.number().optional().describe("read: end time (s) of the window."),
@@ -688,7 +688,7 @@ server.registerTool(
         return ok({ action, ok: r.ok, issues: r.issues, device_state: r.probe ? "connected" : "no_probe" });
       }
       case "config_set": {
-        const allowed = ["stm_elf_path", "pyocd_python", "probe_serial", "trace_dir"];
+        const allowed = ["stm_elf_path", "pyocd_python", "probe_serial", "trace_dir", "ui_open"];
         if (!key || !allowed.includes(key)) return err(`config_set requires key in ${allowed.join("|")}`);
         if (value === undefined) return err("config_set requires `value`.");
         setConfigValue(key as keyof UserConfig, value);
@@ -722,8 +722,31 @@ server.registerTool(
         let uiUrl: string | undefined;
         try {
           uiUrl = await dashboard.ensureStarted();
-          if (!dashboard.hasClients()) traceBrowserOpener(uiUrl);
           dashboard.bind(sess);
+          // §12.6 open behavior, by ui_open config (default "vscode"):
+          //   vscode  → DON'T pop anything now. The agent always replies with the
+          //             dashboard link; the user clicks it → it opens in the VS Code
+          //             Simple Browser via their workbench.externalUriOpeners. If
+          //             nobody opens it within the fallback window, fall back to the
+          //             system browser so a first-timer is never left staring at nothing.
+          //   browser → open the system browser immediately.
+          //   none    → never auto-open (rely on an already-open persistent tab).
+          if (uiUrl && !dashboard.hasClients()) {
+            const mode = resolveConfigValue("ui_open", "CROSSPAD_TRACE_UI_OPEN", process.env.CROSSPAD_TRACE_UI_OPEN, "vscode");
+            if (mode === "browser") {
+              traceBrowserOpener(uiUrl);
+            } else if (mode === "vscode") {
+              const ms = Number(process.env.CROSSPAD_TRACE_OPEN_FALLBACK_MS) || 30000;
+              const url = uiUrl;
+              setTimeout(() => {
+                // Only fall back if THIS trace is still the active one and nobody
+                // ever opened the in-editor link.
+                if (getActiveSession() === sess && sess.isRunning() && !getDashboard().hasClients()) {
+                  traceBrowserOpener(url);
+                }
+              }, ms);
+            }
+          }
         } catch { /* UI optional — never block a trace on the dashboard */ }
         // §11.6: don't lie. Wait for the first real frame and report what the
         // daemon actually did (connect can fail fast → error/exit) instead of an
