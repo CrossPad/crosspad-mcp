@@ -24,6 +24,10 @@ jobs:
       # npm Trusted Publishing (OIDC) needs npm >= 11.5.1; node 20 ships npm 10.x.
       - run: npm install -g npm@latest
 
+      - run: |
+          echo "npm: $(npm --version)"
+          echo "id-token url set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "registry: $(npm config get registry)"
       - run: npm ci
       - run: npm run build
       # No token: npm exchanges the GitHub OIDC id-token for a short-lived
