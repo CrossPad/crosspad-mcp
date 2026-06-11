@@ -55,6 +55,8 @@ You have access to the CrossPad MCP server, which exposes purpose-built tools fo
 
 NEW TO A CROSSPAD REPO OR SETTING UP? Use the \`crosspad\` skill first — it maps the ecosystem (repos, MCP tools, roles), walks install/config, and routes to per-role guides + an FAQ. Run \`bash scripts/doctor.sh\` from that skill to check your environment.
 
+TOOL TAGS — a tool description starting with a bracket tag has a hardware/platform precondition: \`[PC sim]\` needs the host simulator built & running (crosspad_build platform=pc → crosspad_run); \`[ESP HW]\` needs a connected ESP32-S3 device; \`[STM HW]\` needs an ST-Link + STM32 board. Untagged tools (code search, repo/git, apps registry) need no hardware.
+
 WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, prefer the crosspad_* tools over raw shell equivalents:
 
 - Inspecting code  → crosspad_search_symbols (NOT \`grep -r\`); crosspad_list_interfaces; crosspad_interface_implementations.
@@ -455,7 +457,7 @@ server.registerTool(
   "crosspad_build",
   {
     description:
-      "Build CrossPad for the given platform.\n" +
+      "[PC + ESP] Build CrossPad for the given platform.\n" +
       "  • platform='pc'  → CMake + Ninja host simulator. PREFER THIS over `cmake --build build` (picks right MSVC env on Windows, parses errors/warnings, streams progress).\n" +
       "  • platform='idf' → idf.py build for ESP32-S3 firmware. PREFER THIS over raw `idf.py build` (sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).\n" +
       "Mode×platform compatibility:\n" +
@@ -495,7 +497,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_run",
   {
-    description: "Launch the built simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if one is already responding on the TCP control port (use force=true to override). Fails if binary not built — call crosspad_build first. Currently PC-only (IDF firmware doesn't run on the host).",
+    description: "[PC sim] Launch the built simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if one is already responding on the TCP control port (use force=true to override). Fails if binary not built — call crosspad_build first. Currently PC-only (IDF firmware doesn't run on the host).",
     inputSchema: {
       platform: PlatformPcOnly,
       force: z.boolean().default(false)
@@ -525,7 +527,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_kill",
   {
-    description: "Stop the running PC simulator. Identifies the process by /proc/<pid>/exe match against the built binary (Linux) or pgrep -x basename (macOS/Windows), sends SIGTERM, waits up to 3s, then SIGKILL stragglers. Returns killed PIDs and whether anything still answers on the TCP control port. Currently PC-only.",
+    description: "[PC sim] Stop the running PC simulator. Identifies the process by /proc/<pid>/exe match against the built binary (Linux) or pgrep -x basename (macOS/Windows), sends SIGTERM, waits up to 3s, then SIGKILL stragglers. Returns killed PIDs and whether anything still answers on the TCP control port. Currently PC-only.",
     inputSchema: {
       platform: PlatformPcOnly,
     },
@@ -538,7 +540,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_check",
   {
-    description: "Health check for a build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build to decide if rebuild needed. Currently PC-only.",
+    description: "[PC sim] Health check for a build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build to decide if rebuild needed. Currently PC-only.",
     inputSchema: {
       platform: PlatformPcOnly,
     },
@@ -555,7 +557,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_flash",
   {
-    description: "Flash ESP firmware to a connected CrossPad device. transport='uart' uses idf.py flash (device must be in bootloader mode). transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required). Requires prior crosspad_build platform=idf. Works on both CrossPad generations: rev <2.0 (ESP native USB) and rev 2.0 (port is the STM32 CDC bridge — STM emulates the esptool DTR/RTS auto-reset and forwards the flash to the ESP over LPUART2; rev-2.0 STM must be in passthrough mode, i.e. NOT booted with pad-4 held).",
+    description: "[ESP HW] Flash ESP firmware to a connected CrossPad device. transport='uart' uses idf.py flash (device must be in bootloader mode). transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required). Requires prior crosspad_build platform=idf. Works on both CrossPad generations: rev <2.0 (ESP native USB) and rev 2.0 (port is the STM32 CDC bridge — STM emulates the esptool DTR/RTS auto-reset and forwards the flash to the ESP over LPUART2; rev-2.0 STM must be in passthrough mode, i.e. NOT booted with pad-4 held).",
     inputSchema: {
       transport: z.enum(["uart", "ota"]).describe("'uart' = bootloader-mode flash via idf.py; 'ota' = USB-CDC OTA flash via ota_flash.py."),
       port: Port.optional(),
@@ -581,13 +583,13 @@ server.registerTool(
   "crosspad_log",
   {
     description:
-      "Capture logs (consolidated; replaces crosspad_log_pc and crosspad_log_idf in v6).\n" +
+      "[PC sim | ESP HW] Capture logs (consolidated; replaces crosspad_log_pc and crosspad_log_idf in v6).\n" +
       "  • target='pc'  → spawn the built sim binary, capture stdout/stderr, then kill it. " +
       "Fields used: timeout_seconds (default 5), max_lines (default 200). `port` and `filter` MUST be omitted.\n" +
       "  • target='idf' → read serial from a connected ESP32-S3 via pyserial (no TTY needed). " +
       "Fields used: port (auto-detected if omitted), timeout_seconds (default 10), max_lines (default 500), filter (substring, case-insensitive).",
     inputSchema: {
-      target: z.enum(["pc", "idf"]).describe("'pc' = run+capture sim binary; 'idf' = read serial from connected device. Other fields are conditional — see description."),
+      target: z.enum(["pc", "idf"]).describe("'pc' = run+capture sim binary (uses timeout_seconds?,max_lines? — port/filter MUST be omitted); 'idf' = read serial from connected ESP device (uses port?,timeout_seconds?,max_lines?,filter?,reset_to_boot?)."),
       port: Port.optional().describe("idf only. Serial port path. Auto-detected if omitted; required when multiple devices connected. MUST be omitted for target=pc."),
       timeout_seconds: TimeoutSec.optional().describe("Capture duration in seconds. Defaults: 5 (pc), 10 (idf)."),
       max_lines: MaxLines.optional().describe("Max output lines. Defaults: 200 (pc), 500 (idf)."),
@@ -619,7 +621,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_devices",
   {
-    description: "List all connected USB serial devices. Identifies CrossPad devices separately and tags each with `kind`: 'esp-native' (rev <2.0, ESP32-S3 native USB, VID 0x303a/PID 0x3456) or 'stm-bridge' (rev 2.0, STM32 composite CDC+MIDI bridge, VID 0x0483/PID 0x5740 — STM programs the ESP over LPUART2).",
+    description: "[ESP HW] List all connected USB serial devices. Identifies CrossPad devices separately and tags each with `kind`: 'esp-native' (rev <2.0, ESP32-S3 native USB, VID 0x303a/PID 0x3456) or 'stm-bridge' (rev 2.0, STM32 composite CDC+MIDI bridge, VID 0x0483/PID 0x5740 — STM programs the ESP over LPUART2).",
     inputSchema: {},
     outputSchema: O_Devices,
     annotations: ANN_READ_ONLY,
@@ -646,7 +648,7 @@ server.registerTool(
   "crosspad_trace",
   {
     description:
-      "Real-time SWD tracer for the STM32G0B1 firmware (ST-Link). Non-halting RAM polling of firmware variables resolved from the Debug ELF (like ST-Studio/CubeMonitor). Pick an `action`:\n" +
+      "[STM HW] Real-time SWD tracer for the STM32G0B1 firmware (ST-Link). Non-halting RAM polling of firmware variables resolved from the Debug ELF (like ST-Studio/CubeMonitor). Pick an `action`:\n" +
       "  • doctor       → environment precheck → issues[] (run this FIRST; resolve issues, then config_set).\n" +
       "  • config_set   → persist a resolved path/serial to ~/.config/crosspad-mcp/config.json (key,value).\n" +
       "  • symbols      → list/search traceable variables from the ELF (query optional).\n" +
@@ -660,7 +662,11 @@ server.registerTool(
       "  • ui           → returns the localhost dashboard URL.\n" +
       "Signal names accept array indexing, e.g. 's_inputs[0]', 's_adc_raw[3]'.",
     inputSchema: {
-      action: TraceAction,
+      action: TraceAction.describe(
+        "Required params per action — doctor/stop/status/device_state/ui: (none); " +
+        "config_set: key,value; symbols: query?; start: signals[],rate_hz?; " +
+        "add/remove: signals[]; read: window_from?,window_to?,max_points?; save: format?."
+      ),
       signals: z.array(z.string()).optional().describe("start: variable names from `symbols` (e.g. ['s_vbat_mv','s_inputs[0]'])."),
       rate_hz: z.number().int().min(0).max(2000).optional().describe("start: target sample rate (0 = as fast as the probe allows). Actual Fs is reported."),
       swo: z.array(z.string()).optional().describe("start (EXPERIMENTAL): map ITM stimulus ports to signal names, e.g. ['0:phase','1:isr_us']. Requires firmware that emits ITM on the SWO pin (NOT present in current CrossPad firmware — UNTESTED against real ITM). Omit for plain RAM polling. Fails soft: if SWV init fails, polling continues normally."),
@@ -835,7 +841,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_test_run",
   {
-    description: "Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
+    description: "[PC] Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
     inputSchema: {
       filter: z.string().default("")
         .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Default '' (empty) runs ALL tests — there is no opt-out for 'no tests'."),
@@ -859,7 +865,7 @@ server.registerTool(
   "crosspad_screenshot",
   {
     description:
-      "Capture a PNG screenshot from the running PC simulator. " +
+      "[PC sim] Capture a PNG screenshot from the running PC simulator. " +
       "Default behavior (return_inline=false): saves to <crosspad-pc>/screenshots/ and returns metadata + file_path (cheap, no token cost). " +
       "Set return_inline=true ONLY when the LLM needs to actually see the image — that returns base64 inline and burns ~50-150k tokens.",
     inputSchema: {
@@ -911,7 +917,7 @@ server.registerTool(
   "crosspad_input",
   {
     description:
-      "Send one input event to the running PC simulator (consolidated; replaces 7 v5 tools). " +
+      "[PC sim] Send one input event to the running PC simulator (consolidated; replaces 7 v5 tools). " +
       "Pick an `action`, then supply ONLY the fields it needs — extras are ignored. " +
       "Required fields per action:\n" +
       "  • pad_press            → pad (velocity optional, default 127)\n" +
@@ -927,7 +933,7 @@ server.registerTool(
         "pad_press", "pad_release",
         "encoder_rotate", "encoder_press", "encoder_release",
         "click", "key",
-      ]).describe("Which input event to dispatch — see description for required fields per action."),
+      ]).describe("Which input event to dispatch. Required params — pad_press: pad (velocity?); pad_release: pad; encoder_rotate: delta; encoder_press/encoder_release: (none); click: x,y; key: keycode."),
       pad: PadIndex.optional().describe("Required for action=pad_press|pad_release. Pad index 0-15."),
       velocity: Velocity.optional().describe("Optional for action=pad_press (default 127). Ignored for other actions."),
       delta: z.number().int().optional().describe("Required for action=encoder_rotate. Positive=CW, negative=CCW. Typical range -10..10."),
@@ -982,7 +988,7 @@ server.registerTool(
   "crosspad_midi",
   {
     description:
-      "Send one MIDI event to the running PC simulator (consolidated; replaces 4 v5 tools). " +
+      "[PC sim] Send one MIDI event to the running PC simulator (consolidated; replaces 4 v5 tools). " +
       "Pick a `type`, then supply ONLY the fields it needs — extras are ignored. " +
       "Required fields per type:\n" +
       "  • note_on        → note (velocity optional, default 127)\n" +
@@ -992,7 +998,7 @@ server.registerTool(
       "`channel` (0-15) defaults to 0 for every type. Only note_on/note_off actually reach the sim today.",
     inputSchema: {
       type: z.enum(["note_on", "note_off", "cc", "program_change"])
-        .describe("MIDI event type — see description for required fields per type."),
+        .describe("MIDI event type. Required params — note_on: note (velocity?); note_off: note (velocity?); cc: cc_num,value; program_change: program. channel? defaults 0 for all."),
       channel: Channel,
       note: Note.optional().describe("Required for type=note_on|note_off. MIDI note 0-127 (60 = middle C)."),
       velocity: Velocity.optional().describe("Optional for type=note_on (default 127) and note_off (default 0). Ignored for cc/program_change."),
@@ -1039,7 +1045,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_stats",
   {
-    description: "Read runtime statistics from the running PC simulator: pad state, capabilities, heap, registered apps, active pad logic.",
+    description: "[PC sim] Read runtime statistics from the running PC simulator: pad state, capabilities, heap, registered apps, active pad logic.",
     inputSchema: {},
     outputSchema: O_Stats,
     annotations: ANN_READ_ONLY,
@@ -1050,7 +1056,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_settings_get",
   {
-    description: "Read settings from the running simulator.",
+    description: "[PC sim] Read settings from the running simulator.",
     inputSchema: {
       category: z.enum(["all", "display", "keypad", "vibration", "wireless", "audio", "system"])
         .default("all")
@@ -1065,7 +1071,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_settings_set",
   {
-    description: "Write a single setting on the running simulator.",
+    description: "[PC sim] Write a single setting on the running simulator.",
     inputSchema: {
       key: z.string().min(1)
         .describe("Setting key. Either a flat name ('lcd_brightness') or dotted category.field ('keypad.eco_mode', 'vibration.enable'). Use crosspad_settings_get to discover valid keys."),
@@ -1232,7 +1238,7 @@ server.registerTool(
 server.registerTool(
   "crosspad_apps_list",
   {
-    description: "List apps from the crosspad-apps registry, aggregating installation status across all detected platform repos. Reads JSON; no Python required.",
+    description: "List apps from the crosspad-apps registry, aggregating installation status across all detected platform repos. Reads JSON; no Python required. Different from crosspad_list_apps_source (which scans REGISTER_APP() in source code).",
     inputSchema: {
       show_all: z.boolean().default(false)
         .describe("Include apps incompatible with detected platforms."),
