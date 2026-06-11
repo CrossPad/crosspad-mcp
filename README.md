@@ -106,7 +106,7 @@ doctor→symbols→start→read→ui→stop workflow. Install it as a plugin:
 
 ```
 /plugin marketplace add CrossPad/crosspad-mcp     # or a local path to this repo
-/plugin install crosspad-swd-tracer@crosspad
+/plugin install crosspad@crosspad
 ```
 
 The plugin bundles BOTH this MCP server and the skill, so a new machine gets the
