@@ -10,7 +10,7 @@ and the **crosspad-mcp** server gives an LLM purpose-built tools to build, flash
 test, drive the simulator, search code, and manage app packages across them.
 
 This skill is the **map**. It loads light — read a `reference/*.md` file only when
-its topic comes up. For real-time SWD variable tracing, use the separate
+its topic comes up. For real-time SWD variable tracing on STM32 MCU, use the separate
 **`swd-tracer`** skill.
 
 ## First move
