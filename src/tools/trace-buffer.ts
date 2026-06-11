@@ -13,6 +13,19 @@ export class TraceBuffer {
   count(): number { return this.buf.length; }
   signalNames(): string[] { return [...this.signals]; }
 
+  /** Add a signal to the watched set (no-op if already present). Does not touch
+   *  stored samples — history of a previously-removed signal survives in the ring. */
+  addSignal(name: string): void {
+    if (!this.signals.includes(name)) this.signals.push(name);
+  }
+
+  /** Drop a signal from the watched set (no-op if absent). Stored samples are
+   *  left intact so already-captured history remains queryable until it ages out. */
+  removeSignal(name: string): void {
+    const i = this.signals.indexOf(name);
+    if (i >= 0) this.signals.splice(i, 1);
+  }
+
   stats(sig: string): SignalStats | null {
     const pts = this.buf.filter((s) => sig in s.values);
     if (pts.length === 0) return null;

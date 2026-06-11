@@ -5,7 +5,18 @@ import { runArgvStream } from "../utils/exec.js";
 import { resolveConfigValue } from "../utils/userConfig.js";
 import { STM_ELF_DEFAULT } from "../config.js";
 
-export interface TraceSymbol { name: string; address: number; encoding: string; size: number; }
+export interface TraceSymbol {
+  name: string; address: number; encoding: string; size: number;
+  // §8 richer metadata (best-effort; may be absent for `other`). JSON.parse
+  // already preserves these extra keys — the interface just widens the type so
+  // they flow through to the MCP `symbols` action and the /symbols endpoint.
+  kind?: "scalar" | "array" | "struct" | "union" | "other";
+  dims?: number[];          // array only: per-dimension element counts
+  count?: number;           // array only: total element count (product of dims)
+  elem_size?: number;       // array only: one element's byte size
+  elem_encoding?: string;   // array only: element scalar encoding
+  members?: string[];       // struct/union only: one level of member names
+}
 export interface SymbolsResult { success: boolean; symbols: TraceSymbol[]; error?: string; }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

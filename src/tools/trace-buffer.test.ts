@@ -45,4 +45,25 @@ describe("TraceBuffer", () => {
     const d = b.downsample("a", 1000, { fromT: 50, toT: 60 });
     expect(d.every((p) => p.t >= 50 && p.t <= 60)).toBe(true);
   });
+
+  it("addSignal/removeSignal mutate the watched set (idempotent)", () => {
+    const b = new TraceBuffer(["a"], 100);
+    b.addSignal("b");
+    expect(b.signalNames()).toEqual(["a", "b"]);
+    b.addSignal("b"); // no-op if already present
+    expect(b.signalNames()).toEqual(["a", "b"]);
+    b.removeSignal("a");
+    expect(b.signalNames()).toEqual(["b"]);
+    b.removeSignal("a"); // no-op if absent
+    expect(b.signalNames()).toEqual(["b"]);
+  });
+
+  it("keeps stored samples when a signal is removed", () => {
+    const b = new TraceBuffer(["a"], 100);
+    b.push({ t: 0, values: { a: 10 } });
+    b.push({ t: 1, values: { a: 20 } });
+    b.removeSignal("a");
+    expect(b.count()).toBe(2); // history survives
+    expect(b.stats("a")?.last).toBe(20); // still queryable
+  });
 });

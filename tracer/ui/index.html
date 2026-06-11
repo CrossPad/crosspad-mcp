@@ -1,65 +1,834 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>CrossPad SWD Trace</title>
 <style>
+ *{box-sizing:border-box}
  body{font:13px monospace;margin:0;background:#111;color:#ddd}
  #wrap{display:flex;height:100vh}
- #side{width:240px;padding:8px;overflow:auto;border-right:1px solid #333}
- #main{flex:1;display:flex;flex-direction:column}
- canvas{flex:1;background:#000}
+ #side{width:340px;min-width:340px;padding:8px;overflow:auto;border-right:1px solid #333;display:flex;flex-direction:column;gap:8px}
+ #main{flex:1;display:flex;flex-direction:column;min-width:0}
+ canvas{flex:1;background:#000;display:block}
  .sw{width:10px;height:10px;border-radius:2px;display:inline-block}
- button{background:#222;color:#ddd;border:1px solid #444;padding:3px 8px;cursor:pointer}
- #bar{padding:4px;display:flex;gap:6px;border-bottom:1px solid #333;align-items:center}
- table{width:100%;border-collapse:collapse}
- td{padding:1px 3px}
+ button{background:#222;color:#ddd;border:1px solid #444;padding:3px 8px;cursor:pointer;border-radius:3px}
+ button:hover{background:#2c2c2c}
+ button.active{background:#264;border-color:#5a5}
+ input,select{background:#1a1a1a;color:#ddd;border:1px solid #444;padding:2px 4px;border-radius:3px;font:12px monospace}
+ #bar{padding:4px;display:flex;gap:6px;border-bottom:1px solid #333;align-items:center;flex-wrap:wrap}
+ #bar #fs{margin-left:auto;color:#6cf;font-weight:bold}
+ #bar #stat{color:#9c9}
+ h3,h4{margin:4px 0;font-weight:normal;color:#888;text-transform:uppercase;font-size:11px;letter-spacing:1px}
+ .panel{border:1px solid #2a2a2a;border-radius:4px;padding:6px;background:#161616}
+ .panel.collapsed .body{display:none}
+ .panel h3{cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
+ .panel h3 .arrow{color:#666}
+ .row{display:flex;gap:4px;align-items:center;margin:3px 0}
+ .row label{flex:1;color:#aaa}
+ .row input[type=number]{width:90px}
+ .presets{display:flex;flex-wrap:wrap;gap:4px}
+ .presets button{font-size:11px;padding:2px 6px}
+ #addrow{display:flex;gap:4px}
+ #addrow input{flex:1}
+ table{width:100%;border-collapse:collapse;font-size:11px}
+ #tbl td{padding:1px 3px;vertical-align:top}
+ .sigrow{border-bottom:1px solid #222}
+ .signame{cursor:pointer;word-break:break-all}
+ .rm{color:#a44;cursor:pointer;font-weight:bold;padding:0 4px}
+ .rm:hover{color:#f66}
+ .stats{font-size:10px;color:#999;padding-left:18px}
+ .stats span{display:inline-block;margin-right:8px}
+ .stats b{color:#ccc;font-weight:normal}
+ #toast{position:fixed;top:8px;right:8px;max-width:380px;display:flex;flex-direction:column;gap:4px;z-index:10}
+ .t{background:#3a1a1a;border:1px solid #a44;color:#fcc;padding:6px 10px;border-radius:4px;font-size:11px;box-shadow:0 2px 8px #000a}
+ .t.info{background:#1a2a3a;border-color:#48a;color:#cdf}
+ .off{opacity:.4}
+ .muted{color:#777}
+ /* connection indicator (top bar) */
+ #bar .conn{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#999}
+ .cdot{font-size:11px;line-height:1;transition:color .2s}
+ .cdot.ok{color:#5c5}            /* connected */
+ .cdot.idle{color:#cb5}          /* connected but no live trace */
+ .cdot.retry{color:#c95}         /* reconnecting (backoff) */
+ .cdot.retry{animation:blink 1s steps(1) infinite}
+ .cdot.down{color:#a44}          /* disconnected, not yet retrying */
+ @keyframes blink{50%{opacity:.25}}
+ #reconnect{font-size:11px;padding:2px 6px}
+ /* idle / ended banner — unobtrusive strip under the top bar */
+ .banner{padding:4px 10px;font-size:11px;border-bottom:1px solid #333;background:#1a1d22;color:#bb9}
+ .banner.ended{background:#221a1a;color:#caa}
+ .banner.live{display:none!important}
 </style></head>
-<body><div id="wrap">
- <div id="side"><h3>Signals</h3><table id="tbl"></table></div>
+<body>
+<div id="toast"></div>
+<div id="wrap">
+ <div id="side">
+  <div class="panel" id="p-watch">
+   <h3 data-tgl><span class="arrow">▾</span> Watch list</h3>
+   <div class="body">
+    <div id="addrow">
+     <input id="addInput" list="symDL" autocomplete="off" placeholder="s_vbat_mv, s_inputs[3], foo.bar" title="comma-separated signal specs (autocomplete from ELF symbols)">
+     <!-- datalist is repopulated per typed token (see refreshDatalist) so the
+          native dropdown suggests names for the current comma-separated token -->
+     <datalist id="symDL"></datalist>
+     <button id="addBtn">Add</button>
+    </div>
+    <h4>Presets</h4>
+    <div class="presets" id="presets"></div>
+    <div style="margin-top:4px"><button id="clearAll">Clear all</button></div>
+   </div>
+  </div>
+
+  <div class="panel" id="p-cfg">
+   <h3 data-tgl><span class="arrow">▾</span> Config</h3>
+   <div class="body">
+    <div class="row"><label>Trailing window (s)</label><input type="number" id="cfgWindow" value="15" min="0.1" step="1"></div>
+    <div class="row"><label>Full history</label><input type="checkbox" id="cfgFull"></div>
+    <div class="row"><label>Max samples / signal</label><input type="number" id="cfgMax" value="100000" min="100" step="1000"></div>
+    <div class="row"><label>Y-axis mode</label>
+     <select id="cfgYMode">
+      <option value="shared">Shared auto-Y</option>
+      <option value="norm">Per-signal normalized</option>
+     </select></div>
+   </div>
+  </div>
+
+  <div class="panel" id="p-sigs">
+   <h3 data-tgl><span class="arrow">▾</span> Signals &amp; stats</h3>
+   <div class="body"><table id="tbl"></table>
+    <div id="noSigs" class="muted" style="padding:4px">No signals watched.</div>
+   </div>
+  </div>
+ </div>
+
  <div id="main">
   <div id="bar">
-   <button id="pause">Pause</button><button id="auto">Auto Y</button>
-   <span id="stat"></span>
+   <button id="pause">Pause</button>
+   <button id="auto" title="Reset view to live trailing window">Reset view</button>
+   <!-- Single global Fs readout (PROTOCOL §10): sample rate is a property of the
+        whole trace, not per-signal, so it lives here in exactly one place. -->
+   <span id="fs" class="muted" title="Trace sample rate (global)">Fs —</span>
+   <!-- Connection indicator + forced reconnect (PROTOCOL §12.5). The dot color +
+        glyph reflect the WS state machine (connected / reconnecting / disconnected);
+        the text gives a human-readable state. -->
+   <span id="conn" class="conn" title="WebSocket connection state"><span id="connDot" class="cdot">●</span><span id="connTxt">connecting…</span></span>
+   <button id="reconnect" title="Force-reconnect the WebSocket now">Reconnect</button>
+   <span id="stat" class="muted">connecting…</span>
   </div>
+  <!-- Idle / ended banner (PROTOCOL §12.5): shown when no trace is live. Last
+       captured data stays plotted underneath so history is still pannable. -->
+  <div id="banner" class="banner" style="display:none"></div>
   <canvas id="cv"></canvas>
  </div>
 </div>
 <script>
-const palette=["#4af","#fa4","#4f8","#f48","#af4","#8af","#fd4","#f84"];
-const sigs=new Map(); // name -> {color,on,data:[{t,v}],min,max}
-let paused=false, viewT0=null, viewT1=null;
-const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
-function fit(){cv.width=cv.clientWidth;cv.height=cv.clientHeight;} window.addEventListener("resize",fit); fit();
-const ws=new WebSocket("ws://"+location.host);
-ws.onmessage=(e)=>{const m=JSON.parse(e.data);
- if(m.type==="hello"){m.signals.forEach((n,i)=>addSig(n,i));}
- else if(m.type==="sample" && !paused){for(const k in m.values)push(k,m.t,m.values[k]);}
- else if(m.type==="status"){document.getElementById("stat").textContent="device: "+m.device_state;}
-};
-function addSig(n,i){if(sigs.has(n))return;sigs.set(n,{color:palette[i%palette.length],on:true,data:[],min:Infinity,max:-Infinity});buildTable();}
-function push(n,t,v){const s=sigs.get(n);if(!s)return;s.data.push({t,v});if(s.data.length>100000)s.data.shift();if(v<s.min)s.min=v;if(v>s.max)s.max=v;}
-function buildTable(){const tb=document.getElementById("tbl");tb.innerHTML="";
- for(const [n,s] of sigs){const tr=document.createElement("tr");
-  tr.innerHTML=`<td><span class=sw style="background:${s.color}"></span></td>`+
-   `<td><input type=checkbox ${s.on?"checked":""} data-n="${n}"></td>`+
-   `<td>${n}</td><td id="v-${cssid(n)}"></td>`;tb.appendChild(tr);}
- tb.querySelectorAll("input").forEach(c=>c.onchange=()=>{sigs.get(c.dataset.n).on=c.checked;});}
-function cssid(n){return n.replace(/[^a-z0-9]/gi,"_");}
-document.getElementById("pause").onclick=()=>{paused=!paused;};
-document.getElementById("auto").onclick=()=>{viewT0=null;viewT1=null;};
-cv.addEventListener("wheel",(e)=>{e.preventDefault();const [t0,t1]=curRange();const span=t1-t0;const f=e.deltaY<0?0.8:1.25;const cx=t0+span*(e.offsetX/cv.width);viewT0=cx-(cx-t0)*f;viewT1=cx+(t1-cx)*f;},{passive:false});
-let drag=null;cv.addEventListener("mousedown",(e)=>drag={x:e.offsetX,r:curRange()});
-window.addEventListener("mouseup",()=>drag=null);
-cv.addEventListener("mousemove",(e)=>{if(!drag)return;const [t0,t1]=drag.r;const span=t1-t0;const dt=(e.offsetX-drag.x)/cv.width*span;viewT0=t0-dt;viewT1=t1-dt;});
-let windowSec=15; // default live trailing window (seconds) — keeps the plot scrolling
-function curRange(){let lo=Infinity,hi=-Infinity;for(const[,s]of sigs)for(const p of s.data){if(p.t<lo)lo=p.t;if(p.t>hi)hi=p.t;}if(!isFinite(lo))return[0,1];if(viewT0!=null)return[viewT0,viewT1];return[Math.max(lo,hi-windowSec),hi];}
-function render(){requestAnimationFrame(render);ctx.clearRect(0,0,cv.width,cv.height);
- const [t0,t1]=curRange();const span=(t1-t0)||1;
- let ylo=Infinity,yhi=-Infinity;
- for(const[,s]of sigs){if(!s.on)continue;for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<ylo)ylo=p.v;if(p.v>yhi)yhi=p.v;}}
- if(!isFinite(ylo)){ylo=0;yhi=1;} const yspan=(yhi-ylo)||1;
- const X=(t)=>(t-t0)/span*cv.width, Y=(v)=>cv.height-(v-ylo)/yspan*cv.height;
- for(const[n,s]of sigs){if(!s.on)continue;ctx.strokeStyle=s.color;ctx.beginPath();let first=true;
-  for(const p of s.data){if(p.t<t0||p.t>t1)continue;const x=X(p.t),y=Y(p.v);first?ctx.moveTo(x,y):ctx.lineTo(x,y);first=false;}
-  ctx.stroke();const cell=document.getElementById("v-"+cssid(n));if(cell&&s.data.length)cell.textContent=s.data[s.data.length-1].v;}
+"use strict";
+/* ---------- palette + stable color assignment ----------
+   Colors are assigned from a rotating index so a signal keeps its color
+   across reconciles even if other signals are added/removed. */
+const palette=["#4af","#fa4","#4f8","#f48","#af4","#8af","#fd4","#f84","#6df","#d6f","#9f6","#f96"];
+let colorIdx=0;
+function nextColor(){return palette[(colorIdx++)%palette.length];}
+
+/* sigs: name -> {color,on,data:[{t,v}],address,size,encoding} */
+const sigs=new Map();
+
+/* ---------- symbol autocomplete ("podpowiedzi zmiennych") ----------
+   On load we GET /symbols (PROTOCOL §8/§9) and build a flat list of
+   suggestion strings from the metadata. The list feeds a native <datalist>
+   bound to the add input, repopulated per typed token so comma-separated
+   entry still gets relevant suggestions. Free-form expansion specs the user
+   types (vec[*], vec[a:b], mat[*][k]) are NEVER blocked — the datalist only
+   ASSISTS; the server expands whatever is actually submitted.
+
+   suggestList: array of suggestion strings (deduped). */
+let suggestList=[];
+
+/* Build suggestion strings from one symbol metadata entry (§8 shape). */
+function suggestionsForSymbol(sym){
+ const out=[];
+ const name=sym&&typeof sym.name==="string"?sym.name:null;
+ if(!name)return out;
+ const kind=sym.kind;
+ if(kind==="array"){
+  // arrays: base name (expands server-side), an explicit first element, and
+  // the wildcard form. Hint the element count via the label when known.
+  const cnt=(typeof sym.count==="number"&&sym.count>0)?sym.count
+           :(Array.isArray(sym.dims)?sym.dims.reduce((a,b)=>a*(b||1),1):null);
+  out.push(name);          // bare array name → whole-array expansion
+  out.push(name+"[0]");    // first element
+  out.push(name+"[*]");    // all elements (wildcard)
+  // For 2-D arrays also offer a row-wildcard hint.
+  if(Array.isArray(sym.dims)&&sym.dims.length>=2){
+   out.push(name+"[0][0]");
+   out.push(name+"[*][0]");
+  }
+  void cnt; // count is surfaced via the datalist label, see refreshDatalist
+ }else if(kind==="struct"||kind==="union"){
+  out.push(name); // base (may be unresolved if aggregate, but harmless to suggest)
+  if(Array.isArray(sym.members)){
+   for(const mb of sym.members){ if(typeof mb==="string"&&mb) out.push(name+"."+mb); }
+  }
+ }else{
+  // scalar / other / unknown kind: just the base name
+  out.push(name);
+ }
+ return out;
 }
+
+/* symMeta: name -> entry, used to annotate datalist options with a count/dims
+   hint. */
+const symMeta=new Map();
+
+/* Fetch /symbols and rebuild suggestList. Degrades gracefully: any failure
+   (older server, no active session, non-JSON) just leaves autocomplete empty
+   and the input still works for manual entry. */
+function loadSymbols(){
+ fetch("/symbols").then(r=>{
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+ }).then(j=>{
+  const arr=(j&&Array.isArray(j.symbols))?j.symbols:[];
+  const seen=new Set();
+  const list=[];
+  symMeta.clear();
+  for(const sym of arr){
+   if(sym&&typeof sym.name==="string") symMeta.set(sym.name,sym);
+   for(const sug of suggestionsForSymbol(sym)){
+    if(!seen.has(sug)){ seen.add(sug); list.push(sug); }
+   }
+  }
+  list.sort();
+  suggestList=list;
+  refreshDatalist(); // populate with the current token's matches
+ }).catch(()=>{ /* no autocomplete — manual entry still works */ });
+}
+
+/* Split the input on commas and return the token the caret is in (the one the
+   user is actively typing), so we can suggest for THAT token only. */
+function currentToken(inputEl){
+ const val=inputEl.value;
+ const caret=(inputEl.selectionStart!=null)?inputEl.selectionStart:val.length;
+ // find comma boundaries around the caret
+ let start=val.lastIndexOf(",",caret-1)+1;
+ let end=val.indexOf(",",caret);
+ if(end<0)end=val.length;
+ return val.slice(start,end).trim();
+}
+
+/* Repopulate the <datalist> with suggestions matching the current token.
+   Native <datalist> on most browsers matches against the WHOLE field value,
+   not the active token, so for comma-separated entry we inject full-field
+   completions (prefix + matched suggestion) as the option VALUE. That makes
+   selecting an option replace just the active token while preserving earlier
+   tokens. Falls back to whole-list when the field is empty. */
+function refreshDatalist(){
+ const inp=document.getElementById("addInput");
+ const dl=document.getElementById("symDL");
+ if(!inp||!dl)return;
+ const val=inp.value;
+ const caret=(inp.selectionStart!=null)?inp.selectionStart:val.length;
+ const tokStart=val.lastIndexOf(",",caret-1)+1;
+ let tokEnd=val.indexOf(",",caret); if(tokEnd<0)tokEnd=val.length;
+ const prefix=val.slice(0,tokStart);            // earlier tokens (kept verbatim)
+ const suffix=val.slice(tokEnd);                // later tokens (kept verbatim)
+ const tok=val.slice(tokStart,tokEnd).trim();
+ const tokLc=tok.toLowerCase();
+ // case-insensitive substring match; cap the option count so the dropdown
+ // stays responsive on large symbol tables.
+ let matches=suggestList;
+ if(tok){
+  const pref=[], sub=[];
+  for(const s of suggestList){
+   const sl=s.toLowerCase();
+   if(sl.startsWith(tokLc)) pref.push(s);
+   else if(sl.indexOf(tokLc)>=0) sub.push(s);
+  }
+  matches=pref.concat(sub);
+ }
+ matches=matches.slice(0,200);
+ const lead=prefix.length?(prefix.replace(/\s*$/,"")+" "):""; // tidy spacing after comma
+ let html="";
+ for(const m of matches){
+  // option value = full field text with the active token replaced, so picking
+  // it preserves the comma-separated context.
+  const full=lead+m+suffix;
+  const meta=symMeta.get(baseName(m));
+  let label=m;
+  if(meta&&meta.kind==="array"){
+   const cnt=(typeof meta.count==="number")?meta.count
+            :(Array.isArray(meta.dims)?meta.dims.join("×"):null);
+   if(cnt!=null) label=m+"  ("+(Array.isArray(meta.dims)?meta.dims.join("×")+", ":"")+"n="+(meta.count!=null?meta.count:"?")+")";
+  }else if(meta&&(meta.kind==="struct"||meta.kind==="union")){
+   label=m+"  ("+meta.kind+")";
+  }
+  html+=`<option value="${esc(full)}" label="${esc(label)}"></option>`;
+ }
+ dl.innerHTML=html;
+}
+
+/* Strip the [i]/[*]/.member suffix to get the base symbol name for metadata
+   lookup. */
+function baseName(spec){
+ const m=/^[A-Za-z_$][A-Za-z0-9_$]*/.exec(spec);
+ return m?m[0]:spec;
+}
+
+/* ---------- config (client-side only) ---------- */
+const cfg={windowSec:15,full:false,maxSamples:100000,yMode:"shared"};
+
+let paused=false, viewT0=null, viewT1=null;
+
+/* ---------- global Fs (PROTOCOL §10) ----------
+   Sample rate is a property of the whole trace. We estimate it ONCE, globally,
+   from the spacing of incoming `sample` frame timestamps (one `t` per poll
+   iteration, shared by all signals). A short ring of recent sample timestamps
+   gives a smoothed rate. If a `status`/other frame ever reports an explicit
+   `actual_fs`/`fs`, that authoritative value wins. The result is shown in a
+   single readout in the top bar — never per-signal. */
+const fsState={
+ stamps:[],        // recent sample-frame timestamps (seconds)
+ reported:null,    // authoritative Fs from a frame, if any
+ lastShown:""      // last text rendered, to avoid needless DOM writes
+};
+const FS_RING=64;   // window of timestamps used for the estimate
+/* Record one sample-frame timestamp into the ring. */
+function fsNoteSample(t){
+ if(typeof t!=="number"||!isFinite(t))return;
+ const r=fsState.stamps;
+ // ignore duplicate/out-of-order timestamps so the estimate stays sane
+ if(r.length && t<=r[r.length-1]) return;
+ r.push(t);
+ if(r.length>FS_RING) r.shift();
+}
+/* Compute the current global Fs estimate (Hz) or null if unknown. */
+function fsEstimate(){
+ if(fsState.reported!=null && isFinite(fsState.reported) && fsState.reported>0) return fsState.reported;
+ const r=fsState.stamps;
+ if(r.length<2) return null;
+ const dt=r[r.length-1]-r[0];
+ if(!(dt>0)) return null;
+ return (r.length-1)/dt;
+}
+const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
+function fit(){cv.width=cv.clientWidth;cv.height=cv.clientHeight;}
+window.addEventListener("resize",fit); fit();
+
+/* ---------- toasts (unresolved specs / errors / info) ---------- */
+function toast(msg,kind){
+ const box=document.getElementById("toast");
+ const el=document.createElement("div");
+ el.className="t"+(kind==="info"?" info":"");
+ el.textContent=msg;
+ box.appendChild(el);
+ setTimeout(()=>{el.style.opacity="0";el.style.transition="opacity .4s";},kind==="info"?2500:4500);
+ setTimeout(()=>el.remove(),kind==="info"?2900:4900);
+}
+
+/* ---------- WebSocket + connection/trace state machine (PROTOCOL §12.5) ----------
+
+   The Node UI server is now a PERSISTENT singleton: it stays up across trace
+   start/stop and only the bound session comes and goes. So the UI must treat
+   the socket and the trace as two INDEPENDENT lifecycles:
+
+   connState  — the WebSocket link itself:
+     "connected"     socket open, talking to the server
+     "reconnecting"  socket closed, backoff timer pending a retry (loops forever)
+     "disconnected"  transient: just closed, about to schedule a retry
+
+   traceState — whether a trace is actively producing samples (within a connection):
+     "active"   a trace is running (hello.active=true / trace_start) → live plotting
+     "idle"     no trace right now (hello.active=false / trace_end) → keep last data,
+                stop expecting samples, show the idle/ended banner
+
+   The two combine into what the user sees: the connection dot/indicator reflects
+   connState; the banner reflects traceState (only meaningful while connected).
+
+   Reconnect loop: on close we schedule a retry with exponential backoff
+   (RECONNECT_MIN → RECONNECT_MAX) and KEEP retrying forever. A successful open
+   resets the backoff. The same loop is reused by the manual Reconnect button
+   (which just force-closes and immediately retries at the minimum delay). This
+   survives the server briefly restarting, trace_end, and the tab being
+   backgrounded (timers fire on foreground; a backgrounded close just queues a
+   retry that runs when the tab wakes — and we also retry on visibilitychange). */
+
+let ws=null;
+let connState="reconnecting";   // start pessimistic; flips to "connected" on open
+let traceState="idle";          // no live trace until hello.active/trace_start says so
+let reconnectTimer=null;        // pending backoff timer handle
+let reconnectDelay=0;           // current backoff delay (ms)
+let manualClose=false;          // true while we intentionally tear down for a forced reconnect
+const RECONNECT_MIN=500;        // first retry delay
+const RECONNECT_MAX=5000;       // backoff cap
+
+/* Open a fresh socket. Never throws; any failure falls through to onclose →
+   scheduleReconnect, so the loop is self-healing. */
+function connect(){
+ // clear any pending retry — we're connecting now
+ if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null;}
+ let sock;
+ try{
+  sock=new WebSocket("ws://"+location.host);
+ }catch(_){
+  // constructor can throw on a bad URL/state — treat as a failed attempt
+  scheduleReconnect();
+  return;
+ }
+ ws=sock;
+ sock.onopen=()=>{
+  if(ws!==sock)return;          // stale socket from a superseded attempt
+  reconnectDelay=0;             // reset backoff on success
+  setConn("connected");
+  // traceState is (re)established by the fresh `hello` the server sends on
+  // every (re)connect — don't assume; wait for it. Until then show "syncing".
+  setBanner("syncing","sync");
+  // Re-fetch symbols on every (re)connect: the server may have just come back,
+  // bound a new session, or fallen back to the default ELF (PROTOCOL §12.3).
+  // Cheap + graceful; keeps autocomplete fresh across traces.
+  loadSymbols();
+ };
+ sock.onclose=()=>{
+  if(ws!==sock)return;          // ignore close of a socket we already replaced
+  ws=null;
+  if(manualClose){manualClose=false;} // intentional: connect() already queued
+  scheduleReconnect();
+ };
+ // swallow errors — the close handler drives recovery. Never throw here.
+ sock.onerror=()=>{};
+ sock.onmessage=(e)=>{ try{ handleFrame(e.data); }catch(_){ /* never throw in WS handler */ } };
+}
+
+/* Schedule the next reconnect attempt with exponential backoff (capped). Loops
+   forever: every failed attempt re-enters here via onclose. */
+function scheduleReconnect(){
+ setConn("reconnecting");
+ if(reconnectTimer)return;      // already scheduled
+ reconnectDelay=reconnectDelay?Math.min(reconnectDelay*2,RECONNECT_MAX):RECONNECT_MIN;
+ reconnectTimer=setTimeout(()=>{reconnectTimer=null;connect();},reconnectDelay);
+}
+
+/* Forced reconnect (Reconnect button): drop the current socket immediately and
+   retry now at the minimum delay, regardless of any pending backoff. */
+function forceReconnect(){
+ reconnectDelay=0;
+ if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null;}
+ const old=ws; ws=null;
+ if(old){
+  manualClose=true;
+  try{old.onopen=old.onclose=old.onerror=old.onmessage=null;}catch(_){}
+  try{old.close();}catch(_){}
+ }
+ setConn("reconnecting");
+ connect();
+}
+
+/* Parse + dispatch one inbound frame. Defensive: tolerates junk, unknown types
+   and missing fields; never throws. */
+function handleFrame(data){
+ let m; try{m=JSON.parse(data);}catch(_){return;} // tolerate junk
+ if(!m||typeof m!=="object")return;
+ switch(m.type){
+  case "hello":
+   // Sent on every (re)connect. Reconcile to the server's current signal set and
+   // adopt its trace state. active=false ⇒ idle (no live trace right now).
+   if(Array.isArray(m.signals)) reconcile(m.signals.map(toDesc), null);
+   if(m.active){ setTrace("active"); }
+   else { setTrace("idle"); }
+   break;
+  case "trace_start":
+   // A brand-new trace began: reset the plot and start fresh with these signals.
+   resetPlot();
+   if(Array.isArray(m.signals)) reconcile(m.signals.map(toDesc), null);
+   setTrace("active");
+   break;
+  case "trace_end":
+   // Trace stopped but the server stays up. Keep the last data visible (pannable
+   // history); just stop expecting new samples and show the "ended" banner.
+   setTrace("ended");
+   break;
+  case "signals":
+   // the watched set CHANGED mid-trace — reconcile to match exactly
+   if(Array.isArray(m.signals)) reconcile(m.signals, m.unresolved);
+   break;
+  case "sample":
+   if(!paused && m.values && typeof m.values==="object"){
+    // a sample implies the trace is live — recover the active state if a frame
+    // arrives before/without an explicit trace_start (defensive).
+    if(traceState!=="active") setTrace("active");
+    const t=typeof m.t==="number"?m.t:performance.now()/1000;
+    fsNoteSample(t);                 // feed the single global Fs estimator
+    for(const k in m.values){const v=m.values[k]; if(typeof v==="number") push(k,t,v);}
+   }
+   break;
+  case "status":
+   setStat("device: "+(m.device_state||"?"));
+   // authoritative Fs if the daemon reports it (PROTOCOL §10)
+   {const f=(typeof m.actual_fs==="number")?m.actual_fs:(typeof m.fs==="number"?m.fs:null);
+    if(f!=null&&isFinite(f)&&f>0) fsState.reported=f;}
+   break;
+  case "error":
+   toast("error: "+(m.error||"unknown"));
+   break;
+  default: break; // ignore unknown frame types
+ }
+}
+
+/* hello.signals are plain name strings; signals frames are full descriptors. */
+function toDesc(n){ return (n&&typeof n==="object")?n:{name:String(n)}; }
+
+/* ---------- presentation of the two state machines ---------- */
+function setStat(s){const el=document.getElementById("stat"); if(el)el.textContent=s;}
+
+/* Reflect connState in the indicator dot + text. */
+function setConn(state){
+ connState=state;
+ const dot=document.getElementById("connDot");
+ const txt=document.getElementById("connTxt");
+ if(!dot||!txt)return;
+ dot.className="cdot";
+ if(state==="connected"){
+  // dot color further refined by traceState (ok=active, idle=no trace)
+  dot.classList.add(traceState==="active"?"ok":"idle");
+  dot.textContent="●"; txt.textContent="connected";
+ }else if(state==="reconnecting"){
+  dot.classList.add("retry"); dot.textContent="○"; txt.textContent="reconnecting…";
+ }else{ // disconnected
+  dot.classList.add("down"); dot.textContent="×"; txt.textContent="disconnected";
+ }
+}
+
+/* Reflect traceState (active / idle / ended) in the banner + dot tint. During a
+   brief reconnect we deliberately leave the last banner up (data stays plotted,
+   so a flickering banner would be noise); the connection dot/text owns the
+   "reconnecting/disconnected" messaging instead. A fresh `hello` on reconnect
+   re-derives the real trace state. */
+function setTrace(state){
+ // normalize: "ended" is an idle sub-state with a distinct banner
+ traceState=(state==="active")?"active":(state==="ended"?"ended":"idle");
+ if(traceState==="active"){
+  setBanner("","live");
+ }else if(traceState==="ended"){
+  setBanner("trace ended — waiting for next trace…","ended");
+ }else{
+  setBanner("waiting for trace…","idle");
+ }
+ // refresh the dot tint (active vs idle) without changing connState
+ if(connState==="connected") setConn("connected");
+}
+
+/* Show/hide the idle/ended banner. kind: "live" hides it; "idle"/"ended"/"sync"
+   show it with the matching style. */
+function setBanner(text,kind){
+ const b=document.getElementById("banner");
+ if(!b)return;
+ if(kind==="live"){ b.style.display="none"; b.className="banner"; return; }
+ b.className="banner"+(kind==="ended"?" ended":"");
+ b.textContent=text;
+ b.style.display="block";
+}
+
+/* Clear plotted data + reset view for a fresh trace. Keeps the watch-list table
+   structure (reconcile rebuilds it); just drops sample history and Fs estimate. */
+function resetPlot(){
+ for(const[,s]of sigs) s.data=[];
+ viewT0=null; viewT1=null;
+ fsState.stamps=[]; fsState.reported=null; fsState.lastShown="";
+}
+
+/* ---------- reconcile watched set with a signals frame ----------
+   `descs` = array of {name,address?,size?,encoding?}. We make the local
+   sigs map match this set exactly: add new ones (stable color, plotting
+   immediately), drop ones no longer present (keeps view clean). History of
+   a removed signal is discarded locally. `unresolved` (if given) is shown
+   as a transient warning so the user knows a spec didn't land. */
+function reconcile(descs, unresolved){
+ const want=new Set(descs.map(d=>d.name));
+ // remove signals no longer in the watched set
+ for(const n of [...sigs.keys()]) if(!want.has(n)) sigs.delete(n);
+ // add / update
+ for(const d of descs){
+  let s=sigs.get(d.name);
+  if(!s){ s={color:nextColor(),on:true,data:[]}; sigs.set(d.name,s); }
+  if(d.address!=null) s.address=d.address;
+  if(d.size!=null) s.size=d.size;
+  if(d.encoding!=null) s.encoding=d.encoding;
+ }
+ if(unresolved && unresolved.length){
+  toast("unresolved: "+unresolved.join(", "));
+ }
+ buildTable();
+ // If autocomplete is still empty (e.g. /symbols was fetched before a session
+ // was active), retry once now that the server is clearly talking to a target.
+ if(!suggestList.length && !symbolsRetried){ symbolsRetried=true; loadSymbols(); }
+}
+let symbolsRetried=false;
+
+function push(n,t,v){
+ const s=sigs.get(n); if(!s)return;
+ s.data.push({t,v});
+ const cap=Math.max(10,cfg.maxSamples|0);
+ if(s.data.length>cap) s.data.shift();
+}
+
+/* ---------- outbound commands ---------- */
+function wsSend(o){ if(ws&&ws.readyState===1) ws.send(JSON.stringify(o)); else toast("not connected — cannot send"); }
+function addSpecs(specs){
+ const list=specs.map(s=>s.trim()).filter(Boolean);
+ if(!list.length)return;
+ wsSend({cmd:"add",signals:list});
+}
+function removeSignal(name){ wsSend({cmd:"remove",signals:[name]}); }
+
+/* ---------- side panel: watch list controls ---------- */
+document.getElementById("addBtn").onclick=()=>{
+ const inp=document.getElementById("addInput");
+ const specs=inp.value.split(",");
+ if(specs.some(s=>s.trim())){ addSpecs(specs); inp.value=""; }
+};
+document.getElementById("addInput").addEventListener("keydown",e=>{ if(e.key==="Enter")document.getElementById("addBtn").click(); });
+// Re-suggest per active token as the user types / moves the caret.
+document.getElementById("addInput").addEventListener("input",refreshDatalist);
+document.getElementById("addInput").addEventListener("click",refreshDatalist);
+document.getElementById("addInput").addEventListener("focus",refreshDatalist);
+
+const PRESETS=[
+ ["ADC raw","s_adc_raw[0],s_adc_raw[1],s_adc_raw[2],s_adc_raw[3]"],
+ ["Voltages","s_vbat_mv,s_vbus_stm_mv,s_vbus_esp_mv"],
+ ["Pads","s_inputs[1],s_inputs[2]"],
+ ["Pad pressure","s_inputs[3],s_inputs[4],s_inputs[5],s_inputs[6]"],
+ ["Encoder","s_inputs[0]"],
+ ["Buttons","s_inputs[44]"],
+];
+(function buildPresets(){
+ const box=document.getElementById("presets");
+ for(const [label,specs] of PRESETS){
+  const b=document.createElement("button");
+  b.textContent=label; b.title=specs;
+  b.onclick=()=>addSpecs(specs.split(","));
+  box.appendChild(b);
+ }
+})();
+document.getElementById("clearAll").onclick=()=>{
+ const names=[...sigs.keys()];
+ if(names.length) wsSend({cmd:"remove",signals:names});
+};
+
+/* ---------- config wiring ---------- */
+const cfgWindow=document.getElementById("cfgWindow"),
+      cfgFull=document.getElementById("cfgFull"),
+      cfgMax=document.getElementById("cfgMax"),
+      cfgYMode=document.getElementById("cfgYMode");
+cfgWindow.onchange=()=>{ const v=parseFloat(cfgWindow.value); if(v>0) cfg.windowSec=v; };
+cfgFull.onchange=()=>{ cfg.full=cfgFull.checked; cfgWindow.disabled=cfg.full; };
+cfgMax.onchange=()=>{ const v=parseInt(cfgMax.value,10); if(v>=100){ cfg.maxSamples=v; for(const[,s]of sigs) while(s.data.length>v) s.data.shift(); } };
+cfgYMode.onchange=()=>{ cfg.yMode=cfgYMode.value; };
+
+/* ---------- collapsible panels ---------- */
+document.querySelectorAll(".panel h3[data-tgl]").forEach(h=>{
+ h.onclick=()=>{ const p=h.parentElement; p.classList.toggle("collapsed");
+  h.querySelector(".arrow").textContent=p.classList.contains("collapsed")?"▸":"▾"; };
+});
+
+/* ---------- stats math ----------
+   Computed over the currently-visible window (respects trailing-window /
+   full-history config). VALUE-DOMAIN metrics only — current/min/max/mean/
+   p2p/rms/n. Sample rate is intentionally NOT here: Fs is a whole-trace
+   property shown once globally in the top bar (PROTOCOL §10). */
+function statsFor(s,t0,t1){
+ let n=0,sum=0,sq=0,mn=Infinity,mx=-Infinity,cur=null;
+ const d=s.data;
+ for(let i=0;i<d.length;i++){
+  const p=d[i];
+  if(p.t<t0||p.t>t1) continue;
+  n++; sum+=p.v; sq+=p.v*p.v;
+  if(p.v<mn)mn=p.v; if(p.v>mx)mx=p.v;
+  cur=p.v;
+ }
+ if(n===0){
+  // fall back to last overall value if nothing visible
+  cur=d.length?d[d.length-1].v:null;
+  return {n:0,cur,min:null,max:null,mean:null,p2p:null,rms:null};
+ }
+ const mean=sum/n;
+ const rms=Math.sqrt(sq/n);
+ return {n,cur,min:mn,max:mx,mean,p2p:mx-mn,rms};
+}
+function fmt(x){ if(x===null||x===undefined||!isFinite(x))return "—";
+ const a=Math.abs(x);
+ if(a!==0&&(a<0.01||a>=1e6))return x.toExponential(2);
+ if(Number.isInteger(x))return String(x);
+ return x.toFixed(a<1?4:2);
+}
+
+/* ---------- side table (signals + per-signal stats + remove) ---------- */
+function buildTable(){
+ const tb=document.getElementById("tbl");
+ tb.innerHTML="";
+ document.getElementById("noSigs").style.display=sigs.size?"none":"block";
+ for(const [n,s] of sigs){
+  const tr=document.createElement("tr"); tr.className="sigrow";
+  const enc=s.encoding?` <span class="muted">${s.encoding}</span>`:"";
+  tr.innerHTML=
+   `<td colspan="2">`+
+    `<span class="sw" style="background:${s.color}"></span> `+
+    `<input type="checkbox" ${s.on?"checked":""} data-n="${esc(n)}" title="show/hide"> `+
+    `<span class="signame" data-n="${esc(n)}">${esc(n)}</span>${enc} `+
+    `<span class="rm" data-n="${esc(n)}" title="remove">×</span>`+
+    `<div class="stats" id="st-${cssid(n)}"></div>`+
+   `</td>`;
+  tb.appendChild(tr);
+ }
+ // wire toggles
+ tb.querySelectorAll('input[type=checkbox]').forEach(c=>c.onchange=()=>{
+  const s=sigs.get(c.dataset.n); if(s) s.on=c.checked;
+ });
+ // wire remove
+ tb.querySelectorAll('.rm').forEach(x=>x.onclick=()=>removeSignal(x.dataset.n));
+ // click name = toggle visibility too (convenience)
+ tb.querySelectorAll('.signame').forEach(el=>el.onclick=()=>{
+  const s=sigs.get(el.dataset.n); if(!s)return; s.on=!s.on;
+  const cb=tb.querySelector('input[data-n="'+cssAttr(el.dataset.n)+'"]'); if(cb)cb.checked=s.on;
+ });
+}
+function cssid(n){return n.replace(/[^a-z0-9]/gi,"_");}
+function esc(n){return n.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function cssAttr(n){return n.replace(/"/g,'\\"');}
+
+/* ---------- toolbar ---------- */
+const pauseBtn=document.getElementById("pause");
+pauseBtn.onclick=()=>{paused=!paused;pauseBtn.classList.toggle("active",paused);pauseBtn.textContent=paused?"Resume":"Pause";};
+document.getElementById("auto").onclick=()=>{viewT0=null;viewT1=null;};
+// Force-reconnect button (PROTOCOL §12.5): close + reopen the WS immediately.
+document.getElementById("reconnect").onclick=()=>forceReconnect();
+// If the tab was backgrounded and the socket died meanwhile, kick a retry as
+// soon as it's visible again (timers may have been throttled while hidden).
+document.addEventListener("visibilitychange",()=>{
+ if(document.visibilityState==="visible" && !ws && connState!=="connected") forceReconnect();
+});
+
+/* ---------- zoom / pan (preserved) ---------- */
+cv.addEventListener("wheel",(e)=>{e.preventDefault();
+ const [t0,t1]=curRange();const span=t1-t0;const f=e.deltaY<0?0.8:1.25;
+ const cx=t0+span*(e.offsetX/cv.width);
+ viewT0=cx-(cx-t0)*f;viewT1=cx+(t1-cx)*f;
+},{passive:false});
+let drag=null;
+cv.addEventListener("mousedown",(e)=>drag={x:e.offsetX,r:curRange()});
+window.addEventListener("mouseup",()=>drag=null);
+cv.addEventListener("mousemove",(e)=>{if(!drag)return;
+ const [t0,t1]=drag.r;const span=t1-t0;const dt=(e.offsetX-drag.x)/cv.width*span;
+ viewT0=t0-dt;viewT1=t1-dt;
+});
+
+/* ---------- visible time range ----------
+   Full-history mode shows everything; otherwise the live trailing window
+   (cfg.windowSec). Manual zoom/pan (viewT0/viewT1) overrides both. */
+function dataBounds(){
+ let lo=Infinity,hi=-Infinity;
+ for(const[,s]of sigs){const d=s.data;if(d.length){if(d[0].t<lo)lo=d[0].t;if(d[d.length-1].t>hi)hi=d[d.length-1].t;}}
+ return [lo,hi];
+}
+function curRange(){
+ const [lo,hi]=dataBounds();
+ if(!isFinite(lo))return[0,1];
+ if(viewT0!=null)return[viewT0,viewT1];
+ if(cfg.full)return[lo,hi>lo?hi:lo+1];
+ return[Math.max(lo,hi-cfg.windowSec),hi];
+}
+
+/* ---------- render ---------- */
+function render(){
+ requestAnimationFrame(render);
+ ctx.clearRect(0,0,cv.width,cv.height);
+ const [t0,t1]=curRange();const span=(t1-t0)||1;
+ const W=cv.width,H=cv.height;
+
+ // shared Y bounds (used in shared mode)
+ let ylo=Infinity,yhi=-Infinity;
+ for(const[,s]of sigs){if(!s.on)continue;
+  for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<ylo)ylo=p.v;if(p.v>yhi)yhi=p.v;}}
+ if(!isFinite(ylo)){ylo=0;yhi=1;}
+ const yspan=(yhi-ylo)||1;
+
+ const X=(t)=>(t-t0)/span*W;
+ const sharedY=(v)=>H-(v-ylo)/yspan*H;
+
+ // gridlines + axis labels
+ drawGrid(t0,t1,W,H,ylo,yhi);
+
+ // plot each signal
+ for(const[n,s] of sigs){
+  if(!s.on)continue;
+  // per-signal normalized Y: each signal maps its own min..max to 0..1.
+  let Y=sharedY;
+  if(cfg.yMode==="norm"){
+   let smn=Infinity,smx=-Infinity;
+   for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<smn)smn=p.v;if(p.v>smx)smx=p.v;}
+   if(!isFinite(smn)){smn=0;smx=1;}
+   const ss=(smx-smn)||1;
+   Y=(v)=>H-((v-smn)/ss)*(H-8)-4; // small margins so flat lines stay visible
+  }
+  ctx.strokeStyle=s.color;ctx.lineWidth=1;ctx.beginPath();
+  let first=true;
+  const d=s.data;
+  for(let i=0;i<d.length;i++){
+   const p=d[i]; if(p.t<t0||p.t>t1)continue;
+   const x=X(p.t),y=Y(p.v);
+   first?ctx.moveTo(x,y):ctx.lineTo(x,y); first=false;
+  }
+  ctx.stroke();
+ }
+
+ // update per-signal stats readouts (throttled)
+ updateStats(t0,t1);
+}
+
+let lastStatsAt=0;
+function updateStats(t0,t1){
+ const now=performance.now();
+ if(now-lastStatsAt<200)return; // ~5 Hz refresh, cheap
+ lastStatsAt=now;
+ for(const [n,s] of sigs){
+  const cell=document.getElementById("st-"+cssid(n));
+  if(!cell)continue;
+  const st=statsFor(s,t0,t1);
+  cell.innerHTML=
+   `<span>cur <b>${fmt(st.cur)}</b></span>`+
+   `<span>min <b>${fmt(st.min)}</b></span>`+
+   `<span>max <b>${fmt(st.max)}</b></span>`+
+   `<span>mean <b>${fmt(st.mean)}</b></span>`+
+   `<span>p2p <b>${fmt(st.p2p)}</b></span>`+
+   `<span>rms <b>${fmt(st.rms)}</b></span>`+
+   `<span>n <b>${st.n}</b></span>`;
+ }
+ // single global Fs readout (top bar), updated on the same throttle
+ const fsEl=document.getElementById("fs");
+ if(fsEl){
+  const f=fsEstimate();
+  const txt="Fs "+(f!=null?fmt(f)+" Hz":"—");
+  if(txt!==fsState.lastShown){ fsEl.textContent=txt; fsState.lastShown=txt; }
+ }
+}
+
+/* ---------- grid / axes ---------- */
+function drawGrid(t0,t1,W,H,ylo,yhi){
+ ctx.strokeStyle="#1c1c1c";ctx.lineWidth=1;ctx.fillStyle="#666";ctx.font="10px monospace";
+ // vertical (time) lines — 6 divisions
+ for(let i=0;i<=6;i++){
+  const x=W*i/6; ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();
+  const tt=t0+(t1-t0)*i/6;
+  ctx.fillText(tt.toFixed(2)+"s",Math.min(x+2,W-40),H-2);
+ }
+ // horizontal (value) lines — only meaningful in shared mode
+ if(cfg.yMode==="shared"){
+  for(let i=0;i<=4;i++){
+   const y=H*i/4; ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();
+   const vv=yhi-(yhi-ylo)*i/4;
+   ctx.fillText(fmt(vv),2,Math.max(10,y+10));
+  }
+ }
+}
+
+setConn("reconnecting");  // initial paint of the indicator before first open
+setBanner("connecting…","idle");
+connect();
 render();
+loadSymbols(); // populate autocomplete from /symbols (graceful if unavailable)
 </script></body></html>

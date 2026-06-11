@@ -9,7 +9,10 @@
   },
   "files": [
     "dist/",
-    "tracer/"
+    "tracer/",
+    "skills/",
+    ".claude-plugin/",
+    ".mcp.json"
   ],
   "keywords": [
     "mcp",
