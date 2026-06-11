@@ -18,8 +18,12 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
+      # npm Trusted Publishing (OIDC) needs npm >= 11.5.1; node 20 ships npm 10.x.
+      - run: npm install -g npm@latest
+
       - run: npm ci
       - run: npm run build
+      # No token: npm exchanges the GitHub OIDC id-token for a short-lived
+      # publish credential via the package's configured Trusted Publisher.
+      # Provenance is attached automatically under OIDC.
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
