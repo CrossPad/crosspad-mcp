@@ -37,16 +37,33 @@ def _iter_addr_globals(dwarf):
         for die in cu.iter_DIEs():
             if die.tag != "DW_TAG_variable":
                 continue
-            name = die.attributes.get("DW_AT_name")
             loc = die.attributes.get("DW_AT_location")
-            if not name or not loc:
+            if not loc:
                 continue
             expr = loc.value
             if not isinstance(expr, list) or len(expr) != 5 or expr[0] != 0x03:
                 continue
             addr = expr[1] | (expr[2] << 8) | (expr[3] << 16) | (expr[4] << 24)
+            # GCC (-Og/-O>0) splits an external global into a located definition
+            # DIE carrying only the address + DW_AT_specification, plus a separate
+            # declaration DIE that holds the name and type. Follow the
+            # specification so external globals (not just file-static ones) are
+            # traceable; read name/type from the declaration DIE.
+            info_die = die
+            name = die.attributes.get("DW_AT_name")
+            if name is None:
+                spec = die.attributes.get("DW_AT_specification") \
+                    or die.attributes.get("DW_AT_abstract_origin")
+                if spec is not None:
+                    try:
+                        info_die = cu.dwarfinfo.get_DIE_from_refaddr(spec.value + cu.cu_offset)
+                        name = info_die.attributes.get("DW_AT_name")
+                    except Exception:
+                        pass
+            if not name:
+                continue
             nm = name.value.decode("utf-8", "replace")
-            yield nm, addr, die, cu
+            yield nm, addr, info_die, cu
 
 def resolve_symbols(elf_path, query=None):
     from elftools.elf.elffile import ELFFile
