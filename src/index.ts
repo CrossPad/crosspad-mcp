@@ -39,6 +39,7 @@ import { setConfigValue, type UserConfig } from "./utils/userConfig.js";
 import { listSymbols } from "./tools/trace-symbols.js";
 import { getDeviceState } from "./tools/trace-device.js";
 import { TraceSession, getActiveSession, setActiveSession } from "./tools/trace-session.js";
+import { getDashboard, openInBrowser, buildUiUrl } from "./tools/trace-webui.js";
 import { writeCsv } from "./tools/trace-export.js";
 
 import type { OnLine } from "./utils/exec.js";
@@ -51,6 +52,8 @@ import type { LoggingLevel } from "@modelcontextprotocol/sdk/types.js";
 // itself before the user's first message and survive context compaction.
 const SERVER_INSTRUCTIONS = `
 You have access to the CrossPad MCP server, which exposes purpose-built tools for the CrossPad embedded music controller monorepo (repos: crosspad-pc, platform-idf, ESP32-S3, crosspad-core, crosspad-gui, plus app submodules).
+
+NEW TO A CROSSPAD REPO OR SETTING UP? Use the \`crosspad\` skill first — it maps the ecosystem (repos, MCP tools, roles), walks install/config, and routes to per-role guides + an FAQ. Run \`bash scripts/doctor.sh\` from that skill to check your environment.
 
 WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, prefer the crosspad_* tools over raw shell equivalents:
 
@@ -303,6 +306,9 @@ const O_Trace = {
   file_path: z.string().optional(),
   ui_url: z.string().optional(),
   key: z.string().optional(),
+  // §11.6: last few daemon stderr lines, surfaced when device_state is an
+  // error / probe_lost / exited so the caller sees *why* without a re-run.
+  stderr_tail: z.string().optional(),
   ...ErrorField,
 };
 
@@ -625,6 +631,12 @@ server.registerTool(
 // SWD TRACER
 // ═══════════════════════════════════════════════════════════════════════
 
+// §12.4 injectable browser opener — defaults to the real platform opener but is
+// overridable (setTraceBrowserOpener) so a unit test can assert auto-open is
+// called/skipped without launching a real browser. Returns true if it spawned.
+let traceBrowserOpener: (url: string) => boolean = openInBrowser;
+export function setTraceBrowserOpener(fn: (url: string) => boolean): void { traceBrowserOpener = fn; }
+
 const TraceAction = z.enum([
   "doctor", "config_set", "symbols", "start", "stop",
   "add", "remove", "status", "read", "save", "device_state", "ui",
@@ -640,7 +652,7 @@ server.registerTool(
       "  • symbols      → list/search traceable variables from the ELF (query optional).\n" +
       "  • start        → begin a background trace (signals[], rate_hz).\n" +
       "  • stop         → end the active trace.\n" +
-      "  • add/remove   → not in v1 (restart with the new signal set instead).\n" +
+      "  • add/remove   → mutate the live poll set of the active trace (signals[]); returns the current signal set.\n" +
       "  • status       → device_state (running/stop_suspected/exited), sample_count, actual_fs, signals.\n" +
       "  • read         → recent samples downsampled + per-signal stats (cheap; safe for the LLM).\n" +
       "  • save         → export the in-memory buffer to CSV (returns file_path).\n" +
@@ -666,7 +678,7 @@ server.registerTool(
   async ({ action, signals, rate_hz, swo, query, key, value, window_from, window_to, max_points, format }, extra: any) => {
     switch (action) {
       case "doctor": {
-        const r = runDoctor(realProbe());
+        const r = await runDoctor(realProbe());
         return ok({ action, ok: r.ok, issues: r.issues, device_state: r.probe ? "connected" : "no_probe" });
       }
       case "config_set": {
@@ -684,20 +696,62 @@ server.registerTool(
       case "start": {
         if (!signals || signals.length === 0) return err("start requires non-empty signals[].");
         if (getActiveSession()?.isRunning()) return err("A trace is already running — stop it first.");
-        const doc = runDoctor(realProbe());
-        if (!doc.ok) return err("Doctor reported blocking issues — resolve them first.", { action, issues: doc.issues });
+        const doc = await runDoctor(realProbe());
+        if (!doc.ok) {
+          // §11.7: a vanished probe gets a distinct, actionable refusal.
+          if (doc.issues.some((i) => i.id === "no_probe_detected")) {
+            return err("No ST-Link detected on USB — replug the probe and retry (verify with `pyocd list` / `lsusb`).", { action, issues: doc.issues, device_state: "no_probe" });
+          }
+          return err("Doctor reported blocking issues — resolve them first.", { action, issues: doc.issues });
+        }
         const sess = new TraceSession({ signals, rateHz: rate_hz ?? 0, swo });
         sess.start();
         setActiveSession(sess);
+        // §12.1/§12.4: ensure the PERSISTENT dashboard server is up (idempotent —
+        // reuses it across traces), auto-open the browser ONLY if no client is
+        // already connected (covers an external browser AND a VS Code Simple
+        // Browser tab opened on a previous trace), then bind this session so its
+        // frames broadcast to the UI (also emits trace_start).
+        const dashboard = getDashboard();
         let uiUrl: string | undefined;
-        try { uiUrl = await sess.startUi(); } catch { /* UI optional */ }
-        return ok({ action, device_state: sess.deviceState, signals, file_path: sess.filePath ?? undefined, ui_url: uiUrl });
+        try {
+          uiUrl = await dashboard.ensureStarted();
+          if (!dashboard.hasClients()) traceBrowserOpener(uiUrl);
+          dashboard.bind(sess);
+        } catch { /* UI optional — never block a trace on the dashboard */ }
+        // §11.6: don't lie. Wait for the first real frame and report what the
+        // daemon actually did (connect can fail fast → error/exit) instead of an
+        // optimistic "running" that masks a dead connect.
+        const first = await sess.waitForFirstFrame(3000);
+        if (first?.type === "error") {
+          // Connect failed — the daemon already exited. Clear the active session
+          // and surface the daemon's error + stderr tail. Unbind the dashboard
+          // (server stays up) so the next trace starts from a clean idle state.
+          sess.stop();
+          dashboard.unbind();
+          setActiveSession(null);
+          return err(`Trace connect failed: ${first.error}`, { action, device_state: "error: " + first.error, stderr_tail: sess.stderrTail(5) || undefined });
+        }
+        if (first && (first.type === "signals" || first.type === "sample")) {
+          return ok({ action, device_state: "running", signals, file_path: sess.filePath ?? undefined, ui_url: uiUrl });
+        }
+        // No frame within the window. If the proc already died, it's a failure;
+        // otherwise it's still connecting (honest) — caller can poll status.
+        if (!sess.isRunning()) {
+          dashboard.unbind();
+          setActiveSession(null);
+          return err(`Trace daemon exited before producing data (${sess.deviceState}).`, { action, device_state: sess.deviceState, stderr_tail: sess.stderrTail(5) || undefined });
+        }
+        return ok({ action, device_state: "connecting", signals, file_path: sess.filePath ?? undefined, ui_url: uiUrl });
       }
       case "stop": {
         const s = getActiveSession();
         if (!s) return err("No active trace.");
         const count = s.buffer.count();
+        // §12.1: stop the daemon, then unbind the persistent dashboard (server
+        // STAYS UP so the tab survives) and clear the active session.
         s.stop();
+        getDashboard().unbind();
         setActiveSession(null);
         return ok({ action, sample_count: count, file_path: s.filePath ?? undefined });
       }
@@ -706,7 +760,12 @@ server.registerTool(
         if (!s) return ok({ action, device_state: "idle", sample_count: 0 });
         const n = s.buffer.count();
         const elapsed = (performance.now() - s.startedAt) / 1000;
-        return ok({ action, device_state: s.deviceState, sample_count: n, actual_fs: elapsed > 0 ? n / elapsed : 0, signals: s.buffer.signalNames() });
+        // §11.6: when the daemon is unhealthy, fold in the last stderr lines so
+        // the caller sees *why* without re-running.
+        const ds = s.deviceState;
+        const unhealthy = ds.startsWith("error") || ds === "probe_lost" || ds === "exited" || ds.startsWith("spawn_failed");
+        const tail = unhealthy ? (s.stderrTail(5) || undefined) : undefined;
+        return ok({ action, device_state: ds, sample_count: n, actual_fs: elapsed > 0 ? n / elapsed : 0, signals: s.buffer.signalNames(), stderr_tail: tail });
       }
       case "read": {
         const s = getActiveSession();
@@ -741,14 +800,23 @@ server.registerTool(
         });
       }
       case "ui": {
-        const s = getActiveSession();
-        if (!s) return err("No active trace — start one first.");
-        const url = await s.startUi();
+        // §12.1: the dashboard is persistent and independent of any trace — just
+        // ensure the server is up and hand back the url. Works even when idle
+        // (no active trace): the UI shows a "waiting for trace…" state and
+        // /symbols falls back to the default ELF for autocomplete.
+        const url = await getDashboard().ensureStarted();
         return ok({ action, ui_url: url });
       }
       case "add":
-      case "remove":
-        return err("add/remove not in v1 — stop and start with the new signal set.", { action });
+      case "remove": {
+        const s = getActiveSession();
+        if (!s || !s.isRunning()) return err("No active trace — start one first.", { action });
+        if (!signals || signals.length === 0) return err(`${action} requires non-empty signals[].`, { action });
+        // §4/§6: await the post-reconcile set (so the response reflects array
+        // expansion and dropped `unresolved` specs, not the pre-reconcile guess).
+        const reconciled = action === "add" ? await s.addSignals(signals) : await s.removeSignals(signals);
+        return ok({ action, signals: reconciled });
+      }
     }
   }
 );
@@ -1328,7 +1396,9 @@ server.resource(
           })(),
           signals: s.buffer.signalNames(),
           file_path: s.filePath ?? null,
-          ui_url: s.uiUrl ?? null,
+          // §12.1: the dashboard URL is owned by the persistent singleton; it's a
+          // stable loopback URL once any trace/ui action has started the server.
+          ui_url: getDashboard().port ? buildUiUrl(getDashboard().port) : null,
         }
       : { active: false };
     return {
