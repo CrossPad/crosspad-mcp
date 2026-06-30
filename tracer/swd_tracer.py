@@ -217,6 +217,7 @@ def cmd_symbols(args):
 
 # --- trace mode ---------------------------------------------------------------
 import io, os, re, struct, threading, time
+from pyocd.core.target import Target
 
 def _try_open_session(probe, target, timeout_s):
     """Open a pyOCD session with a hard timeout and no-probe fast-fail.
@@ -865,6 +866,94 @@ def cmd_write(args):
                       "ok": all(r["ok"] for r in results) if results else False,
                       "results": results}), flush=True)
 
+def _resolve_func(elf_path, name):
+    """Entry address of a function symbol from the ELF .symtab (STT_FUNC)."""
+    from elftools.elf.elffile import ELFFile
+    with open(elf_path, "rb") as f:
+        elf = ELFFile(f)
+        symtab = elf.get_section_by_name(".symtab")
+        if symtab is None:
+            return None
+        for sym in symtab.iter_symbols():
+            if sym.name == name and sym["st_info"]["type"] == "STT_FUNC":
+                return sym["st_value"] & ~1  # clear Thumb bit
+    return None
+
+_CALL_CTX = ["r0","r1","r2","r3","r4","r5","r6","r7","r8","r9","r10","r11","r12",
+             "sp","lr","pc","xpsr","primask"]
+
+def do_call(target, entry, args, ret_type, timeout_s):
+    """AAPCS function-call thunk. Halts the core, runs func(args), restores full
+    context, resumes. Returns {ok,r0,decoded?} or {ok:False,error}."""
+    if len(args) > 4:
+        return {"ok": False, "error": "max 4 args (r0-r3); got %d" % len(args)}
+    saved = {}
+    trap = None
+    try:
+        target.halt()
+        for r in _CALL_CTX:
+            saved[r] = target.read_core_register(r)
+        # Return trap: reset-handler address from the vector table (guaranteed
+        # valid, aligned code). The HW breakpoint halts on the post-return fetch.
+        trap = target.read32(0x08000004) & ~1
+        target.set_breakpoint(trap, Target.BreakpointType.HW)
+        for i, a in enumerate(args):
+            target.write_core_register("r%d" % i, a & 0xFFFFFFFF)
+        target.write_core_register("primask", 1)          # mask ISRs during thunk
+        target.write_core_register("lr", trap | 1)        # Thumb return
+        target.write_core_register("pc", entry)
+        xpsr = saved["xpsr"] | (1 << 24)                  # ensure Thumb (T) bit
+        target.write_core_register("xpsr", xpsr)
+        target.resume()
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if target.get_state() == Target.State.HALTED:
+                break
+            time.sleep(0.002)
+        else:
+            target.halt()
+            return {"ok": False, "error":
+                    "call timed out after %gms (function did not return)" % (timeout_s * 1000)}
+        r0 = target.read_core_register("r0")
+        res = {"ok": True, "r0": r0}
+        if ret_type and ret_type != "u32":
+            res["decoded"] = _decode(r0.to_bytes(4, "little"), 0, *_RAW_TYPE[ret_type])
+        return res
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        try:
+            if trap is not None:
+                target.remove_breakpoint(trap)
+            for r, v in saved.items():
+                target.write_core_register(r, v)          # full context restore
+            target.resume()                               # firmware continues pre-call
+        except Exception:
+            pass
+
+def cmd_call(args):
+    if not args.confirm:
+        print(json.dumps({"type": "call_result", "ok": False,
+                          "error": "call requires --confirm"}), flush=True)
+        return
+    entry = _resolve_func(args.elf, args.func_name)
+    if entry is None:
+        print(json.dumps({"type": "call_result", "ok": False,
+                          "error": "unknown function: %s" % args.func_name}), flush=True)
+        return
+    argv = [int(a, 0) for a in args.args.split(",") if a.strip()] if args.args else []
+    session, cerr, _ = _try_open_session(args.probe, args.target, args.connect_timeout)
+    if session is None:
+        print(json.dumps({"type": "call_result", "ok": False, "error": cerr}), flush=True)
+        return
+    try:
+        res = do_call(session.target, entry, argv, args.ret_type, args.timeout)
+    finally:
+        try: session.close()
+        except Exception: pass
+    res["type"] = "call_result"
+    print(json.dumps(res), flush=True)
+
 def _resolve_specs(specs, table):
     """Resolve a list of specs, applying §1.1 array/vector/matrix expansion.
 
@@ -1271,6 +1360,19 @@ def main():
     wp.add_argument("--target", default="cortex_m")
     wp.add_argument("--connect-timeout", type=float, default=6.0)
     wp.set_defaults(func=cmd_write)
+
+    cp = sub.add_parser("call")
+    cp.add_argument("--elf", required=True)
+    cp.add_argument("--func", required=True, dest="func_name")
+    cp.add_argument("--args", default=None, help="comma-separated ints (hex 0x.. or dec)")
+    cp.add_argument("--confirm", action="store_true")
+    cp.add_argument("--ret-type", dest="ret_type", default="u32",
+                    choices=list(_RAW_TYPE.keys()))
+    cp.add_argument("--timeout", type=float, default=2.0)
+    cp.add_argument("--probe", default=None)
+    cp.add_argument("--target", default="cortex_m")
+    cp.add_argument("--connect-timeout", type=float, default=6.0)
+    cp.set_defaults(func=cmd_call)
 
     args = ap.parse_args()
     args.func(args)
