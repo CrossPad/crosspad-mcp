@@ -780,6 +780,31 @@ def _parse_write_spec(spec, table):
     return {"ok": True, "name": left, "address": d["address"],
             "size": d["size"], "encoding": d["encoding"], "value": val}
 
+# Cortex-M architectural memory map (ARMv6/7/8-M) — identical across STM32 series.
+_SRAM = (0x20000000, 0x3FFFFFFF)
+_ARCH_REGIONS = [
+    _SRAM,                       # SRAM
+    (0x40000000, 0x5FFFFFFF),    # Peripheral + IOPORT
+    (0xE0000000, 0xE00FFFFF),    # PPB / SCS (NVIC, SCB, DWT...)
+]
+
+def _check_allowed(addr, size, ram_regions=None):
+    """Return None if [addr, addr+size) is a permitted write target, else an
+    error string. Code region 0x0..0x1FFFFFFF (flash/system/option) is blocked."""
+    if size not in (1, 2, 4):
+        return "bad access size %r" % size
+    if addr % size != 0:
+        return "0x%08X not %d-byte aligned" % (addr, size)
+    end = addr + size - 1
+    for lo, hi in _ARCH_REGIONS:
+        if lo <= addr and end <= hi:
+            # SRAM refinement: if pack RAM regions are known, require containment.
+            if (lo, hi) == _SRAM and ram_regions:
+                if not any(rl <= addr and end <= rh for rl, rh in ram_regions):
+                    return "0x%08X outside mapped SRAM" % addr
+            return None
+    return "0x%08X outside write allowlist (Code region / unmapped is blocked)" % addr
+
 def _resolve_specs(specs, table):
     """Resolve a list of specs, applying §1.1 array/vector/matrix expansion.
 
