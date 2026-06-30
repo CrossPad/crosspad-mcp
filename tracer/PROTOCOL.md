@@ -107,7 +107,9 @@ before the base spec is resolved. The transform applies to both symbol and raw
 |---|---|---|
 | `#N` | bit N | `(v>>N)&1` → 0/1 |
 | `#hi:lo` | bit range, inclusive, hi≥lo | `(v>>lo)&((1<<(hi-lo+1))-1)` |
-| `&0xMASK` | AND mask, normalized to LSB | `(v&mask)>>ffs(mask)` |
+| `&0xMASK` | AND mask, normalized to LSB | `(v&mask)>>ctz(mask)` |
+
+(ctz = count trailing zeros, i.e. the 0-based index of the lowest set bit)
 
 Examples: `@0x50000410:u16#5` (pin 5 → 0/1), `@0x50000410:u16#3:0` (low 4 pins as
 0..15), `GPIOB_ODR&0x820`, `s_flags#2`. Several bits of one address become
