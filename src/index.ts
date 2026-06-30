@@ -40,7 +40,7 @@ import { runDoctor, realProbe } from "./tools/trace-doctor.js";
 import { setConfigValue, resolveConfigValue, type UserConfig } from "./utils/userConfig.js";
 import { listSymbols } from "./tools/trace-symbols.js";
 import { getDeviceState } from "./tools/trace-device.js";
-import { TraceSession, getActiveSession, setActiveSession } from "./tools/trace-session.js";
+import { TraceSession, getActiveSession, setActiveSession, traceWrite, traceCall } from "./tools/trace-session.js";
 import { getDashboard, openInBrowser, buildUiUrl } from "./tools/trace-webui.js";
 import { writeCsv } from "./tools/trace-export.js";
 
@@ -678,6 +678,7 @@ export function setTraceBrowserOpener(fn: (url: string) => boolean): void { trac
 const TraceAction = z.enum([
   "doctor", "config_set", "symbols", "start", "stop",
   "add", "remove", "status", "read", "save", "device_state", "ui",
+  "write", "call",
 ]);
 
 server.registerTool(
@@ -701,7 +702,8 @@ server.registerTool(
       action: TraceAction.describe(
         "Required params per action — doctor/stop/status/device_state/ui: (none); " +
         "config_set: key,value; symbols: query?; start: signals[],rate_hz?; " +
-        "add/remove: signals[]; read: window_from?,window_to?,max_points?; save: format?."
+        "add/remove: signals[]; read: window_from?,window_to?,max_points?; save: format?; " +
+        "write: writes[]; call: func,args?,confirm,ret_type?,timeout?."
       ),
       signals: z.array(z.string()).optional().describe("start: variable names from `symbols` (e.g. ['s_vbat_mv','s_inputs[0]']). Also accepts raw @address specs that bypass DWARF — '@0x40021000' (u32), '@0x40021000:u16' (u8|u16|u32|i8|i16|i32|f32), '@0x20000000:u8[16]' (16-element block) — for peripheral registers / arbitrary RAM."),
       rate_hz: z.number().int().min(0).max(2000).optional().describe("start: target sample rate (0 = as fast as the probe allows). Actual Fs is reported."),
@@ -713,11 +715,17 @@ server.registerTool(
       window_to: z.number().optional().describe("read: end time (s) of the window."),
       max_points: z.number().int().min(1).max(5000).optional().describe("read: max points per signal (default 200)."),
       format: z.enum(["csv"]).optional().describe("save: export format (csv)."),
+      writes: z.array(z.string()).optional().describe("write: list of 'target=value' specs. target = @0xADDR[:type] (u8|u16|u32|i8|i16|i32|f32, default u32) or a DWARF symbol; value = hex 0x.. or decimal (float for f32). e.g. ['@0x50000414:u16=0xFFFF','s_vbat_mv=4200']. Allowlist: SRAM/peripheral/PPB only — Code/flash region is blocked."),
+      func: z.string().optional().describe("call: firmware function symbol to invoke (AAPCS)."),
+      args: z.array(z.number().int()).max(4).optional().describe("call: up to 4 integer args → r0-r3."),
+      confirm: z.boolean().optional().describe("call: must be true — acknowledges the core is halted for the call."),
+      ret_type: z.enum(["u32","i32","u16","i16","u8","i8","f32"]).optional().describe("call: decode r0 as this type (default u32; raw r0 always returned)."),
+      timeout: z.number().min(0.1).max(30).optional().describe("call: max seconds to wait for the function to return (default 2)."),
     },
     outputSchema: O_Trace,
     annotations: ANN_SIDE_EFFECT,
   },
-  async ({ action, signals, rate_hz, swo, query, key, value, window_from, window_to, max_points, format }, extra: any) => {
+  async ({ action, signals, rate_hz, swo, query, key, value, window_from, window_to, max_points, format, writes, func, args, confirm, ret_type, timeout }, extra: any) => {
     switch (action) {
       case "doctor": {
         const r = await runDoctor(realProbe());
@@ -888,6 +896,26 @@ server.registerTool(
         // expansion and dropped `unresolved` specs, not the pre-reconcile guess).
         const reconciled = action === "add" ? await s.addSignals(signals) : await s.removeSignals(signals);
         return ok({ action, signals: reconciled });
+      }
+      case "write": {
+        if (!writes || writes.length === 0) return err("write requires `writes` (['target=value', ...]).");
+        try {
+          const r = await traceWrite(writes);
+          return ok({ action, ok: r.ok, results: r.results, error: r.error });
+        } catch (e) {
+          return err(`write failed: ${String(e)}`, { action });
+        }
+      }
+      case "call": {
+        if (!func) return err("call requires `func` (function symbol).");
+        if (!confirm) return err("call requires confirm:true (the core is halted for the call).");
+        if (args && args.length > 4) return err("call accepts at most 4 args (r0-r3).");
+        try {
+          const r = await traceCall(func, args ?? [], true, ret_type ?? "u32", timeout ?? 2);
+          return ok({ action, ...r });
+        } catch (e) {
+          return err(`call failed: ${String(e)}`, { action });
+        }
       }
     }
   }
