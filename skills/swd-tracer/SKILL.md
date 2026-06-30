@@ -118,6 +118,13 @@ browser immediately; `ui_open=none` disables both. Set the fallback delay with
 | `@0x40021000` | **raw address** (no DWARF) → one u32 at that address |
 | `@0x50000010:u16` | typed raw read — `u8 u16 u32 i8 i16 i32 f32` (default u32) |
 | `@0x20000000:u8[16]` | raw block → 16 consecutive elements (same 256 cap) |
+| `@0x50000410:u16#5` | **bit 5** of the value → 0/1 (e.g. one GPIO pin) |
+| `@0x50000410:u16#3:0` | **bit range** [3:0] → field value 0..15 |
+| `GPIOB_ODR&0x820` | **masked** field, normalized to the lowest set bit |
+
+A `#bit` / `#hi:lo` / `&mask` suffix extracts part of the value (works on symbols
+and raw `@addr`). Trace several `#bit` specs on the same port to plot each pin
+separately as 0/1; they coalesce into one read.
 
 Raw `@address` specs read MCU memory directly — peripheral registers
 (`GPIOx->IDR`, `RCC->CR`) or any RAM the ELF has no symbol for; they need no

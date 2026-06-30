@@ -95,6 +95,30 @@ returns r0. It **halts the core**, runs the function with interrupts masked
 Requires `confirm:true`. A function that does not return within `timeout` (default
 2 s) leaves the firmware running in its pre-call state and reports a timeout.
 
+## 1.4 Bit / mask transforms
+
+A spec may end with ONE transform suffix that extracts part of the decoded value
+— so e.g. a GPIO port read plots individual pins as 0/1 instead of the full word.
+The sigils `#` and `&` do not occur in the §1.1/§1.2 grammar and are stripped
+before the base spec is resolved. The transform applies to both symbol and raw
+`@address` specs.
+
+| Suffix | Meaning | Result (v = value, unsigned, masked to width) |
+|---|---|---|
+| `#N` | bit N | `(v>>N)&1` → 0/1 |
+| `#hi:lo` | bit range, inclusive, hi≥lo | `(v>>lo)&((1<<(hi-lo+1))-1)` |
+| `&0xMASK` | AND mask, normalized to LSB | `(v&mask)>>ffs(mask)` |
+
+Examples: `@0x50000410:u16#5` (pin 5 → 0/1), `@0x50000410:u16#3:0` (low 4 pins as
+0..15), `GPIOB_ODR&0x820`, `s_flags#2`. Several bits of one address become
+separate, uniquely-named signals that still coalesce into a single memory read.
+
+The transform applies only to a spec that resolves to a SINGLE scalar. A suffix on
+an expanding spec (`[*]`, `[a:b]`, a whole array, or a raw block `@a:type[count]`)
+is reported in `unresolved` as `"… (transform on expanding spec unsupported)"`. An
+out-of-range bit/mask (≥ the access width), `hi<lo`, mask `0`, or a malformed
+suffix is also reported unresolved.
+
 ## 2. Daemon stdin commands (Node → daemon, NDJSON)
 
 ```jsonc
