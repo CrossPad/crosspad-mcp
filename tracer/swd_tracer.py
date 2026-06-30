@@ -1099,6 +1099,20 @@ def _decode(buf, off, size, enc):
     signed = enc in ("int", "char")
     return int.from_bytes(raw, "little", signed=signed)
 
+def _apply_transform(value, size, transform):
+    """Apply a bit/range/mask transform to a decoded value. The value is
+    reinterpreted UNSIGNED (masked to size*8 bits) so a signed encoding does not
+    corrupt bit extraction."""
+    u = value & ((1 << (size * 8)) - 1)
+    kind = transform["kind"]
+    if kind == "bit":
+        return (u >> transform["n"]) & 1
+    if kind == "range":
+        lo, hi = transform["lo"], transform["hi"]
+        return (u >> lo) & ((1 << (hi - lo + 1)) - 1)
+    # mask
+    return (u & transform["mask"]) >> transform["shift"]
+
 def cmd_trace(args):
     names = [n for n in args.signals.split(",") if n]
     # §11.3 ELF / DWARF guard: a bad/missing ELF must surface as an error frame,
