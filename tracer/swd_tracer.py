@@ -893,9 +893,12 @@ def do_call(target, entry, args, ret_type, timeout_s):
         target.halt()
         for r in _CALL_CTX:
             saved[r] = target.read_core_register(r)
-        # Return trap: reset-handler address from the vector table (guaranteed
-        # valid, aligned code). The HW breakpoint halts on the post-return fetch.
-        trap = target.read32(0x08000004) & ~1
+        # Return trap = reset-handler entry from the ACTIVE vector table (VTOR),
+        # so the call thunk is MCU-agnostic (not tied to the STM32 flash alias at
+        # 0x08000000). VTOR low bits are reserved/zero; mask for safe alignment.
+        # VTOR=0 after reset aliases the table at 0x00000000.
+        vtor = target.read32(0xE000ED08) & 0xFFFFFF00
+        trap = target.read32(vtor + 4) & ~1
         target.set_breakpoint(trap, Target.BreakpointType.HW)
         for i, a in enumerate(args):
             target.write_core_register("r%d" % i, a & 0xFFFFFFFF)
@@ -925,8 +928,14 @@ def do_call(target, entry, args, ret_type, timeout_s):
         try:
             if trap is not None:
                 target.remove_breakpoint(trap)
-            for r, v in saved.items():
+        except Exception:
+            pass
+        for r, v in saved.items():
+            try:
                 target.write_core_register(r, v)          # full context restore
+            except Exception:
+                pass
+        try:
             target.resume()                               # firmware continues pre-call
         except Exception:
             pass
