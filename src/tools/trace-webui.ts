@@ -25,9 +25,38 @@ function spawnOpener(target: string): boolean {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-function uiHtmlPath(): string { return path.resolve(__dirname, "..", "..", "tracer", "ui", "index.html"); }
+function uiDir(): string { return path.resolve(__dirname, "..", "..", "tracer", "ui"); }
+function uiHtmlPath(): string { return path.resolve(uiDir(), "index.html"); }
 
 export function buildUiUrl(port: number): string { return `http://localhost:${port}/`; }
+
+/** Content types for the static UI assets the dashboard serves (the ESM modules
+ *  + stylesheet split out of index.html). */
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".map": "application/json",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+};
+
+/** Resolve a request route to a static UI asset path, GUARDED against path
+ *  traversal: the resolved path must stay inside the ui directory. Returns null
+ *  for "/" (handled separately as index.html) and for anything escaping the dir.
+ *  Pure (no fs access) so it can be unit-tested. */
+export function resolveStaticAsset(route: string): { filePath: string; contentType: string } | null {
+  if (route === "/" || route === "") return null;
+  const rel = route.replace(/^\/+/, "");
+  if (!rel) return null;
+  const dir = uiDir();
+  const full = path.resolve(dir, rel);
+  if (full !== dir && !full.startsWith(dir + path.sep)) return null;  // traversal guard
+  const ext = path.extname(full).toLowerCase();
+  return { filePath: full, contentType: CONTENT_TYPES[ext] ?? "application/octet-stream" };
+}
 
 /** Allow a WS upgrade only from a loopback Origin, or when no Origin is sent
  *  (native/non-browser clients). Defends against cross-site WebSocket hijacking. */
@@ -93,6 +122,17 @@ export class Dashboard {
         if (route === "/symbols") {
           this.serveSymbols(url, res);
           return;
+        }
+        // Static UI assets (style.css, ESM modules). Traversal-guarded resolve.
+        const asset = resolveStaticAsset(route);
+        if (asset) {
+          try {
+            if (fs.statSync(asset.filePath).isFile()) {
+              res.writeHead(200, { "Content-Type": asset.contentType });
+              res.end(fs.readFileSync(asset.filePath));
+              return;
+            }
+          } catch { /* missing/not a file → fall through to 404 */ }
         }
         res.writeHead(404); res.end();
       });

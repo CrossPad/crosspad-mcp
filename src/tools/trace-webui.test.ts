@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { once } from "events";
+import path from "path";
 import { WebSocket } from "ws";
 
 // Stub the symbols bridge so the /symbols route tests never shell out to pyOCD.
@@ -17,7 +18,7 @@ vi.mock("./trace-symbols.js", () => ({
   })),
 }));
 
-import { buildUiUrl, originIsLoopback, Dashboard, getDashboard, openInBrowser } from "./trace-webui.js";
+import { buildUiUrl, originIsLoopback, Dashboard, getDashboard, openInBrowser, resolveStaticAsset } from "./trace-webui.js";
 import { listSymbols } from "./trace-symbols.js";
 
 describe("buildUiUrl", () => {
@@ -40,6 +41,55 @@ describe("originIsLoopback", () => {
   });
   it("rejects a malformed origin", () => {
     expect(originIsLoopback({ origin: "not a url" })).toBe(false);
+  });
+});
+
+describe("resolveStaticAsset (static UI module serving)", () => {
+  it("returns null for the index route (served separately)", () => {
+    expect(resolveStaticAsset("/")).toBeNull();
+    expect(resolveStaticAsset("")).toBeNull();
+  });
+  it("resolves known UI assets with the right content type", () => {
+    const css = resolveStaticAsset("/style.css");
+    expect(css?.contentType).toBe("text/css");
+    expect(css?.filePath.endsWith(`${path.sep}tracer${path.sep}ui${path.sep}style.css`)).toBe(true);
+    expect(resolveStaticAsset("/main.js")?.contentType).toBe("text/javascript");
+    expect(resolveStaticAsset("/plot.js")?.contentType).toBe("text/javascript");
+  });
+  it("blocks path traversal outside the ui dir", () => {
+    expect(resolveStaticAsset("/../trace-webui.ts")).toBeNull();
+    expect(resolveStaticAsset("/../../package.json")).toBeNull();
+    expect(resolveStaticAsset("/..%2f..%2fsecret")).not.toBeNull(); // %2f is literal here, stays inside
+  });
+  it("falls back to octet-stream for unknown extensions", () => {
+    expect(resolveStaticAsset("/weird.xyz")?.contentType).toBe("application/octet-stream");
+  });
+});
+
+describe("Dashboard serves static UI modules over http", () => {
+  it("serves index.html at /, style.css + main.js as assets, 404s the unknown", async () => {
+    const d = new Dashboard();
+    await d.ensureStarted(0);
+    const port = d.port;
+    try {
+      const index = await fetch(`http://127.0.0.1:${port}/`);
+      expect(index.status).toBe(200);
+      expect(await index.text()).toContain("<canvas");
+
+      const css = await fetch(`http://127.0.0.1:${port}/style.css`);
+      expect(css.status).toBe(200);
+      expect(css.headers.get("content-type")).toBe("text/css");
+      expect(await css.text()).toContain("#wrap");
+
+      const js = await fetch(`http://127.0.0.1:${port}/main.js`);
+      expect(js.status).toBe(200);
+      expect(js.headers.get("content-type")).toBe("text/javascript");
+
+      const missing = await fetch(`http://127.0.0.1:${port}/does-not-exist.js`);
+      expect(missing.status).toBe(404);
+    } finally {
+      (d as any).server?.close();
+    }
   });
 });
 

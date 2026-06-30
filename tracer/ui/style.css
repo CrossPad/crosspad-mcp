@@ -1,0 +1,88 @@
+*{box-sizing:border-box}
+body{font:13px monospace;margin:0;background:#111;color:#ddd}
+#wrap{display:flex;height:100vh}
+#side{width:340px;min-width:340px;padding:8px;overflow:auto;border-right:1px solid #333;display:flex;flex-direction:column;gap:8px}
+#main{flex:1;display:flex;flex-direction:column;min-width:0}
+canvas{flex:1;background:#000;display:block;cursor:crosshair}
+
+button{background:#222;color:#ddd;border:1px solid #444;padding:3px 8px;cursor:pointer;border-radius:3px}
+button:hover{background:#2c2c2c}
+button.active{background:#264;border-color:#5a5}
+button:focus-visible{outline:1px solid #6cf}
+input,select{background:#1a1a1a;color:#ddd;border:1px solid #444;padding:2px 4px;border-radius:3px;font:12px monospace}
+input:focus,select:focus{outline:none;border-color:#48a}
+
+#bar{padding:4px;display:flex;gap:6px;border-bottom:1px solid #333;align-items:center;flex-wrap:wrap}
+#bar #fs{margin-left:auto;color:#6cf;font-weight:bold}
+#bar #stat{color:#9c9}
+#bar .sep{width:1px;align-self:stretch;background:#333;margin:0 2px}
+#bar .grp{display:inline-flex;gap:4px;align-items:center}
+
+/* kbd badge — used inline inside buttons/labels (shortcuts live ON the control
+   they trigger, not in a separate hint strip). */
+kbd{background:#1b1b1b;border:1px solid #444;border-bottom-width:2px;border-radius:3px;padding:0 4px;font:10px monospace;color:#9ab;margin-left:2px}
+button kbd{margin-left:4px}
+
+h3,h4{margin:4px 0;font-weight:normal;color:#888;text-transform:uppercase;font-size:11px;letter-spacing:1px}
+.panel{border:1px solid #2a2a2a;border-radius:4px;padding:6px;background:#161616}
+.panel.collapsed .body{display:none}
+.panel h3{cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
+.panel h3 .arrow{color:#666}
+.row{display:flex;gap:4px;align-items:center;margin:3px 0}
+.row label{flex:1;color:#aaa;display:flex;align-items:center;gap:4px}
+.row input[type=number]{width:90px}
+
+.presets{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+.presets button{font-size:11px;padding:2px 6px}
+
+/* ---------- add row + custom autocomplete dropdown ---------- */
+#addrow{display:flex;gap:4px}
+.ac-wrap{position:relative;flex:1}
+.ac-wrap input{width:100%}
+.ac{position:absolute;left:0;right:0;top:100%;margin-top:2px;z-index:20;max-height:260px;overflow:auto;
+    background:#15171b;border:1px solid #3a4250;border-radius:4px;box-shadow:0 6px 18px #000a}
+.ac[hidden]{display:none}
+.ac-opt{display:flex;align-items:baseline;gap:8px;padding:3px 8px;cursor:pointer;white-space:nowrap}
+.ac-opt:hover,.ac-opt.sel{background:#26313f}
+.ac-spec{color:#cde}
+.ac-hint{margin-left:auto;color:#778;font-size:10px}
+
+/* ---------- live signal list (merged signals + stats) ---------- */
+#siglist{display:flex;flex-direction:column;gap:3px;margin-top:6px}
+.sig{border:1px solid #232323;border-radius:4px;padding:4px 5px;background:#141414}
+.sig.off{opacity:.45}
+.sighead{display:flex;align-items:center;gap:6px}
+.sighead .signame{flex:1;cursor:pointer;word-break:break-all;color:#dde}
+.sighead .enc{color:#777;font-size:10px}
+.sw{width:16px;height:16px;padding:0;border:1px solid #3a3a3a;border-radius:3px;cursor:pointer;background:none;vertical-align:middle;flex:none}
+.sw::-webkit-color-swatch-wrapper{padding:0}
+.sw::-webkit-color-swatch{border:none;border-radius:2px}
+.sw::-moz-color-swatch{border:none;border-radius:2px}
+.rm{color:#a44;cursor:pointer;font-weight:bold;padding:0 4px;flex:none}
+.rm:hover{color:#f66}
+.stats{font-size:10px;color:#999;margin-top:2px;padding-left:22px;display:flex;flex-wrap:wrap;gap:0 8px}
+.stats b{color:#ccc;font-weight:normal}
+
+#noSigs{padding:8px 4px;color:#777;line-height:1.7;font-size:11px}
+#noSigs b{color:#9c9;font-weight:normal}
+#noSigs code{background:#1c1c1c;border:1px solid #2c2c2c;border-radius:3px;padding:0 4px;color:#cda}
+
+#toast{position:fixed;top:8px;right:8px;max-width:380px;display:flex;flex-direction:column;gap:4px;z-index:100}
+.t{background:#3a1a1a;border:1px solid #a44;color:#fcc;padding:6px 10px;border-radius:4px;font-size:11px;box-shadow:0 2px 8px #000a}
+.t.info{background:#1a2a3a;border-color:#48a;color:#cdf}
+.muted{color:#777}
+
+/* connection indicator (top bar) */
+#bar .conn{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#999}
+.cdot{font-size:11px;line-height:1;transition:color .2s}
+.cdot.ok{color:#5c5}
+.cdot.idle{color:#cb5}
+.cdot.retry{color:#c95;animation:blink 1s steps(1) infinite}
+.cdot.down{color:#a44}
+@keyframes blink{50%{opacity:.25}}
+#reconnect{font-size:11px;padding:2px 6px}
+
+/* idle / ended banner — unobtrusive strip under the top bar */
+.banner{padding:4px 10px;font-size:11px;border-bottom:1px solid #333;background:#1a1d22;color:#bb9}
+.banner.ended{background:#221a1a;color:#caa}
+.banner.live{display:none!important}
