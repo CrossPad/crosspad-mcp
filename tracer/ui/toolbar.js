@@ -2,7 +2,7 @@
    and keyboard shortcuts. */
 
 import { state, sigs } from "./state.js";
-import { curRange } from "./plot.js";
+import { curRange, renderExport } from "./plot.js";
 import { downloadBlob, tstamp, toast } from "./util.js";
 import { forceReconnect, getConnState, hasSocket } from "./connection.js";
 import { toggleFull } from "./config.js";
@@ -26,10 +26,25 @@ export function togglePause(){
 /* Reset view: drop manual time AND Y overrides → back to the live window. */
 export function resetView(){ state.viewT0=null; state.viewT1=null; state.viewY0=null; state.viewY1=null; }
 
+/* High-contrast, labeled, 2× export (see plot.renderExport) — far more legible
+   than dumping the live low-contrast canvas. */
 function exportPng(){
-  const cv=document.getElementById("cv");
-  try{ cv.toBlob(b=>{ if(b) downloadBlob("trace-"+tstamp()+".png",b); else toast("PNG export failed"); }); }
-  catch(_){ toast("PNG export failed"); }
+  try{
+    const fsText=document.getElementById("fs")?.textContent||"";
+    const off=renderExport(fsText);
+    off.toBlob(b=>{ if(b) downloadBlob("trace-"+tstamp()+".png",b); else toast("PNG export failed"); });
+  }catch(_){ toast("PNG export failed"); }
+}
+
+/* Top-bar "i" help popover (replaces the canvas tooltip that blocked the view). */
+function initInfo(){
+  const info=document.getElementById("info");
+  const help=document.getElementById("help");
+  if(!info||!help)return;
+  info.onclick=(e)=>{ e.stopPropagation(); help.hidden=!help.hidden; };
+  document.addEventListener("click",(e)=>{
+    if(!help.hidden && e.target!==info && !help.contains(e.target)) help.hidden=true;
+  });
 }
 
 /* CSV: wide format over the visible window. Sample frames share one timestamp
@@ -60,9 +75,11 @@ export function initToolbar(){
   document.getElementById("expPng").onclick=exportPng;
   document.getElementById("expCsv").onclick=exportCsv;
   document.getElementById("reconnect").onclick=()=>forceReconnect();
+  initInfo();
 
   // Keyboard shortcuts — inert while typing in an input/select/textarea.
   document.addEventListener("keydown",e=>{
+    if(e.key==="Escape"){ const help=document.getElementById("help"); if(help) help.hidden=true; }
     const tag=(e.target&&e.target.tagName)||"";
     if(/^(INPUT|SELECT|TEXTAREA)$/.test(tag))return;
     if(e.metaKey||e.ctrlKey||e.altKey)return;

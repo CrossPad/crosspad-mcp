@@ -12,7 +12,16 @@ button:focus-visible{outline:1px solid #6cf}
 input,select{background:#1a1a1a;color:#ddd;border:1px solid #444;padding:2px 4px;border-radius:3px;font:12px monospace}
 input:focus,select:focus{outline:none;border-color:#48a}
 
-#bar{padding:4px;display:flex;gap:6px;border-bottom:1px solid #333;align-items:center;flex-wrap:wrap}
+#bar{position:relative;padding:4px;display:flex;gap:6px;border-bottom:1px solid #333;align-items:center;flex-wrap:wrap}
+/* round "i" help button + its popover (replaces the canvas tooltip) */
+button.i{width:20px;height:20px;padding:0;border-radius:50%;font-style:italic;font-weight:bold;line-height:1;color:#9ab}
+button.i:hover{color:#cde;border-color:#48a}
+.help{position:absolute;top:100%;right:6px;margin-top:4px;z-index:30;width:340px;
+      background:#15171b;border:1px solid #3a4250;border-radius:5px;padding:8px 10px;
+      box-shadow:0 6px 18px #000a;font-size:11px;color:#bcd;line-height:1.7}
+.help[hidden]{display:none}
+.help h4{margin:2px 0 3px;color:#778}
+.help h4:first-child{margin-top:0}
 #bar #fs{margin-left:auto;color:#6cf;font-weight:bold}
 #bar #stat{color:#9c9}
 #bar .sep{width:1px;align-self:stretch;background:#333;margin:0 2px}

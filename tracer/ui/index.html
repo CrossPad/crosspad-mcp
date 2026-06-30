@@ -57,6 +57,18 @@
     <button id="expPng" title="Save the current plot as a PNG image">PNG</button>
     <button id="expCsv" title="Export visible-window samples as CSV">CSV</button>
    </span>
+   <!-- Help: click for a popover of keyboard + mouse controls (replaces the
+        canvas tooltip that blocked the plot). -->
+   <button id="info" class="i" title="Controls / help" aria-label="help">i</button>
+   <div id="help" class="help" hidden>
+    <h4>Keyboard</h4>
+    <div><kbd>Space</kbd> pause (hold) · <kbd>R</kbd> reset view · <kbd>F</kbd> full history</div>
+    <h4>Mouse</h4>
+    <div>wheel — zoom time</div>
+    <div><kbd>⇧</kbd>+wheel — zoom Y (shared mode)</div>
+    <div>horizontal wheel / drag — pan time</div>
+    <div>hover — crosshair + per-signal readout</div>
+   </div>
    <!-- Global Fs readout (PROTOCOL §10): one place, never per-signal. -->
    <span id="fs" class="muted" title="Trace sample rate (global)">Fs —</span>
    <!-- Connection indicator + forced reconnect (PROTOCOL §12.5). -->
@@ -66,8 +78,8 @@
   </div>
   <!-- Idle / ended banner: shown when no trace is live; last data stays plotted. -->
   <div id="banner" class="banner" style="display:none"></div>
-  <!-- Plot. Wheel zooms time (Shift+wheel zooms Y); horizontal wheel + drag pan. -->
-  <canvas id="cv" title="wheel: zoom time · Shift+wheel: zoom Y · horizontal wheel / drag: pan · hover: readout"></canvas>
+  <!-- Plot. Controls are documented in the top-bar "i" help popover. -->
+  <canvas id="cv"></canvas>
  </div>
 </div>
 <script type="module" src="main.js"></script>
