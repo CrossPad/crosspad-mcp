@@ -1100,7 +1100,8 @@ def _resolve_type_from(die, cu):
     return "uint", (bs.value if bs else 4)
 
 def _coalesce(sigs):
-    """sigs: list of {name,address,size,encoding}. Returns [(start,length,[(name,off,size,enc)])]."""
+    """sigs: list of {name,address,size,encoding,transform?}.
+    Returns [(start,length,[(name,off,size,enc,transform)])]."""
     items = sorted(sigs, key=lambda s: s["address"])
     ranges = []
     for s in items:
@@ -1108,9 +1109,10 @@ def _coalesce(sigs):
         if ranges and a <= ranges[-1][0] + ranges[-1][1] + 4:  # merge if within 4 bytes of prev end
             start, length, members = ranges[-1]
             new_end = max(start + length, a + ln)
-            ranges[-1] = (start, new_end - start, members + [(s["name"], a - start, ln, s["encoding"])])
+            ranges[-1] = (start, new_end - start,
+                          members + [(s["name"], a - start, ln, s["encoding"], s.get("transform"))])
         else:
-            ranges.append((a, ln, [(s["name"], 0, ln, s["encoding"])]))
+            ranges.append((a, ln, [(s["name"], 0, ln, s["encoding"], s.get("transform"))]))
     return ranges
 
 def _decode(buf, off, size, enc):
@@ -1333,8 +1335,11 @@ def cmd_trace(args):
                 except Exception:
                     in_stop = True
                     break
-                for (name, off, size, enc) in members:
-                    values[name] = _decode(data, off, size, enc)
+                for (name, off, size, enc, transform) in members:
+                    v = _decode(data, off, size, enc)
+                    if transform is not None:
+                        v = _apply_transform(v, size, transform)
+                    values[name] = v
             t = time.monotonic() - t0
             if in_stop:
                 now = time.monotonic()
