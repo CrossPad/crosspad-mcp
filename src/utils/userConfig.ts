@@ -8,6 +8,10 @@ export interface UserConfig {
   pyocd_python?: string;
   probe_serial?: string;
   trace_dir?: string;
+  /** Absolute path to STM32_Programmer_CLI (ST's flasher). Resolution order at
+   *  flash time: this config value → $STM32_PROG env → PATH lookup. Set when the
+   *  CubeProgrammer bundle is not on PATH. */
+  stm_programmer_cli?: string;
   /** How `start` surfaces the live dashboard: "vscode" (default — agent replies
    *  with the link; user clicks → VS Code Simple Browser via externalUriOpeners;
    *  system-browser fallback after ~30s if unopened), "browser" (open the system

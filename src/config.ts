@@ -41,6 +41,26 @@ export const CROSSPAD_STM_ROOT =
 export const STM_ELF_DEFAULT = path.join(CROSSPAD_STM_ROOT, "build", "Debug", "CrossPad_STM32_r20.elf");
 export const TRACE_DIR_DEFAULT = path.join(CROSSPAD_STM_ROOT, "traces");
 
+// ─── STM32 build / flash ─────────────────────────────────────────────────
+// CMake project name (artifact basename) and the CMakePresets.json preset
+// names. binaryDir is build/<preset> per the preset's `binaryDir` template.
+export const STM_PROJECT_NAME = "CrossPad_STM32_r20";
+// Flash base address — STM32G0 internal flash origin (matches the *.ld linker
+// script ORIGIN and the STM32_Programmer_CLI invocations in CLAUDE.md).
+export const STM_FLASH_ADDR = "0x08000000";
+
+export type StmPreset = "Debug" | "Release";
+
+/** Build directory for a preset: <repo>/build/<preset>. */
+export function stmBuildDir(preset: StmPreset): string {
+  return path.join(CROSSPAD_STM_ROOT, "build", preset);
+}
+
+/** Artifact path for a preset, e.g. build/Debug/CrossPad_STM32_r20.elf. */
+export function stmArtifact(preset: StmPreset, ext: "elf" | "bin" | "hex"): string {
+  return path.join(stmBuildDir(preset), `${STM_PROJECT_NAME}.${ext}`);
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // ESP-IDF SDK PATH — fallback chain

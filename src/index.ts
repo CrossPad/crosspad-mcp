@@ -14,6 +14,8 @@ import { BIN_EXE as _BIN_EXE } from "./config.js";
 import { crosspadLog } from "./tools/log.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
 import { crosspadIdfFlash, crosspadIdfOta } from "./tools/idf-flash.js";
+import { crosspadStmBuild } from "./tools/stm-build.js";
+import { crosspadStmFlash } from "./tools/stm-flash.js";
 import { crosspadIdfMonitor } from "./tools/idf-monitor.js";
 import { listDevices } from "./utils/device.js";
 import { crosspadTest } from "./tools/test.js";
@@ -62,7 +64,8 @@ WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, pr
 - Inspecting code  → crosspad_search_symbols (NOT \`grep -r\`); crosspad_list_interfaces; crosspad_interface_implementations.
 - Repo state       → crosspad_repo_status (NOT \`git status\` across N repos); crosspad_repo_diff for submodule drift.
 - Building PC sim  → crosspad_check platform=pc → crosspad_build platform=pc (NOT raw cmake/ninja). Then crosspad_run; crosspad_kill when done.
-- Building firmware→ crosspad_build platform=idf (NOT raw \`idf.py build\`); crosspad_flash transport=uart|ota.
+- Building ESP fw  → crosspad_build platform=idf (NOT raw \`idf.py build\`); crosspad_flash target=esp transport=uart|ota.
+- Building STM fw   → crosspad_build platform=stm (NOT raw cmake/STM32_Programmer_CLI for CrossPad_STM32_r20); crosspad_flash target=stm method=swd|dfu.
 - Tests            → crosspad_test_run (NOT raw catch2 binary).
 - Sim interaction  → crosspad_screenshot, crosspad_input, crosspad_midi, crosspad_stats, crosspad_settings_get/set.
 - Apps (registry)  → crosspad_apps_list / install / remove / update / sync (NOT manual submodule git ops).
@@ -255,8 +258,12 @@ const O_BuildCheck = {
 
 const O_Flash = {
   success: z.boolean(),
-  method: z.enum(["uart", "ota"]),
-  port: z.string(),
+  method: z.enum(["uart", "ota", "swd", "dfu"]),
+  // ESP transports report the serial port; STM methods report the flasher
+  // binary + firmware path instead. Both kept optional so each path validates.
+  port: z.string().optional(),
+  programmer: z.string().optional(),
+  firmware_path: z.string().optional(),
   duration_seconds: z.number(),
   output_tail: z.array(z.string()),
   ...ErrorField,
@@ -450,32 +457,33 @@ const O_AppAction = {
 // `platform` arg disambiguates. Modes are validated per-platform at runtime.
 // ═══════════════════════════════════════════════════════════════════════
 
-const BuildPlatform = z.enum(["pc", "idf"]).describe("Target platform: 'pc' = host simulator, 'idf' = ESP32-S3 firmware.");
+const BuildPlatform = z.enum(["pc", "idf", "stm"]).describe("Target platform: 'pc' = host simulator, 'idf' = ESP32-S3 firmware, 'stm' = STM32G0 firmware (CrossPad r20).");
 const PlatformPcOnly = z.enum(["pc"]).default("pc").describe("Platform — currently only 'pc' is supported here.");
 
 server.registerTool(
   "crosspad_build",
   {
     description:
-      "[PC | ESP] Build CrossPad for the given platform.\n" +
+      "[PC | ESP | STM HW] Build CrossPad for the given platform.\n" +
       "  • platform='pc'  → CMake + Ninja host simulator. PREFER THIS over `cmake --build build` (picks right MSVC env on Windows, parses errors/warnings, streams progress).\n" +
       "  • platform='idf' → idf.py build for ESP32-S3 firmware. PREFER THIS over raw `idf.py build` (sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).\n" +
+      "  • platform='stm' → CMake + Ninja + arm-none-eabi for STM32G0 firmware (CrossPad r20). Uses CMakePresets (Debug/Release); output is build/<preset>/CrossPad_STM32_r20.elf.\n" +
       "Mode×platform compatibility:\n" +
-      "  • incremental → both (default)\n" +
-      "  • clean       → both (wipes build dir, then builds)\n" +
-      "  • reconfigure → PC only (re-runs cmake without wiping cache)\n" +
+      "  • incremental → all (default)\n" +
+      "  • clean       → all (wipes build dir, then builds)\n" +
+      "  • reconfigure → PC & STM (re-runs cmake without wiping cache)\n" +
       "  • fullclean   → IDF only (runs idf.py fullclean, then builds)",
     inputSchema: {
       platform: BuildPlatform,
       mode: z.enum(["incremental", "clean", "fullclean", "reconfigure"])
         .default("incremental")
         .describe(
-          "Build mode. Compatibility: incremental & clean = both platforms; reconfigure = PC only; fullclean = IDF only. " +
-          "Pick incremental for normal iteration; clean if you suspect stale artifacts; fullclean (IDF) after adding new apps; reconfigure (PC) after editing CMakeLists.",
+          "Build mode. Compatibility: incremental & clean = all platforms; reconfigure = PC & STM; fullclean = IDF only. " +
+          "Pick incremental for normal iteration; clean if you suspect stale artifacts; fullclean (IDF) after adding new apps; reconfigure (PC/STM) after editing CMakeLists/presets.",
         ),
       build_type: z.enum(["Debug", "Release", "RelWithDebInfo"])
         .default("Debug")
-        .describe("CMake build type — PC ONLY (ignored for IDF; ESP32 build type comes from sdkconfig). Only honored on mode=clean|reconfigure (incremental keeps existing cache)."),
+        .describe("CMake build type — PC & STM (ignored for IDF; ESP32 build type comes from sdkconfig). STM maps to the Debug/Release preset (RelWithDebInfo→Release). Only honored on mode=clean|reconfigure (incremental keeps existing cache)."),
     },
     outputSchema: O_Build,
     annotations: ANN_DESTRUCTIVE,
@@ -486,8 +494,13 @@ server.registerTool(
       const onLine = makeProgressLogger("build-pc", extra);
       return jsonResponse(await crosspadBuild(mode as "incremental" | "clean" | "reconfigure", onLine, build_type, extra.signal));
     }
+    if (platform === "stm") {
+      if (mode === "fullclean") return err("mode='fullclean' is IDF-only. STM supports: incremental, clean, reconfigure.");
+      const onLine = makeProgressLogger("build-stm", extra);
+      return jsonResponse(await crosspadStmBuild(mode as "incremental" | "clean" | "reconfigure", onLine, build_type, extra.signal));
+    }
     // idf
-    if (mode === "reconfigure") return err("mode='reconfigure' is PC-only. IDF supports: incremental, clean, fullclean.");
+    if (mode === "reconfigure") return err("mode='reconfigure' is PC/STM-only. IDF supports: incremental, clean, fullclean.");
     const idfMode = mode === "incremental" ? "build" : mode;
     const onLine = makeProgressLogger("build-idf", extra);
     return jsonResponse(await crosspadIdfBuild(idfMode as "build" | "fullclean" | "clean", onLine, extra.signal));
@@ -557,17 +570,40 @@ server.registerTool(
 server.registerTool(
   "crosspad_flash",
   {
-    description: "[ESP HW] Flash ESP firmware to a connected CrossPad device. transport='uart' uses idf.py flash (device must be in bootloader mode). transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required). Requires prior crosspad_build platform=idf. Works on both CrossPad generations: rev <2.0 (ESP native USB) and rev 2.0 (port is the STM32 CDC bridge — STM emulates the esptool DTR/RTS auto-reset and forwards the flash to the ESP over LPUART2; rev-2.0 STM must be in passthrough mode, i.e. NOT booted with pad-4 held).",
+    description: "[ESP HW | STM HW] Flash firmware to a connected CrossPad device.\n" +
+      "target='esp' (default) → ESP32-S3 firmware (requires prior crosspad_build platform=idf):\n" +
+      "  • transport='uart' uses idf.py flash (device must be in bootloader mode).\n" +
+      "  • transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required).\n" +
+      "  Works on both CrossPad generations: rev <2.0 (ESP native USB) and rev 2.0 (port is the STM32 CDC bridge — STM emulates the esptool DTR/RTS auto-reset and forwards the flash to the ESP over LPUART2; rev-2.0 STM must be in passthrough mode, i.e. NOT booted with pad-4 held).\n" +
+      "target='stm' → STM32G0 firmware via STM32_Programmer_CLI (requires prior crosspad_build platform=stm):\n" +
+      "  • method='swd' flashes over ST-Link (SWD).\n" +
+      "  • method='dfu' flashes the USB DFU bootloader (board in ST system memory — hold pad 1 at boot or trigger boot_request_dfu).\n" +
+      "  Flasher resolved from config (stm_programmer_cli) → $STM32_PROG → PATH.",
     inputSchema: {
-      transport: z.enum(["uart", "ota"]).describe("'uart' = bootloader-mode flash via idf.py; 'ota' = USB-CDC OTA flash via ota_flash.py."),
+      target: z.enum(["esp", "stm"]).default("esp").describe("'esp' = ESP32-S3 (transport uart/ota); 'stm' = STM32G0 firmware via STM32_Programmer_CLI (method swd/dfu)."),
+      transport: z.enum(["uart", "ota"]).optional().describe("ESP only. 'uart' = bootloader-mode flash via idf.py; 'ota' = USB-CDC OTA flash via ota_flash.py."),
+      method: z.enum(["swd", "dfu"]).optional().describe("STM only. 'swd' = ST-Link/SWD; 'dfu' = USB DFU system bootloader."),
       port: Port.optional(),
+      build_type: z.enum(["Debug", "Release", "RelWithDebInfo"]).optional()
+        .describe("STM only. Selects the build/<preset> dir for the default firmware binary. Defaults to Debug."),
       firmware_path: z.string().optional()
-        .describe("Custom firmware binary path (OTA only). Defaults to <idf-root>/build/CrossPad.bin."),
+        .describe("Custom firmware binary path. ESP: OTA only, defaults to <idf-root>/build/CrossPad.bin. STM: defaults to <stm-root>/build/<preset>/CrossPad_STM32_r20.bin."),
     },
     outputSchema: O_Flash,
     annotations: ANN_DESTRUCTIVE,
   },
-  async ({ transport, port, firmware_path }, extra: any) => {
+  async ({ target, transport, method, port, build_type, firmware_path }, extra: any) => {
+    if (target === "stm") {
+      if (!method) return err("target='stm' requires 'method' (swd or dfu).");
+      if (transport) return err("Field 'transport' is ESP-only. For STM use 'method' (swd|dfu).");
+      if (port) return err("Field 'port' is ESP-only — STM flash addresses the ST-Link/DFU device, not a serial port.");
+      const onLine = makeProgressLogger(`flash-stm-${method}`, extra);
+      return jsonResponse(await crosspadStmFlash(method, build_type ?? "Debug", firmware_path, onLine, extra.signal));
+    }
+    // esp
+    if (method) return err("Field 'method' is STM-only. For ESP use 'transport' (uart|ota).");
+    if (build_type) return err("Field 'build_type' is STM-only (ESP build type comes from sdkconfig).");
+    if (!transport) return err("target='esp' requires 'transport' (uart or ota).");
     if (transport === "uart") {
       if (firmware_path) return err("Field 'firmware_path' is OTA-only — UART flash always uses the active build dir.");
       const onLine = makeProgressLogger("flash-uart", extra);
@@ -667,11 +703,11 @@ server.registerTool(
         "config_set: key,value; symbols: query?; start: signals[],rate_hz?; " +
         "add/remove: signals[]; read: window_from?,window_to?,max_points?; save: format?."
       ),
-      signals: z.array(z.string()).optional().describe("start: variable names from `symbols` (e.g. ['s_vbat_mv','s_inputs[0]'])."),
+      signals: z.array(z.string()).optional().describe("start: variable names from `symbols` (e.g. ['s_vbat_mv','s_inputs[0]']). Also accepts raw @address specs that bypass DWARF — '@0x40021000' (u32), '@0x40021000:u16' (u8|u16|u32|i8|i16|i32|f32), '@0x20000000:u8[16]' (16-element block) — for peripheral registers / arbitrary RAM."),
       rate_hz: z.number().int().min(0).max(2000).optional().describe("start: target sample rate (0 = as fast as the probe allows). Actual Fs is reported."),
       swo: z.array(z.string()).optional().describe("start (EXPERIMENTAL): map ITM stimulus ports to signal names, e.g. ['0:phase','1:isr_us']. Requires firmware that emits ITM on the SWO pin (NOT present in current CrossPad firmware — UNTESTED against real ITM). Omit for plain RAM polling. Fails soft: if SWV init fails, polling continues normally."),
       query: z.string().optional().describe("symbols: case-insensitive substring filter."),
-      key: z.string().optional().describe("config_set: one of stm_elf_path|pyocd_python|probe_serial|trace_dir|ui_open. ui_open ∈ vscode(default: reply with the link → user clicks → opens in the VS Code Simple Browser; system-browser fallback after 30s if unopened)|browser(open system browser immediately)|none(never auto-open)."),
+      key: z.string().optional().describe("config_set: one of stm_elf_path|pyocd_python|probe_serial|trace_dir|ui_open|stm_programmer_cli. stm_programmer_cli = path to STM32_Programmer_CLI for crosspad_flash target=stm. ui_open ∈ vscode(default: reply with the link → user clicks → opens in the VS Code Simple Browser; system-browser fallback after 30s if unopened)|browser(open system browser immediately)|none(never auto-open)."),
       value: z.string().optional().describe("config_set: the value to persist."),
       window_from: z.number().optional().describe("read: start time (s) of the window."),
       window_to: z.number().optional().describe("read: end time (s) of the window."),
@@ -688,7 +724,7 @@ server.registerTool(
         return ok({ action, ok: r.ok, issues: r.issues, device_state: r.probe ? "connected" : "no_probe" });
       }
       case "config_set": {
-        const allowed = ["stm_elf_path", "pyocd_python", "probe_serial", "trace_dir", "ui_open"];
+        const allowed = ["stm_elf_path", "pyocd_python", "probe_serial", "trace_dir", "ui_open", "stm_programmer_cli"];
         if (!key || !allowed.includes(key)) return err(`config_set requires key in ${allowed.join("|")}`);
         if (value === undefined) return err("config_set requires `value`.");
         setConfigValue(key as keyof UserConfig, value);
