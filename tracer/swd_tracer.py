@@ -1067,6 +1067,8 @@ def cmd_trace(args):
     sigset = {s["name"]: s for s in resolved}
     state = {"dirty": True, "ranges": _coalesce(list(sigset.values())),
              "unresolved": initial_unresolved, "signals": list(sigset.values())}
+    pending_cmds = []          # list of dict msgs from stdin (write/call), drained in loop
+    cmd_lock = threading.Lock()
 
     def _signals_frame():
         """Build the {"type":"signals",...} frame from the current poll set."""
@@ -1143,6 +1145,12 @@ def cmd_trace(args):
                 sigs = msg.get("signals")
                 if isinstance(sigs, list):
                     _apply_remove([s for s in sigs if isinstance(s, str)])
+            elif cmd == "write" and isinstance(msg.get("writes"), list):
+                with cmd_lock:
+                    pending_cmds.append(msg)
+            elif cmd == "call":
+                with cmd_lock:
+                    pending_cmds.append(msg)
     threading.Thread(target=stdin_reader, daemon=True).start()
 
     log(f"connecting probe (serial={args.probe or 'auto'}, target={args.target}, "
@@ -1164,6 +1172,7 @@ def cmd_trace(args):
         os._exit(3 if "no debug probe" in cerr else 1)
 
     target = session.target
+    ram_regions = _ram_regions_from(session)
     log("connected; polling (non-halting)")
     # §11.2 persistent-fault tracking: a single read fault = stop_suspected, but
     # faults lasting longer than --lost-timeout mean the probe/target is gone.
@@ -1188,6 +1197,34 @@ def cmd_trace(args):
                     state["ranges"] = _coalesce(list(state["signals"]))
                     state["dirty"] = False
                 print(json.dumps(_signals_frame()), flush=True)
+            drained = []
+            with cmd_lock:
+                if pending_cmds:
+                    drained = pending_cmds[:]; pending_cmds.clear()
+            for msg in drained:
+                rid = msg.get("id")
+                if msg.get("cmd") == "write":
+                    descs = [_parse_write_spec(s, table)
+                             for s in msg["writes"] if isinstance(s, str)]
+                    results = do_write(target, descs, ram_regions)
+                    print(json.dumps({"type": "write_result", "id": rid,
+                        "ok": all(r["ok"] for r in results) if results else False,
+                        "results": results}), flush=True)
+                else:  # call
+                    if not msg.get("confirm"):
+                        print(json.dumps({"type": "call_result", "id": rid,
+                            "ok": False, "error": "call requires confirm:true"}), flush=True)
+                        continue
+                    entry = _resolve_func(args.elf, msg.get("func", ""))
+                    if entry is None:
+                        print(json.dumps({"type": "call_result", "id": rid, "ok": False,
+                            "error": "unknown function: %s" % msg.get("func")}), flush=True)
+                        continue
+                    res = do_call(target, entry,
+                                  [int(a) for a in msg.get("args", [])],
+                                  msg.get("ret_type", "u32"), float(msg.get("timeout", 2.0)))
+                    res.update({"type": "call_result", "id": rid})
+                    print(json.dumps(res), flush=True)
             ranges = state["ranges"]
             values, in_stop = {}, False
             for (start, length, members) in ranges:
