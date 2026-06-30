@@ -737,6 +737,55 @@ def _resolve_raw(spec):
         elems.append({"name": nm, "address": a, "size": size, "encoding": enc})
     return {"n": count, "elems": elems}
 
+def _split_transform(spec):
+    """Peel a trailing bit/mask transform suffix (#... or &...) off a spec.
+
+    Base specs never contain '#' or '&', so the earliest occurrence of either
+    starts the suffix. Returns (base, suffix) with the sigil kept on the suffix,
+    or (spec, None) when there is no transform.
+    """
+    idxs = [i for i in (spec.find("#"), spec.find("&")) if i >= 0]
+    if not idxs:
+        return spec, None
+    i = min(idxs)
+    return spec[:i], spec[i:]
+
+def _parse_transform(suffix, size):
+    """Validate a transform suffix against the base byte size; return a transform
+    dict or None. bits = size*8. '#N' bit, '#hi:lo' range (inclusive, hi>=lo),
+    '&0xMASK' mask (normalized to the lowest set bit)."""
+    bits = size * 8
+    if suffix.startswith("#"):
+        body = suffix[1:]
+        if ":" in body:
+            parts = body.split(":")
+            if len(parts) != 2:
+                return None
+            try:
+                hi, lo = int(parts[0]), int(parts[1])
+            except ValueError:
+                return None
+            if lo < 0 or hi < lo or hi >= bits:
+                return None
+            return {"kind": "range", "hi": hi, "lo": lo}
+        try:
+            n = int(body)
+        except ValueError:
+            return None
+        if n < 0 or n >= bits:
+            return None
+        return {"kind": "bit", "n": n}
+    if suffix.startswith("&"):
+        try:
+            mask = int(suffix[1:], 0)
+        except ValueError:
+            return None
+        if mask <= 0 or mask >= (1 << bits):
+            return None
+        shift = (mask & -mask).bit_length() - 1  # ffs: index of lowest set bit
+        return {"kind": "mask", "mask": mask, "shift": shift}
+    return None
+
 def _parse_value(text, encoding, size):
     """Parse the RHS literal per the target encoding. int: hex 0x.. or decimal
     (range-checked to the byte size, two's-complement for signed); float: f32."""
