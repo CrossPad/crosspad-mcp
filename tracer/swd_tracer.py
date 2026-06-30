@@ -1025,32 +1025,55 @@ def _resolve_specs(specs, table):
     """
     resolved, unresolved = [], []
     for spec in specs:
+        base, suffix = _split_transform(spec)
         # §1.2: raw @address specs bypass DWARF entirely.
-        raw = _resolve_raw(spec)
+        raw = _resolve_raw(base)
         if raw is not None:
             if raw["n"] > EXPAND_CAP:
                 unresolved.append("%s (expands to %d > %d)" % (spec, raw["n"], EXPAND_CAP))
-            elif raw["elems"]:
-                resolved.extend(raw["elems"])
-            else:
+            elif not raw["elems"]:
                 unresolved.append(spec)
+            elif suffix is not None:
+                if raw["n"] != 1:
+                    unresolved.append("%s (transform on expanding spec unsupported)" % spec)
+                else:
+                    t = _parse_transform(suffix, raw["elems"][0]["size"])
+                    if t is None:
+                        unresolved.append(spec)
+                    else:
+                        e = dict(raw["elems"][0]); e["transform"] = t; e["name"] = spec
+                        resolved.append(e)
+            else:
+                resolved.extend(raw["elems"])
             continue
-        elems, n = _expand_spec(spec, table)
+        elems, n = _expand_spec(base, table)
         if n > EXPAND_CAP:
             unresolved.append("%s (expands to %d > %d)" % (spec, n, EXPAND_CAP))
             continue
         if elems:
-            # Expanded (possibly to a single concrete element). Resolve each;
-            # any element that fails to resolve is silently dropped (the spec as
-            # a whole produced concrete names, so it isn't "unresolved").
+            if suffix is not None and n != 1:
+                unresolved.append("%s (transform on expanding spec unsupported)" % spec)
+                continue
             for e in elems:
                 r = _resolve_spec(e, table)
-                if r:
-                    resolved.append(r)
+                if not r:
+                    continue
+                if suffix is not None:
+                    t = _parse_transform(suffix, r["size"])
+                    if t is None:
+                        unresolved.append(spec); continue
+                    r = dict(r); r["transform"] = t; r["name"] = spec
+                resolved.append(r)
             continue
         # Not expandable — try as a plain concrete scalar spec.
-        r = _resolve_spec(spec, table)
+        r = _resolve_spec(base, table)
         if r:
+            if suffix is not None:
+                t = _parse_transform(suffix, r["size"])
+                if t is None:
+                    unresolved.append(spec)
+                    continue
+                r = dict(r); r["transform"] = t; r["name"] = spec
             resolved.append(r)
         else:
             unresolved.append(spec)
