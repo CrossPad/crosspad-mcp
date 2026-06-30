@@ -217,7 +217,6 @@ def cmd_symbols(args):
 
 # --- trace mode ---------------------------------------------------------------
 import io, os, re, struct, threading, time
-from pyocd.core.target import Target
 
 def _try_open_session(probe, target, timeout_s):
     """Open a pyOCD session with a hard timeout and no-probe fast-fail.
@@ -885,6 +884,7 @@ _CALL_CTX = ["r0","r1","r2","r3","r4","r5","r6","r7","r8","r9","r10","r11","r12"
 def do_call(target, entry, args, ret_type, timeout_s):
     """AAPCS function-call thunk. Halts the core, runs func(args), restores full
     context, resumes. Returns {ok,r0,decoded?} or {ok:False,error}."""
+    from pyocd.core.target import Target
     if len(args) > 4:
         return {"ok": False, "error": "max 4 args (r0-r3); got %d" % len(args)}
     saved = {}
