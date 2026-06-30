@@ -1203,28 +1203,33 @@ def cmd_trace(args):
                     drained = pending_cmds[:]; pending_cmds.clear()
             for msg in drained:
                 rid = msg.get("id")
-                if msg.get("cmd") == "write":
-                    descs = [_parse_write_spec(s, table)
-                             for s in msg["writes"] if isinstance(s, str)]
-                    results = do_write(target, descs, ram_regions)
-                    print(json.dumps({"type": "write_result", "id": rid,
-                        "ok": all(r["ok"] for r in results) if results else False,
-                        "results": results}), flush=True)
-                else:  # call
-                    if not msg.get("confirm"):
-                        print(json.dumps({"type": "call_result", "id": rid,
-                            "ok": False, "error": "call requires confirm:true"}), flush=True)
-                        continue
-                    entry = _resolve_func(args.elf, msg.get("func", ""))
-                    if entry is None:
-                        print(json.dumps({"type": "call_result", "id": rid, "ok": False,
-                            "error": "unknown function: %s" % msg.get("func")}), flush=True)
-                        continue
-                    res = do_call(target, entry,
-                                  [int(a) for a in msg.get("args", [])],
-                                  msg.get("ret_type", "u32"), float(msg.get("timeout", 2.0)))
-                    res.update({"type": "call_result", "id": rid})
-                    print(json.dumps(res), flush=True)
+                kind = "write_result" if msg.get("cmd") == "write" else "call_result"
+                try:
+                    if msg.get("cmd") == "write":
+                        descs = [_parse_write_spec(s, table)
+                                 for s in msg["writes"] if isinstance(s, str)]
+                        results = do_write(target, descs, ram_regions)
+                        print(json.dumps({"type": "write_result", "id": rid,
+                            "ok": all(r["ok"] for r in results) if results else False,
+                            "results": results}), flush=True)
+                    else:  # call
+                        if not msg.get("confirm"):
+                            print(json.dumps({"type": "call_result", "id": rid,
+                                "ok": False, "error": "call requires confirm:true"}), flush=True)
+                            continue
+                        entry = _resolve_func(args.elf, msg.get("func", ""))
+                        if entry is None:
+                            print(json.dumps({"type": "call_result", "id": rid, "ok": False,
+                                "error": "unknown function: %s" % msg.get("func")}), flush=True)
+                            continue
+                        res = do_call(target, entry,
+                                      [int(a) for a in msg.get("args", [])],
+                                      msg.get("ret_type", "u32"), float(msg.get("timeout", 2.0)))
+                        res.update({"type": "call_result", "id": rid})
+                        print(json.dumps(res), flush=True)
+                except Exception as e:
+                    print(json.dumps({"type": kind, "id": rid, "ok": False,
+                                      "error": "command failed: %s" % e}), flush=True)
             ranges = state["ranges"]
             values, in_stop = {}, False
             for (start, length, members) in ranges:
