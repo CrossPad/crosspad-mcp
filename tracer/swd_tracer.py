@@ -811,6 +811,11 @@ def _parse_write_spec(spec, table):
         return {"ok": False, "spec": spec, "error": "missing '=' (use target=value)"}
     left, right = spec.split("=", 1)
     left, right = left.strip(), right.strip()
+    # Transforms (#bit / &mask) are read-only, not supported on write targets.
+    base, suffix = _split_transform(left)
+    if suffix is not None:
+        return {"ok": False, "spec": spec,
+                "error": "transforms (#bit / &mask) are read-only, not supported on write targets"}
     # Resolve the LHS address/size/encoding using the read resolvers.
     raw = _resolve_raw(left)
     if raw is not None:
