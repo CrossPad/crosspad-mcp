@@ -130,6 +130,18 @@ with no trailing index) is reported as `unresolved`, not fatal. See
 [reference/signals.md](reference/signals.md) for the CrossPad-specific cheat sheet
 (pads, ADC channels, and the built-in `g_trace_demo.*` self-test signals).
 
+### Writing & calling (poke + RCE)
+
+`crosspad_trace action=write writes=["@0x50000414:u16=0xFFFF","s_vbat_mv=4200"]`
+— non-halting pokes by address or symbol. Allowed regions: SRAM, peripheral, PPB;
+the flash/Code region is blocked. Works live (during a trace) or standalone.
+
+`crosspad_trace action=call func="led_set" args=[3,16711680] confirm=true` — call a
+firmware function (≤4 int args → r0-r3), returns r0 (`ret_type` decodes it). **Halts
+the core briefly**, masks interrupts, restores context and resumes. `confirm:true`
+is mandatory. Use for driving the firmware from the agent; avoid functions that
+block or never return (they hit the `timeout` and the call is rolled back).
+
 ## Quick self-test (no real inputs needed)
 
 If the firmware includes the demo module, `g_trace_demo.demo_sine` draws a clean

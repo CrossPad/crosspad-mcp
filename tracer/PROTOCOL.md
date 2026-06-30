@@ -79,6 +79,22 @@ read-side-effects (a peripheral data register that clears a flag on read, FIFO
 pops, etc.) will perturb firmware — point raw specs at status/config registers,
 not at volatile data registers, unless you intend the side effect.
 
+## 1.3 Write specs and function calls
+
+`write` takes `target=value` specs: the LHS is any read spec (§1.1 symbol or §1.2
+raw `@address[:type]`), the RHS a hex (`0x..`) or decimal literal (float for `f32`).
+Writes are **non-halting** (AHB poke). Allowlist (Cortex-M architectural map, all
+STM32 series): SRAM `0x20000000–0x3FFFFFFF`, Peripheral `0x40000000–0x5FFFFFFF`,
+PPB `0xE0000000–0xE00FFFFF`. The Code region `0x00000000–0x1FFFFFFF` (flash, system
+memory, option bytes) is **blocked**. A CMSIS-pack target narrows the SRAM window
+to the real RAM regions.
+
+`call` invokes a firmware function by symbol: up to 4 integer args (r0-r3, AAPCS),
+returns r0. It **halts the core**, runs the function with interrupts masked
+(PRIMASK=1) and a return breakpoint, then restores full context and resumes.
+Requires `confirm:true`. A function that does not return within `timeout` (default
+2 s) leaves the firmware running in its pre-call state and reports a timeout.
+
 ## 2. Daemon stdin commands (Node → daemon, NDJSON)
 
 ```jsonc
@@ -86,6 +102,11 @@ not at volatile data registers, unless you intend the side effect.
 {"cmd":"add","signals":["s_vbat_mv","s_inputs[3]"]}   // add to live poll set
 {"cmd":"remove","signals":["s_inputs[3]"]}            // drop from live poll set
 ```
+
+- `{"cmd":"write","id":N,"writes":["@0x..=v", ...]}` → emits
+  `{"type":"write_result","id":N,"ok":bool,"results":[{name,address,size,ok,old,new,error?}]}`.
+- `{"cmd":"call","id":N,"func":"name","args":[...],"confirm":true,"ret_type":"u32","timeout":2.0}`
+  → emits `{"type":"call_result","id":N,"ok":bool,"r0":int,"decoded"?:num,"error"?:str}`.
 
 `add`/`remove` mutate the poll set on the running daemon. The poll loop
 re-coalesces ranges on the next iteration. Unknown / unresolvable specs in an
