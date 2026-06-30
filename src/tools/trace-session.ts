@@ -5,6 +5,35 @@ import { TraceBuffer } from "./trace-buffer.js";
 import { daemonPath, resolvedPython, resolvedElf } from "./trace-symbols.js";
 import { resolveConfigValue } from "../utils/userConfig.js";
 import { TRACE_DIR_DEFAULT } from "../config.js";
+import { runArgvStream } from "../utils/exec.js";
+import {
+  buildWriteArgv, buildCallArgv,
+  writeStdinCmd, callStdinCmd,
+  parseResultFrame,
+} from "./trace-write.js";
+
+// ── §write/call cmd-id correlation ────────────────────────────────────────────
+const pendingCmds = new Map<number, (frame: any) => void>();
+let cmdIdSeq = 1;
+function nextCmdId(): number { return cmdIdSeq++; }
+
+function sendAndAwait(stdin: NodeJS.WritableStream, line: string, id: number, timeoutMs: number): Promise<any | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { pendingCmds.delete(id); resolve(null); }, timeoutMs);
+    pendingCmds.set(id, (frame) => { clearTimeout(timer); resolve(frame); });
+    stdin.write(line + "\n");
+  });
+}
+
+export function parseOneShot(out: string, type: string): any {
+  const lines = out.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].startsWith("{") && lines[i].includes(`"${type}"`)) {
+      try { return JSON.parse(lines[i]); } catch { /* keep scanning */ }
+    }
+  }
+  return { ok: false, error: out.split("\n").filter(Boolean).slice(-3).join(" | ") || "no output" };
+}
 
 export interface SignalSpec { name: string; address: number; size: number; encoding: string; }
 export type Frame =
@@ -171,6 +200,13 @@ export class TraceSession {
     const parts = this.stdoutBuf.split("\n");
     this.stdoutBuf = parts.pop() ?? "";
     for (const line of parts) {
+      // §write/call id correlation: check pending cmds on every NDJSON line.
+      if (pendingCmds.size > 0) {
+        for (const [id, resolve] of pendingCmds) {
+          const m = parseResultFrame(line, id);
+          if (m.match) { pendingCmds.delete(id); resolve(m.frame); break; }
+        }
+      }
       const f = parseFrame(line);
       if (!f) continue;
       // §11.6: the first machine frame (signals|sample|error) unblocks start().
@@ -310,3 +346,44 @@ export class TraceSession {
 let active: TraceSession | null = null;
 export function getActiveSession(): TraceSession | null { return active; }
 export function setActiveSession(s: TraceSession | null): void { active = s; }
+
+// ── §write/call public API ────────────────────────────────────────────────────
+
+export async function traceWrite(writes: string[]): Promise<{ ok: boolean; results?: any[]; error?: string }> {
+  const session = active;
+  const stdin = session?.isRunning() ? (session as any).proc?.stdin as NodeJS.WritableStream | undefined : undefined;
+  if (stdin) {
+    const id = nextCmdId();
+    const frame = await sendAndAwait(stdin, writeStdinCmd(id, writes), id, 8000);
+    if (!frame) return { ok: false, error: "write timed out (no result frame)" };
+    return { ok: frame.ok, results: frame.results };
+  }
+  // one-shot fallback
+  let out = "";
+  await runArgvStream(resolvedPython(), [daemonPath(), ...buildWriteArgv(resolvedElf(), writes)],
+    process.cwd(), (s, l) => { if (s === "stdout") out += l + "\n"; }, 30_000);
+  return parseOneShot(out, "write_result");
+}
+
+export async function traceCall(
+  func: string, args: number[], confirm: boolean, retType: string, timeout: number,
+): Promise<{ ok: boolean; r0?: number; decoded?: any; error?: string }> {
+  const session = active;
+  const stdin = session?.isRunning() ? (session as any).proc?.stdin as NodeJS.WritableStream | undefined : undefined;
+  if (stdin) {
+    const id = nextCmdId();
+    const frame = await sendAndAwait(
+      stdin, callStdinCmd(id, func, args, confirm, retType, timeout),
+      id, Math.max(8000, timeout * 1000 + 4000),
+    );
+    if (!frame) return { ok: false, error: "call timed out (no result frame)" };
+    return frame;
+  }
+  // one-shot fallback
+  let out = "";
+  await runArgvStream(resolvedPython(),
+    [daemonPath(), ...buildCallArgv(resolvedElf(), func, args, confirm, retType, timeout)],
+    process.cwd(), (s, l) => { if (s === "stdout") out += l + "\n"; },
+    Math.round(timeout * 1000) + 30_000);
+  return parseOneShot(out, "call_result");
+}

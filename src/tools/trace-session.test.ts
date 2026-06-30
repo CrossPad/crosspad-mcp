@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { parseFrame, TraceSession } from "./trace-session.js";
+import { parseFrame, TraceSession, parseOneShot } from "./trace-session.js";
 
 describe("parseFrame", () => {
   it("parses a sample frame", () => {
@@ -270,6 +270,14 @@ describe("TraceSession.waitForFirstFrame() (§11.6)", () => {
     feed(s, '{"type":"error","error":"no debug probe detected (replug ST-Link)"}');
     const frame = await p;
     expect(frame).toMatchObject({ type: "error", error: expect.stringContaining("no debug probe") });
+  });
+});
+
+describe("parseOneShot", () => {
+  it("picks the last matching frame", () => {
+    const out = 'noise\n{"type":"write_result","ok":true,"results":[]}\n';
+    expect(parseOneShot(out, "write_result")).toEqual({ type: "write_result", ok: true, results: [] });
+    expect(parseOneShot("garbage", "write_result").ok).toBe(false);
   });
 });
 
