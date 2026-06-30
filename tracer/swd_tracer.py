@@ -737,6 +737,49 @@ def _resolve_raw(spec):
         elems.append({"name": nm, "address": a, "size": size, "encoding": enc})
     return {"n": count, "elems": elems}
 
+def _parse_value(text, encoding, size):
+    """Parse the RHS literal per the target encoding. int: hex 0x.. or decimal
+    (range-checked to the byte size, two's-complement for signed); float: f32."""
+    text = text.strip()
+    if encoding == "float":
+        return float(text)
+    v = int(text, 0)  # 0x.. hex or decimal
+    bits = size * 8
+    if encoding in ("int", "char"):
+        lo, hi = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+        if not (lo <= v <= hi):
+            raise ValueError("value out of range for i%d" % bits)
+        if v < 0:
+            v &= (1 << bits) - 1  # store two's-complement
+    else:
+        if not (0 <= v < (1 << bits)):
+            raise ValueError("value out of range for u%d" % bits)
+    return v
+
+def _parse_write_spec(spec, table):
+    """'target=value' -> resolved write descriptor (see Interfaces)."""
+    if "=" not in spec:
+        return {"ok": False, "spec": spec, "error": "missing '=' (use target=value)"}
+    left, right = spec.split("=", 1)
+    left, right = left.strip(), right.strip()
+    # Resolve the LHS address/size/encoding using the read resolvers.
+    raw = _resolve_raw(left)
+    if raw is not None:
+        if raw["n"] != 1:
+            return {"ok": False, "spec": spec,
+                    "error": "block write unsupported; write one element"}
+        d = raw["elems"][0]
+    else:
+        d = _resolve_spec(left, table)
+        if not d:
+            return {"ok": False, "spec": spec, "error": "unknown target: %s" % left}
+    try:
+        val = _parse_value(right, d["encoding"], d["size"])
+    except ValueError as e:
+        return {"ok": False, "spec": spec, "error": str(e)}
+    return {"ok": True, "name": left, "address": d["address"],
+            "size": d["size"], "encoding": d["encoding"], "value": val}
+
 def _resolve_specs(specs, table):
     """Resolve a list of specs, applying §1.1 array/vector/matrix expansion.
 
