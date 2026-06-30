@@ -805,6 +805,66 @@ def _check_allowed(addr, size, ram_regions=None):
             return None
     return "0x%08X outside write allowlist (Code region / unmapped is blocked)" % addr
 
+def _ram_regions_from(session):
+    """Best-effort (lo,hi) inclusive RAM ranges from the pyOCD memory map; None if
+    the (generic) target exposes none."""
+    try:
+        mm = session.target.get_memory_map()
+        rams = [(r.start, r.end) for r in mm if r.type.name.lower() == "ram"]
+        return rams or None
+    except Exception:
+        return None
+
+_WSIZE = {1: "write8", 2: "write16", 4: "write32"}
+_RSIZE = {1: "read8", 2: "read16", 4: "read32"}
+
+def do_write(target, descriptors, ram_regions):
+    """Apply each resolved write non-halting; read-back old/new for confirmation."""
+    out = []
+    for d in descriptors:
+        if not d.get("ok"):
+            out.append({"name": d.get("name", d.get("spec")), "ok": False,
+                        "error": d["error"]})
+            continue
+        addr, size = d["address"], d["size"]
+        guard = _check_allowed(addr, size, ram_regions)
+        if guard:
+            out.append({"name": d["name"], "address": addr, "size": size,
+                        "ok": False, "error": "write blocked: " + guard})
+            continue
+        try:
+            old = getattr(target, _RSIZE[size])(addr)
+            getattr(target, _WSIZE[size])(addr, d["value"] & ((1 << (size * 8)) - 1))
+            new = getattr(target, _RSIZE[size])(addr)
+            out.append({"name": d["name"], "address": addr, "size": size,
+                        "ok": True, "old": old, "new": new})
+        except Exception as e:
+            out.append({"name": d["name"], "address": addr, "size": size,
+                        "ok": False, "error": str(e)})
+    return out
+
+def cmd_write(args):
+    specs = [s for s in args.writes.split(";") if s.strip()]
+    try:
+        table = build_symbol_table(args.elf)
+    except Exception as e:
+        print(json.dumps({"type": "error", "error": "ELF/DWARF error: %s" % e}), flush=True)
+        return
+    descriptors = [_parse_write_spec(s, table) for s in specs]
+    session, cerr, _ = _try_open_session(args.probe, args.target, args.connect_timeout)
+    if session is None:
+        print(json.dumps({"type": "write_result", "ok": False, "error": cerr,
+                          "results": []}), flush=True)
+        return
+    try:
+        results = do_write(session.target, descriptors, _ram_regions_from(session))
+    finally:
+        try: session.close()
+        except Exception: pass
+    print(json.dumps({"type": "write_result",
+                      "ok": all(r["ok"] for r in results) if results else False,
+                      "results": results}), flush=True)
+
 def _resolve_specs(specs, table):
     """Resolve a list of specs, applying §1.1 array/vector/matrix expansion.
 
@@ -1203,6 +1263,14 @@ def main():
                     help="§11.1: hard cap (s) on probe connect for the one-shot device-state "
                          "read. Reports inaccessible on timeout/no-probe. Default 6.")
     dp.set_defaults(func=cmd_device_state)
+
+    wp = sub.add_parser("write")
+    wp.add_argument("--elf", required=True)
+    wp.add_argument("--writes", required=True, help="';'-separated target=value specs")
+    wp.add_argument("--probe", default=None)
+    wp.add_argument("--target", default="cortex_m")
+    wp.add_argument("--connect-timeout", type=float, default=6.0)
+    wp.set_defaults(func=cmd_write)
 
     args = ap.parse_args()
     args.func(args)
