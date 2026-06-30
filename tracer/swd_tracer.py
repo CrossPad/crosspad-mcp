@@ -695,6 +695,48 @@ def _expand_spec(spec, table):
     specs = [_spec_name(base, p) for p in parts_lists]
     return specs, len(specs)
 
+# Raw absolute-address spec (PROTOCOL §1.2): read MCU memory straight by address
+# with no DWARF symbol — for peripheral registers / arbitrary RAM. Because there
+# is no type to infer size/encoding from, the type tag is explicit (default u32).
+#   @0x40021000          -> u32 at 0x40021000
+#   @0x40021000:u16      -> u8|u16|u32 / i8|i16|i32 / f32
+#   @0x20000000:u8[16]   -> 16 consecutive elements (expands like an array)
+_RAW_RE = re.compile(
+    r"^@(0[xX][0-9A-Fa-f]+|\d+)"        # 1: address (hex 0x… or decimal)
+    r"(?::([uif](?:8|16|32)))?"          # 2: optional type tag
+    r"(?:\[(\d+)\])?$")                  # 3: optional element count
+_RAW_TYPE = {
+    "u8": ("uint", 1), "u16": ("uint", 2), "u32": ("uint", 4),
+    "i8": ("int", 1),  "i16": ("int", 2),  "i32": ("int", 4),
+    "f32": ("float", 4),
+}
+
+def _resolve_raw(spec):
+    """Resolve a raw @address spec.
+
+    Returns None when `spec` is not a raw spec at all (no leading '@'), so the
+    caller falls through to DWARF symbol resolution.  Otherwise returns
+    {"n": count, "elems": [{name,address,size,encoding}, ...]} — a malformed raw
+    spec yields n=0/elems=[] (reported unresolved by the caller).
+    """
+    if not spec.startswith("@"):
+        return None
+    m = _RAW_RE.match(spec)
+    if not m:
+        return {"n": 0, "elems": []}  # looks raw but malformed
+    addr = int(m.group(1), 0)
+    tname = m.group(2) or "u32"
+    enc, size = _RAW_TYPE[tname]
+    count = int(m.group(3)) if m.group(3) else 1
+    elems = []
+    for i in range(count):
+        a = addr + i * size
+        # Single element keeps the user's spec verbatim as its name; an expanded
+        # block re-renders each element's concrete address so names stay unique.
+        nm = spec if count == 1 else "@0x%X:%s" % (a, tname)
+        elems.append({"name": nm, "address": a, "size": size, "encoding": enc})
+    return {"n": count, "elems": elems}
+
 def _resolve_specs(specs, table):
     """Resolve a list of specs, applying §1.1 array/vector/matrix expansion.
 
@@ -708,6 +750,16 @@ def _resolve_specs(specs, table):
     """
     resolved, unresolved = [], []
     for spec in specs:
+        # §1.2: raw @address specs bypass DWARF entirely.
+        raw = _resolve_raw(spec)
+        if raw is not None:
+            if raw["n"] > EXPAND_CAP:
+                unresolved.append("%s (expands to %d > %d)" % (spec, raw["n"], EXPAND_CAP))
+            elif raw["elems"]:
+                resolved.extend(raw["elems"])
+            else:
+                unresolved.append(spec)
+            continue
         elems, n = _expand_spec(spec, table)
         if n > EXPAND_CAP:
             unresolved.append("%s (expands to %d > %d)" % (spec, n, EXPAND_CAP))

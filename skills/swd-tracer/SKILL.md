@@ -115,6 +115,15 @@ browser immediately; `ui_open=none` disables both. Set the fallback delay with
 | `hpcd.Init.speed` | nested struct member |
 | `s_adc_raw` / `s_adc_raw[*]` | **whole array** → expands to every element |
 | `s_inputs[0:8]` | half-open slice → elements 0..7 |
+| `@0x40021000` | **raw address** (no DWARF) → one u32 at that address |
+| `@0x50000010:u16` | typed raw read — `u8 u16 u32 i8 i16 i32 f32` (default u32) |
+| `@0x20000000:u8[16]` | raw block → 16 consecutive elements (same 256 cap) |
+
+Raw `@address` specs read MCU memory directly — peripheral registers
+(`GPIOx->IDR`, `RCC->CR`) or any RAM the ELF has no symbol for; they need no
+symbol so they work even if `symbols` can't find the name. **Caution:** reads hit
+the AHB while the core runs — avoid registers with read-side-effects (data
+registers that clear flags / pop FIFOs on read).
 
 Expansion is capped at 256 elements. A spec that lands on an aggregate (struct
 with no trailing index) is reported as `unresolved`, not fatal. See

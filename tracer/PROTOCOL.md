@@ -57,6 +57,28 @@ bounds) for both the initial `--signals` set and live `add` commands.
 
 `encoding ∈ {int, uint, float, bool, char, uchar, address}`.
 
+## 1.2 Raw absolute-address specs
+
+A spec beginning with `@` reads MCU memory **straight by address**, bypassing
+DWARF entirely — for peripheral registers (e.g. `GPIOA->IDR`, `RCC->CR`) or any
+RAM the ELF has no symbol for. Because there is no type to infer width/encoding
+from, the type tag is explicit (default `u32`):
+
+| Form | Reads |
+|---|---|
+| `@0x40021000` | one u32 at `0x40021000` |
+| `@0x50000010:u16` | one u16; type ∈ `u8 u16 u32 i8 i16 i32 f32` |
+| `@0x20000000:u8[16]` | 16 consecutive elements (expands like an array; same **256** cap) |
+
+A single-element raw spec keeps your exact text as its signal name; an expanded
+block re-renders each element as `@0x<addr>:<type>` so names stay unique. A
+malformed raw spec (bad address/type/count) is reported in `unresolved`.
+
+**Caution:** reads go over the AHB while the core runs. Reading a register with
+read-side-effects (a peripheral data register that clears a flag on read, FIFO
+pops, etc.) will perturb firmware — point raw specs at status/config registers,
+not at volatile data registers, unless you intend the side effect.
+
 ## 2. Daemon stdin commands (Node → daemon, NDJSON)
 
 ```jsonc
