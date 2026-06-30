@@ -55,6 +55,21 @@
  .banner{padding:4px 10px;font-size:11px;border-bottom:1px solid #333;background:#1a1d22;color:#bb9}
  .banner.ended{background:#221a1a;color:#caa}
  .banner.live{display:none!important}
+ /* per-signal color swatch is now a clickable color input */
+ .sw{padding:0;border:1px solid #3a3a3a;cursor:pointer;background:none;vertical-align:middle}
+ .sw::-webkit-color-swatch-wrapper{padding:0}
+ .sw::-webkit-color-swatch{border:none;border-radius:2px}
+ .sw::-moz-color-swatch{border:none;border-radius:2px}
+ /* toolbar export group + kbd hint */
+ #bar .sep{width:1px;align-self:stretch;background:#333;margin:0 2px}
+ #bar .grp{display:inline-flex;gap:4px;align-items:center}
+ .hint{color:#666;font-size:10px}
+ kbd{background:#222;border:1px solid #444;border-bottom-width:2px;border-radius:3px;padding:0 4px;font:10px monospace;color:#bbb}
+ #noSigs{padding:8px 4px;color:#777;line-height:1.7;font-size:11px}
+ #noSigs b{color:#9c9;font-weight:normal}
+ #noSigs code{background:#1c1c1c;border:1px solid #2c2c2c;border-radius:3px;padding:0 4px;color:#cda}
+ /* canvas cursor: crosshair while hovering the plot */
+ canvas{cursor:crosshair}
 </style></head>
 <body>
 <div id="toast"></div>
@@ -86,6 +101,7 @@
      <select id="cfgYMode">
       <option value="shared">Shared auto-Y</option>
       <option value="norm">Per-signal normalized</option>
+      <option value="lanes">Lanes (logic)</option>
      </select></div>
    </div>
   </div>
@@ -93,15 +109,29 @@
   <div class="panel" id="p-sigs">
    <h3 data-tgl><span class="arrow">▾</span> Signals &amp; stats</h3>
    <div class="body"><table id="tbl"></table>
-    <div id="noSigs" class="muted" style="padding:4px">No signals watched.</div>
+    <div id="noSigs">
+     <b>No signals watched.</b><br>
+     Pick a <b>preset</b> above, or type a spec and press <kbd>Enter</kbd>:<br>
+     <code>s_vbat_mv</code>, <code>s_inputs[3]</code><br>
+     bit / field view: <code>@0x50000410:u16#5</code>, <code>port&amp;0x0F</code>
+    </div>
    </div>
   </div>
  </div>
 
  <div id="main">
   <div id="bar">
-   <button id="pause">Pause</button>
-   <button id="auto" title="Reset view to live trailing window">Reset view</button>
+   <button id="pause" title="Pause / resume plotting (Space)">Pause</button>
+   <button id="auto" title="Reset view to live trailing window (R)">Reset view</button>
+   <span class="sep"></span>
+   <span class="grp">
+    <button id="expPng" title="Save the current plot as a PNG image">PNG</button>
+    <button id="expCsv" title="Export visible-window samples as CSV">CSV</button>
+   </span>
+   <span class="sep"></span>
+   <span class="hint" title="Keyboard shortcuts">
+    <kbd>Space</kbd> pause · <kbd>R</kbd> reset · <kbd>F</kbd> full · wheel zoom · <kbd>⇧</kbd>+wheel Y
+   </span>
    <!-- Single global Fs readout (PROTOCOL §10): sample rate is a property of the
         whole trace, not per-signal, so it lives here in exactly one place. -->
    <span id="fs" class="muted" title="Trace sample rate (global)">Fs —</span>
@@ -275,6 +305,11 @@ function baseName(spec){
 const cfg={windowSec:15,full:false,maxSamples:100000,yMode:"shared"};
 
 let paused=false, viewT0=null, viewT1=null;
+/* Manual Y override for shared mode (Shift+wheel / Reset clears). null = auto. */
+let viewY0=null, viewY1=null;
+/* Crosshair: canvas-space mouse X while hovering the plot (null = not hovering).
+   Kept separate from the pan-drag state so panning doesn't fight the readout. */
+let hoverX=null, hoverY=null;
 
 /* ---------- global Fs (PROTOCOL §10) ----------
    Sample rate is a property of the whole trace. We estimate it ONCE, globally,
@@ -667,7 +702,7 @@ function buildTable(){
   const enc=s.encoding?` <span class="muted">${s.encoding}</span>`:"";
   tr.innerHTML=
    `<td colspan="2">`+
-    `<span class="sw" style="background:${s.color}"></span> `+
+    `<input type="color" class="sw" value="${hex6(s.color)}" data-n="${esc(n)}" title="signal color"> `+
     `<input type="checkbox" ${s.on?"checked":""} data-n="${esc(n)}" title="show/hide"> `+
     `<span class="signame" data-n="${esc(n)}">${esc(n)}</span>${enc} `+
     `<span class="rm" data-n="${esc(n)}" title="remove">×</span>`+
@@ -675,6 +710,10 @@ function buildTable(){
    `</td>`;
   tb.appendChild(tr);
  }
+ // wire color pickers
+ tb.querySelectorAll('input[type=color]').forEach(c=>c.oninput=()=>{
+  const s=sigs.get(c.dataset.n); if(s) s.color=c.value;
+ });
  // wire toggles
  tb.querySelectorAll('input[type=checkbox]').forEach(c=>c.onchange=()=>{
   const s=sigs.get(c.dataset.n); if(s) s.on=c.checked;
@@ -690,11 +729,77 @@ function buildTable(){
 function cssid(n){return n.replace(/[^a-z0-9]/gi,"_");}
 function esc(n){return n.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 function cssAttr(n){return n.replace(/"/g,'\\"');}
+/* Expand a #rgb / #rrggbb color to the 6-digit form an <input type=color>
+   requires (palette literals are 3-digit shorthand). Non-hex passes through a
+   safe default so the picker never shows blank. */
+function hex6(c){
+ if(typeof c!=="string")return "#4488ff";
+ let m=/^#([0-9a-f]{3})$/i.exec(c);
+ if(m){const s=m[1];return "#"+s[0]+s[0]+s[1]+s[1]+s[2]+s[2];}
+ if(/^#[0-9a-f]{6}$/i.test(c))return c;
+ return "#4488ff";
+}
 
 /* ---------- toolbar ---------- */
 const pauseBtn=document.getElementById("pause");
-pauseBtn.onclick=()=>{paused=!paused;pauseBtn.classList.toggle("active",paused);pauseBtn.textContent=paused?"Resume":"Pause";};
-document.getElementById("auto").onclick=()=>{viewT0=null;viewT1=null;};
+function togglePause(){paused=!paused;pauseBtn.classList.toggle("active",paused);pauseBtn.textContent=paused?"Resume":"Pause";}
+pauseBtn.onclick=togglePause;
+// Reset view: drop any manual time AND Y override → back to the live window.
+function resetView(){viewT0=null;viewT1=null;viewY0=null;viewY1=null;}
+document.getElementById("auto").onclick=resetView;
+
+/* ---------- export (PNG / CSV) ----------
+   PNG: snapshot the canvas as-rendered. CSV: wide format over the visible
+   window — sample frames share one timestamp across all signals (PROTOCOL §10),
+   so rows key on `t` and each signal is a column. */
+function downloadBlob(name,blob){
+ const a=document.createElement("a");
+ const u=URL.createObjectURL(blob);
+ a.href=u;a.download=name;document.body.appendChild(a);a.click();
+ setTimeout(()=>{a.remove();URL.revokeObjectURL(u);},0);
+}
+function tstamp(){const d=new Date();const p=n=>String(n).padStart(2,"0");
+ return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+"-"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
+document.getElementById("expPng").onclick=()=>{
+ try{ cv.toBlob(b=>{ if(b) downloadBlob("trace-"+tstamp()+".png",b); else toast("PNG export failed"); }); }
+ catch(_){ toast("PNG export failed"); }
+};
+document.getElementById("expCsv").onclick=()=>{
+ const names=[...sigs.keys()];
+ if(!names.length){ toast("nothing to export","info"); return; }
+ const [t0,t1]=curRange();
+ // union of visible timestamps across all signals (typically identical per frame)
+ const rowsByT=new Map();
+ for(const n of names){
+  for(const p of sigs.get(n).data){
+   if(p.t<t0||p.t>t1)continue;
+   let row=rowsByT.get(p.t); if(!row){row={};rowsByT.set(p.t,row);}
+   row[n]=p.v;
+  }
+ }
+ if(!rowsByT.size){ toast("no samples in view","info"); return; }
+ const ts=[...rowsByT.keys()].sort((a,b)=>a-b);
+ const esc=v=>{const s=String(v); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+ let csv="t,"+names.map(esc).join(",")+"\n";
+ for(const t of ts){
+  const row=rowsByT.get(t);
+  csv+=t+","+names.map(n=>n in row?row[n]:"").join(",")+"\n";
+ }
+ downloadBlob("trace-"+tstamp()+".csv",new Blob([csv],{type:"text/csv"}));
+};
+
+/* ---------- keyboard shortcuts ----------
+   Inert while typing in an input/select/textarea so spec entry is unaffected. */
+document.addEventListener("keydown",e=>{
+ const tag=(e.target&&e.target.tagName)||"";
+ if(/^(INPUT|SELECT|TEXTAREA)$/.test(tag))return;
+ if(e.metaKey||e.ctrlKey||e.altKey)return;
+ if(e.key===" "){ e.preventDefault(); togglePause(); }
+ else if(e.key==="r"||e.key==="R"){ resetView(); }
+ else if(e.key==="f"||e.key==="F"){
+  cfgFull.checked=!cfgFull.checked; cfgFull.onchange();
+ }
+});
 // Force-reconnect button (PROTOCOL §12.5): close + reopen the WS immediately.
 document.getElementById("reconnect").onclick=()=>forceReconnect();
 // If the tab was backgrounded and the socket died meanwhile, kick a retry as
@@ -703,19 +808,51 @@ document.addEventListener("visibilitychange",()=>{
  if(document.visibilityState==="visible" && !ws && connState!=="connected") forceReconnect();
 });
 
-/* ---------- zoom / pan (preserved) ---------- */
+/* ---------- zoom / pan ----------
+   Both wheel axes are honored ("obu kółek myszy"):
+     deltaY (vertical wheel) → zoom time around cursor; with Shift → zoom Y
+       (shared mode only — per-signal/lane modes auto-scale, so Y-zoom is N/A).
+     deltaX (horizontal/tilt wheel) → pan the time axis.
+   A 2-D scroll device can deliver both in one event; we apply each component
+   independently so diagonal scrolls do the intuitive thing. */
 cv.addEventListener("wheel",(e)=>{e.preventDefault();
- const [t0,t1]=curRange();const span=t1-t0;const f=e.deltaY<0?0.8:1.25;
- const cx=t0+span*(e.offsetX/cv.width);
- viewT0=cx-(cx-t0)*f;viewT1=cx+(t1-cx)*f;
+ const W=cv.width||1, H=cv.height||1;
+ const [t0,t1]=curRange();const span=(t1-t0)||1;
+ // --- vertical wheel ---
+ if(e.deltaY){
+  if(e.shiftKey && cfg.yMode==="shared"){
+   // zoom the shared Y axis around the cursor's value
+   const [y0,y1]=sharedYBounds(t0,t1);const yspan=(y1-y0)||1;
+   const f=e.deltaY<0?0.8:1.25;
+   const cy=y1-(e.offsetY/H)*yspan;          // value under cursor
+   viewY0=cy-(cy-y0)*f; viewY1=cy+(y1-cy)*f;
+  }else{
+   // zoom time around the cursor's timestamp
+   const f=e.deltaY<0?0.8:1.25;
+   const cx=t0+span*(e.offsetX/W);
+   viewT0=cx-(cx-t0)*f; viewT1=cx+(t1-cx)*f;
+  }
+ }
+ // --- horizontal wheel → pan time ---
+ if(e.deltaX){
+  const dt=(e.deltaX/W)*span;                // scroll-right advances time
+  const [a,b]=(viewT0!=null)?[viewT0,viewT1]:[t0,t1];
+  viewT0=a+dt; viewT1=b+dt;
+ }
 },{passive:false});
+
+/* Pan via left-drag (time axis). Drag state is separate from hover so the
+   crosshair readout keeps working between drags. */
 let drag=null;
 cv.addEventListener("mousedown",(e)=>drag={x:e.offsetX,r:curRange()});
 window.addEventListener("mouseup",()=>drag=null);
-cv.addEventListener("mousemove",(e)=>{if(!drag)return;
+cv.addEventListener("mousemove",(e)=>{
+ hoverX=e.offsetX; hoverY=e.offsetY;        // always track for the crosshair
+ if(!drag)return;
  const [t0,t1]=drag.r;const span=t1-t0;const dt=(e.offsetX-drag.x)/cv.width*span;
  viewT0=t0-dt;viewT1=t1-dt;
 });
+cv.addEventListener("mouseleave",()=>{ hoverX=null; hoverY=null; });
 
 /* ---------- visible time range ----------
    Full-history mode shows everything; otherwise the live trailing window
@@ -733,50 +870,161 @@ function curRange(){
  return[Math.max(lo,hi-cfg.windowSec),hi];
 }
 
+/* ---------- shared-mode Y bounds ----------
+   Manual override (Shift+wheel) wins; otherwise auto-fit visible data. Shared
+   by render() and the Y-zoom wheel handler so they never disagree. */
+function sharedYBounds(t0,t1){
+ if(viewY0!=null&&viewY1!=null)return[viewY0,viewY1];
+ let lo=Infinity,hi=-Infinity;
+ for(const[,s]of sigs){if(!s.on)continue;
+  for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<lo)lo=p.v;if(p.v>hi)hi=p.v;}}
+ if(!isFinite(lo)){lo=0;hi=1;}
+ if(hi===lo)hi=lo+1;            // avoid a zero-height span (flat signal)
+ return[lo,hi];
+}
+
+/* Binary-search the sample nearest a timestamp (data is time-sorted). Used for
+   the crosshair readout. Returns null for an empty series. */
+function nearestSample(d,t){
+ if(!d.length)return null;
+ if(t<=d[0].t)return d[0];
+ const last=d[d.length-1]; if(t>=last.t)return last;
+ let lo=0,hi=d.length-1;
+ while(lo<hi){const mid=(lo+hi)>>1; if(d[mid].t<t)lo=mid+1; else hi=mid;}
+ const b=d[lo],a=d[lo-1]||b;
+ return (t-a.t<=b.t-t)?a:b;
+}
+
+/* Stroke one signal's visible polyline. step=true → zero-order hold (hold the
+   previous value until the next timestamp), the truthful render for a polled
+   register and the logic-analyzer look in lane mode. */
+function plotPath(s,X,Y,t0,t1,step){
+ ctx.strokeStyle=s.color;ctx.lineWidth=1.25;ctx.beginPath();
+ const d=s.data;let first=true,py=0;
+ for(let i=0;i<d.length;i++){
+  const p=d[i]; if(p.t<t0||p.t>t1)continue;
+  const x=X(p.t),y=Y(p.v);
+  if(first){ctx.moveTo(x,y);first=false;}
+  else{ if(step)ctx.lineTo(x,py); ctx.lineTo(x,y); }
+  py=y;
+ }
+ ctx.stroke();
+}
+
+/* Lane (logic-analyzer) mode: stack each visible signal in its own horizontal
+   band, auto-scaled, step-rendered, with a colored name label. Returns the
+   `plotted` list ({n,s,Y}) so the crosshair overlay can place dots/values. */
+function renderLanesPath(visible,t0,t1,X,W,H){
+ const plotted=[];const n=visible.length; if(!n)return plotted;
+ const laneH=H/n, m=6;
+ for(let i=0;i<n;i++){
+  const [name,s]=visible[i];
+  const top=i*laneH, bot=(i+1)*laneH;
+  if(i>0){ctx.strokeStyle="#1c1c1c";ctx.lineWidth=1;
+   ctx.beginPath();ctx.moveTo(0,top+0.5);ctx.lineTo(W,top+0.5);ctx.stroke();}
+  let lo=Infinity,hi=-Infinity;
+  for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<lo)lo=p.v;if(p.v>hi)hi=p.v;}
+  if(!isFinite(lo)){lo=0;hi=1;} if(hi===lo)hi=lo+1;
+  const span=(hi-lo)||1;
+  const Y=(v)=>bot-m-((v-lo)/span)*(laneH-2*m);
+  plotPath(s,X,Y,t0,t1,true);
+  plotted.push({n:name,s,Y});
+  // colored lane label, top-left of the band
+  ctx.font="10px monospace";
+  const lw=ctx.measureText(name).width+6;
+  ctx.fillStyle="#000a";ctx.fillRect(2,top+2,lw,12);
+  ctx.fillStyle=s.color;ctx.fillText(name,5,top+11);
+ }
+ return plotted;
+}
+
+/* Crosshair + on-canvas legend overlay. Legend (top-left) always identifies
+   colors; while hovering it also shows each signal's value at the cursor time,
+   draws a dot on each curve, and a dashed vertical line + time label. */
+function drawOverlay(plotted,t0,t1,X,W,H){
+ const span=(t1-t0)||1;
+ const hover=hoverX!=null&&hoverX>=0&&hoverX<=W;
+ const hoverT=hover?t0+(hoverX/W)*span:null;
+ if(hover){
+  ctx.save();
+  ctx.strokeStyle="#888";ctx.lineWidth=1;ctx.setLineDash([4,3]);
+  ctx.beginPath();ctx.moveTo(hoverX+0.5,0);ctx.lineTo(hoverX+0.5,H);ctx.stroke();
+  ctx.setLineDash([]);
+  const tl=hoverT.toFixed(3)+"s"; ctx.font="10px monospace";
+  const tw=ctx.measureText(tl).width+6; let lx=hoverX+4; if(lx+tw>W)lx=hoverX-4-tw;
+  ctx.fillStyle="#000c";ctx.fillRect(lx,2,tw,13);
+  ctx.fillStyle="#bbb";ctx.fillText(tl,lx+3,12);
+  ctx.restore();
+ }
+ const rows=[];
+ for(const pl of plotted){
+  let val=null;
+  if(hover){
+   const p=nearestSample(pl.s.data,hoverT);
+   if(p){val=p.v; const x=X(p.t),y=pl.Y(p.v);
+    if(isFinite(x)&&isFinite(y)){
+     ctx.fillStyle=pl.s.color;ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fill();
+     ctx.strokeStyle="#000";ctx.lineWidth=1;ctx.stroke();
+    }}
+  }
+  rows.push({name:pl.n,color:pl.s.color,val});
+ }
+ if(!rows.length)return;
+ ctx.save();ctx.font="11px monospace";
+ let maxName=0;for(const r of rows)maxName=Math.max(maxName,ctx.measureText(r.name).width);
+ let maxVal=0;if(hover)for(const r of rows)maxVal=Math.max(maxVal,ctx.measureText(fmt(r.val)).width);
+ const pad=6,sw=9,gap=8,lh=14;
+ const boxW=pad+sw+5+maxName+(hover?gap+maxVal:0)+pad;
+ const boxH=pad+rows.length*lh+pad-2;
+ // top-right corner: avoids the left-edge Y-axis labels (shared) and the
+ // left-anchored lane labels (lanes mode).
+ const bx=W-boxW-6,by=6;
+ ctx.fillStyle="#000a";ctx.fillRect(bx,by,boxW,boxH);
+ ctx.strokeStyle="#2a2a2a";ctx.strokeRect(bx+0.5,by+0.5,boxW,boxH);
+ let y=by+pad+9;
+ for(const r of rows){
+  ctx.fillStyle=r.color;ctx.fillRect(bx+pad,y-8,sw,sw);
+  ctx.fillStyle="#ccc";ctx.fillText(r.name,bx+pad+sw+5,y);
+  if(hover){ctx.fillStyle="#fff";ctx.fillText(fmt(r.val),bx+pad+sw+5+maxName+gap,y);}
+  y+=lh;
+ }
+ ctx.restore();
+}
+
 /* ---------- render ---------- */
 function render(){
  requestAnimationFrame(render);
  ctx.clearRect(0,0,cv.width,cv.height);
  const [t0,t1]=curRange();const span=(t1-t0)||1;
  const W=cv.width,H=cv.height;
-
- // shared Y bounds (used in shared mode)
- let ylo=Infinity,yhi=-Infinity;
- for(const[,s]of sigs){if(!s.on)continue;
-  for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<ylo)ylo=p.v;if(p.v>yhi)yhi=p.v;}}
- if(!isFinite(ylo)){ylo=0;yhi=1;}
- const yspan=(yhi-ylo)||1;
-
  const X=(t)=>(t-t0)/span*W;
- const sharedY=(v)=>H-(v-ylo)/yspan*H;
+ const visible=[...sigs].filter(([,s])=>s.on);
 
- // gridlines + axis labels
- drawGrid(t0,t1,W,H,ylo,yhi);
-
- // plot each signal
- for(const[n,s] of sigs){
-  if(!s.on)continue;
-  // per-signal normalized Y: each signal maps its own min..max to 0..1.
-  let Y=sharedY;
-  if(cfg.yMode==="norm"){
-   let smn=Infinity,smx=-Infinity;
-   for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<smn)smn=p.v;if(p.v>smx)smx=p.v;}
-   if(!isFinite(smn)){smn=0;smx=1;}
-   const ss=(smx-smn)||1;
-   Y=(v)=>H-((v-smn)/ss)*(H-8)-4; // small margins so flat lines stay visible
+ let plotted;
+ if(cfg.yMode==="lanes"){
+  drawGrid(t0,t1,W,H,0,1);            // time grid only (horizontal lines guarded to shared mode)
+  plotted=renderLanesPath(visible,t0,t1,X,W,H);
+ }else{
+  const [ylo,yhi]=sharedYBounds(t0,t1);
+  const yspan=(yhi-ylo)||1;
+  const sharedY=(v)=>H-(v-ylo)/yspan*H;
+  drawGrid(t0,t1,W,H,ylo,yhi);
+  plotted=[];
+  for(const[n,s] of visible){
+   let Y=sharedY;
+   if(cfg.yMode==="norm"){
+    let smn=Infinity,smx=-Infinity;
+    for(const p of s.data){if(p.t<t0||p.t>t1)continue;if(p.v<smn)smn=p.v;if(p.v>smx)smx=p.v;}
+    if(!isFinite(smn)){smn=0;smx=1;}
+    const ss=(smx-smn)||1;
+    Y=(v)=>H-((v-smn)/ss)*(H-8)-4; // small margins so flat lines stay visible
+   }
+   plotPath(s,X,Y,t0,t1,false);
+   plotted.push({n,s,Y});
   }
-  ctx.strokeStyle=s.color;ctx.lineWidth=1;ctx.beginPath();
-  let first=true;
-  const d=s.data;
-  for(let i=0;i<d.length;i++){
-   const p=d[i]; if(p.t<t0||p.t>t1)continue;
-   const x=X(p.t),y=Y(p.v);
-   first?ctx.moveTo(x,y):ctx.lineTo(x,y); first=false;
-  }
-  ctx.stroke();
  }
 
- // update per-signal stats readouts (throttled)
+ drawOverlay(plotted,t0,t1,X,W,H);
  updateStats(t0,t1);
 }
 
