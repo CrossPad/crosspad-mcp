@@ -16,6 +16,14 @@ export function toggleFull(){
   applyFull();
 }
 
+/* Reflect a new visible window width (e.g. from wheel-zoom) into cfg + the input
+   so the "Trailing window" field never goes stale while zooming. */
+export function setWindow(sec){
+  if(!(sec>0))return;
+  cfg.windowSec=sec;
+  if(cfgWindow) cfgWindow.value = sec<10 ? sec.toFixed(1) : String(Math.round(sec));
+}
+
 export function initConfig(){
   cfgWindow=document.getElementById("cfgWindow");
   cfgFull=document.getElementById("cfgFull");

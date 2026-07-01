@@ -5,6 +5,7 @@
 import { state, sigs, cfg } from "./state.js";
 import { fmt, nearestSample } from "./util.js";
 import { updateStats } from "./stats.js";
+import { setWindow } from "./config.js";
 
 let cv=null, ctx=null;
 
@@ -50,15 +51,19 @@ function valueBounds(){
   return[lo,hi];
 }
 
-/* Clamp a manual [a,b] override against data [lo,hi]: never wider than the data
-   (snap to full), never panned past either edge. Returns clamped [a,b] or null
-   when there's nothing to clamp. */
+/* Clamp a manual [a,b] override against data [lo,hi]. A small overscroll margin
+   (a fraction of the view span) is allowed past each end so the user SEES a bit
+   of empty space at the edge — a clear "nothing here" instead of the pan
+   appearing to lock for no reason. Returns clamped [a,b] or null. */
+const OVERSCROLL=0.08;
 function clampSpan(a,b,lo,hi){
   if(a==null||!isFinite(lo)||hi<=lo)return null;
   const span=b-a; if(!(span>0))return null;
-  if(span>=hi-lo)return[lo,hi];          // can't zoom out past all data
-  if(a<lo){ a=lo; b=lo+span; }
-  if(b>hi){ b=hi; a=hi-span; }
+  const ov=span*OVERSCROLL;
+  const LO=lo-ov, HI=hi+ov;              // edges may sit one margin past the data
+  if(span>=HI-LO)return[LO,HI];          // zoomed out past data+margins → snap
+  if(a<LO){ a=LO; b=LO+span; }
+  if(b>HI){ b=HI; a=HI-span; }
   return[a,b];
 }
 
@@ -113,10 +118,16 @@ function renderLanesPath(visible,t0,t1,X,W,H){
     const stepMode = allInt && (hi-lo)<=16;   // discrete → staircase; analog → linear
     plotPath(s,X,Y,t0,t1,stepMode);
     plotted.push({n:name,s,Y});
+    // top-left: lane max value (muted) + signal name (colored); bottom-left: min.
     ctx.font=`${10*S}px monospace`;
-    const lw=ctx.measureText(name).width+6*S;
-    ctx.fillStyle="#000a";ctx.fillRect(2*S,top+2*S,lw,12*S);
-    ctx.fillStyle=s.color;ctx.fillText(name,5*S,top+11*S);
+    const hiTxt=fmt(hi), loTxt=fmt(lo);
+    const hiW=ctx.measureText(hiTxt).width, nameW=ctx.measureText(name).width;
+    ctx.fillStyle="#000a";ctx.fillRect(2*S,top+2*S,hiW+6*S+nameW+6*S,12*S);
+    ctx.fillStyle="#888";ctx.fillText(hiTxt,4*S,top+11*S);
+    ctx.fillStyle=s.color;ctx.fillText(name,4*S+hiW+6*S,top+11*S);
+    const loW=ctx.measureText(loTxt).width;
+    ctx.fillStyle="#000a";ctx.fillRect(2*S,bot-13*S,loW+4*S,12*S);
+    ctx.fillStyle="#888";ctx.fillText(loTxt,4*S,bot-4*S);
   }
   return plotted;
 }
@@ -299,6 +310,7 @@ export function initPlot(){
         const cx=t0+span*(e.offsetX/W);
         state.viewT0=cx-(cx-t0)*f; state.viewT1=cx+(t1-cx)*f;
         clampViewTime();
+        setWindow(state.viewT1-state.viewT0);   // keep the Trailing window field in sync
       }
     }
     if(e.deltaX){
