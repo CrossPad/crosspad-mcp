@@ -30,11 +30,12 @@ repo_check() { # $1 = env var name, $2 = default subdir, $3 = label
     info "$3 not at $val — set \$$1 if it lives elsewhere"
   fi
 }
-repo_check CROSSPAD_PC_ROOT      crosspad-pc   "crosspad-pc (PC sim)"
-repo_check CROSSPAD_IDF_ROOT     platform-idf  "platform-idf (ESP-IDF)"
-repo_check CROSSPAD_ARDUINO_ROOT ESP32-S3      "ESP32-S3 (Arduino)"
-repo_check CROSSPAD_CORE_ROOT    crosspad-core "crosspad-core"
-repo_check CROSSPAD_GUI_ROOT     crosspad-gui  "crosspad-gui"
+repo_check CROSSPAD_PC_ROOT      crosspad-pc         "crosspad-pc (PC sim)"
+repo_check CROSSPAD_IDF_ROOT     platform-idf        "platform-idf (ESP-IDF)"
+repo_check CROSSPAD_ARDUINO_ROOT ESP32-S3            "ESP32-S3 (Arduino)"
+repo_check CROSSPAD_CORE_ROOT    crosspad-core       "crosspad-core"
+repo_check CROSSPAD_GUI_ROOT     crosspad-gui        "crosspad-gui"
+repo_check CROSSPAD_STM_ROOT     CrossPad_STM32_r20  "CrossPad_STM32_r20 (STM32)"
 
 # 3. Toolchains (best-effort, informational)
 command -v cmake  >/dev/null 2>&1 && ok "cmake present" || info "cmake not found (needed for PC build)"
@@ -47,19 +48,37 @@ if command -v claude >/dev/null 2>&1; then
   if claude mcp list 2>/dev/null | grep -qi crosspad; then
     ok "crosspad MCP server registered with Claude"
   else
-    miss "crosspad MCP server not registered — run scripts/setup.sh or: claude mcp add crosspad -- npx -y crosspad-mcp-server"
+    miss "crosspad MCP server not registered — run scripts/setup.sh (prefer this over bare 'npx -y crosspad-mcp-server', which has crashed Claude Code's MCP client on some machines — see reference/faq.md)"
   fi
 else
   info "claude CLI not found — can't check MCP registration"
 fi
 
-# 5. Local server build (only relevant when run from inside the repo)
+# 5. Local server build + staleness (only relevant when run from inside the repo)
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$SKILL_DIR/../.." 2>/dev/null && pwd)"
 if [ -f "$REPO_ROOT/package.json" ] && grep -q '"crosspad-mcp-server"' "$REPO_ROOT/package.json" 2>/dev/null; then
-  if [ -f "$REPO_ROOT/dist/index.js" ]; then ok "server built: $REPO_ROOT/dist/index.js"
-  else miss "server not built — run 'npm run build' in $REPO_ROOT"; fi
+  if [ -f "$REPO_ROOT/dist/index.js" ]; then
+    ok "server built: $REPO_ROOT/dist/index.js"
+    # Best-effort staleness check: any src/ file newer than dist/index.js means
+    # `npm run build` hasn't run since — the #1 recurring false alarm in this
+    # project ("I fixed it and it's still broken") is a stale dist PLUS a
+    # session that was already connected before the rebuild. This can only
+    # catch the first half; a restart is still needed after building.
+    NEWER_SRC="$(find "$REPO_ROOT/src" -newer "$REPO_ROOT/dist/index.js" -name '*.ts' 2>/dev/null | head -1)"
+    if [ -n "$NEWER_SRC" ]; then
+      miss "dist/ is STALE — $NEWER_SRC is newer than dist/index.js. Run 'npm run build', then restart any connected Claude Code session (it won't hot-reload)."
+    else
+      info "dist/ is up to date with src/ — if a fix still doesn't seem to apply, restart the Claude Code session (server keeps old dist in memory until then)"
+    fi
+  else
+    miss "server not built — run 'npm run build' in $REPO_ROOT"
+  fi
 fi
+
+# 6. .mcp.json scan across known repos — flags the npx crash pattern (read-only)
+echo
+bash "$SKILL_DIR/scripts/fix-mcp-json.sh" || true
 
 echo "== done =="
 echo "Next: read reference/install.md (setup) or reference/role-*.md (your role). For trace: swd-tracer skill."

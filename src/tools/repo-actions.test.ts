@@ -170,4 +170,122 @@ describe("repo-actions module", () => {
       expect(result.error).toContain("Nothing staged");
     });
   });
+
+  describe("vendored crosspad-core / crosspad-gui resolution", () => {
+    it("resolves unambiguously when exactly one vendored copy exists", async () => {
+      vi.doMock("../config.js", () => ({
+        getRepos: () => ({
+          "platform-idf": "/home/user/GIT/platform-idf",
+        }),
+        CROSSPAD_PC_ROOT: "/home/user/GIT/crosspad-pc",
+        CROSSPAD_IDF_ROOT: "/home/user/GIT/platform-idf",
+        findVendoredCopies: (name: string) =>
+          name === "crosspad-gui"
+            ? [{ parentRepo: "platform-idf", path: "/home/user/GIT/platform-idf/components/crosspad-gui" }]
+            : [],
+      }));
+
+      vi.doMock("../utils/exec.js", () => ({
+        runCommand: vi.fn(() => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
+      }));
+
+      vi.doMock("child_process", () => ({
+        spawnSync: vi.fn((cmd: string, args: string[]) => {
+          if (cmd === "git" && args[0] === "status") {
+            return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
+          }
+          if (cmd === "git" && args[0] === "diff" && args.includes("--cached")) {
+            return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
+          }
+          return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
+        }),
+      }));
+
+      vi.doMock("../utils/git.js", () => ({
+        getHead: vi.fn(() => "abc1234"),
+        listSubmodules: vi.fn(() => []),
+        findSubmodulePath: vi.fn(() => null),
+      }));
+
+      vi.doMock("fs", () => ({
+        default: {
+          existsSync: () => true,
+          mkdtempSync: vi.fn(() => "/tmp/crosspad-mock"),
+          writeFileSync: vi.fn(),
+          rmSync: vi.fn(),
+        },
+      }));
+
+      const { crosspadCommit } = await import("./repo-actions.js");
+      const result = crosspadCommit("gui", "test commit");
+      // The single vendored copy resolved (repo name came back canonicalized,
+      // and we got past "unknown repo" into the normal staging check).
+      expect(result.repo).toBe("crosspad-gui");
+      expect(result.error).not.toContain("Unknown repo");
+      expect(result.error).not.toContain("vendored");
+    });
+
+    it("explains the ambiguity (with every copy's path) when multiple vendored copies exist", async () => {
+      vi.doMock("../config.js", () => ({
+        getRepos: () => ({
+          "platform-idf": "/home/user/GIT/platform-idf",
+          "crosspad-pc": "/home/user/GIT/crosspad-pc",
+        }),
+        CROSSPAD_PC_ROOT: "/home/user/GIT/crosspad-pc",
+        CROSSPAD_IDF_ROOT: "/home/user/GIT/platform-idf",
+        findVendoredCopies: (name: string) =>
+          name === "crosspad-core"
+            ? [
+                { parentRepo: "platform-idf", path: "/home/user/GIT/platform-idf/components/crosspad-core" },
+                { parentRepo: "crosspad-pc", path: "/home/user/GIT/crosspad-pc/lib/crosspad-core" },
+              ]
+            : [],
+      }));
+
+      vi.doMock("../utils/exec.js", () => ({
+        runCommand: vi.fn(() => ({ success: false, stdout: "", stderr: "", exitCode: 1, durationMs: 0 })),
+      }));
+      vi.doMock("../utils/git.js", () => ({
+        getHead: vi.fn(() => null),
+        listSubmodules: vi.fn(() => []),
+        findSubmodulePath: vi.fn(() => null),
+      }));
+      vi.doMock("fs", () => ({ default: { existsSync: () => false } }));
+
+      const { crosspadCommit } = await import("./repo-actions.js");
+      const result = crosspadCommit("core", "test commit");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("vendored");
+      expect(result.error).toContain("platform-idf");
+      expect(result.error).toContain("crosspad-pc");
+      expect(result.error).toContain("CROSSPAD_CORE_ROOT");
+    });
+
+    it("falls back to the generic unknown-repo message when no vendored copies exist either", async () => {
+      vi.doMock("../config.js", () => ({
+        getRepos: () => ({
+          "platform-idf": "/home/user/GIT/platform-idf",
+        }),
+        CROSSPAD_PC_ROOT: "/home/user/GIT/crosspad-pc",
+        CROSSPAD_IDF_ROOT: "/home/user/GIT/platform-idf",
+        findVendoredCopies: () => [],
+      }));
+
+      vi.doMock("../utils/exec.js", () => ({
+        runCommand: vi.fn(() => ({ success: false, stdout: "", stderr: "", exitCode: 1, durationMs: 0 })),
+      }));
+      vi.doMock("../utils/git.js", () => ({
+        getHead: vi.fn(() => null),
+        listSubmodules: vi.fn(() => []),
+        findSubmodulePath: vi.fn(() => null),
+      }));
+      vi.doMock("fs", () => ({ default: { existsSync: () => false } }));
+
+      const { crosspadCommit } = await import("./repo-actions.js");
+      const result = crosspadCommit("gui", "test commit");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Unknown repo");
+      expect(result.error).toContain("Available:");
+    });
+  });
 });

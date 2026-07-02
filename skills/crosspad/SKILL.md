@@ -48,6 +48,7 @@ for a global install, or `<crosspad-mcp>/skills/crosspad/scripts/` in the repo/p
 | I'm a **crosspad-mcp contributor** (server `src/`, add a tool, dev/build/test) | `reference/role-contributor.md` |
 | Which tool do I use for a task? | `reference/tools.md` |
 | Something is broken / a tool errors | `reference/faq.md` |
+| I just learned something non-obvious — where do I record it? | `reference/memory.md` |
 | Trace firmware variables in real time over SWD (ST-Link) | use the **`swd-tracer`** skill |
 
 ## Conventions

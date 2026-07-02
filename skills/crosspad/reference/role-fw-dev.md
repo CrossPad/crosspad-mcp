@@ -19,6 +19,18 @@ across repos instead of raw shell.
 - **crosspad-core** owns the interfaces; platforms (crosspad-pc, platform-idf,
   ESP32-S3) implement them. Add behavior at the right layer — shared logic in core,
   platform specifics in the platform repo. See `reference/repos.md`.
+- **crosspad-core/crosspad-gui are vendored in three separate, unlinked
+  checkouts** (one per platform repo). A change in one does not propagate —
+  `reference/repos.md` has the full warning and how to check which checkout
+  a given build target actually compiles. Check this *before* concluding a
+  change "isn't taking effect."
+- **You're often working across a hardware boundary, not just a software
+  one.** CrossPad_STM32_r20 (STM32) and platform-idf/ESP32-S3 (ESP32) are
+  two separate MCUs — a symptom that looks like it's on "your" side may
+  actually be owned by the other. If you're not sure which repo owns a
+  symptom, check both repos' `CLAUDE.md` before fixing anything; guessing
+  wrong and fixing the wrong repo is a real, previously-observed failure
+  mode here, not a hypothetical one.
 - The **PC simulator** is the fastest verify loop: build/run/screenshot/input on the
   host (`reference/role-user.md`) before touching hardware.
 

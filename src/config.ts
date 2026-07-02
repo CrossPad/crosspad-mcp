@@ -210,3 +210,55 @@ export function resolveCrosspadCore(): string | null {
   cachedCrosspadCorePath = null;
   return null;
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// VENDORED SHARED-LIB DISCOVERY — crosspad-core / crosspad-gui are vendored
+// as separate, unlinked submodule checkouts in each platform repo (see
+// reference/repos.md "triple checkout" warning). Callers that need to WRITE
+// to one of these (e.g. crosspad_commit) must know ALL copies exist rather
+// than silently picking one — picking wrong silently reintroduces the exact
+// "edited the wrong checkout" trap this ecosystem has already hit.
+// ═══════════════════════════════════════════════════════════════════════
+
+export interface VendoredCopy {
+  /** Which platform repo embeds this copy, e.g. "platform-idf". */
+  parentRepo: string;
+  /** Absolute path to the vendored submodule checkout. */
+  path: string;
+}
+
+/**
+ * Find every on-disk checkout of a vendored shared library ("crosspad-core"
+ * or "crosspad-gui") across all known platform repos, via each repo's
+ * .gitmodules. Does NOT include a standalone $CROSSPAD_*_ROOT checkout —
+ * callers should check that separately (it's the unambiguous case).
+ */
+export function findVendoredCopies(name: "crosspad-core" | "crosspad-gui"): VendoredCopy[] {
+  const found: VendoredCopy[] = [];
+  const parents: Array<[string, string]> = [
+    ["platform-idf", CROSSPAD_IDF_ROOT],
+    ["crosspad-pc", CROSSPAD_PC_ROOT],
+    ["ESP32-S3", CROSSPAD_ARDUINO_ROOT],
+  ];
+
+  for (const [label, parentRoot] of parents) {
+    const subs = readSubmodulePathsFromGitmodules(parentRoot);
+    let subPath = subs[name] ?? null;
+    if (!subPath) {
+      for (const [, p] of Object.entries(subs)) {
+        if (path.basename(p) === name) {
+          subPath = p;
+          break;
+        }
+      }
+    }
+    if (!subPath) continue;
+
+    const full = path.join(parentRoot, subPath);
+    if (fs.existsSync(path.join(full, ".git"))) {
+      found.push({ parentRepo: label, path: full });
+    }
+  }
+
+  return found;
+}

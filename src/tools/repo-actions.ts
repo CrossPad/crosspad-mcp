@@ -8,7 +8,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { getRepos, CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT } from "../config.js";
+import { getRepos, CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT, findVendoredCopies, VendoredCopy } from "../config.js";
 import { runCommand } from "../utils/exec.js";
 import { spawnSync } from "child_process";
 
@@ -70,6 +70,18 @@ const REPO_ALIASES: Record<string, string> = {
   gui: "crosspad-gui",
 };
 
+const VENDORED_LIB_NAMES = new Set(["crosspad-core", "crosspad-gui"]);
+
+/**
+ * Resolve a repo name to a working directory. For "crosspad-core"/"crosspad-gui"
+ * there is no single answer when no standalone $CROSSPAD_*_ROOT is
+ * configured — those libs are vendored as separate checkouts inside each
+ * platform repo (see config.ts findVendoredCopies). If exactly one vendored
+ * copy exists on disk, resolve to it unambiguously. If more than one exists,
+ * refuse to guess — return null so the caller surfaces
+ * explainUnresolvedRepo()'s detailed, per-copy error instead of silently
+ * committing to (or updating) the wrong checkout.
+ */
 function resolveRepo(repo: string): RepoInfo | null {
   const repos = getRepos();
   const canonical = REPO_ALIASES[repo] ?? repo;
@@ -78,11 +90,51 @@ function resolveRepo(repo: string): RepoInfo | null {
     return { name: canonical, root: repos[canonical] };
   }
 
+  if (VENDORED_LIB_NAMES.has(canonical)) {
+    const copies = findVendoredCopies(canonical as "crosspad-core" | "crosspad-gui");
+    if (copies.length === 1) {
+      return { name: canonical, root: copies[0].path };
+    }
+  }
+
   return null;
 }
 
 function getAvailableRepoNames(): string[] {
   return Object.keys(getRepos());
+}
+
+/**
+ * Build a detailed error for a repo name that didn't resolve. For
+ * crosspad-core/crosspad-gui with multiple vendored copies on disk, lists
+ * every copy so the caller can pick precisely — instead of a bare "unknown
+ * repo" that hides the real reason (ambiguity, not absence).
+ */
+function explainUnresolvedRepo(repo: string): string {
+  const canonical = REPO_ALIASES[repo] ?? repo;
+  const generic = `Unknown repo "${repo}". Available: ${getAvailableRepoNames().join(", ")}`;
+
+  if (!VENDORED_LIB_NAMES.has(canonical)) return generic;
+
+  const copies = findVendoredCopies(canonical as "crosspad-core" | "crosspad-gui");
+  if (copies.length === 0) return generic;
+
+  const list = copies.map((c: VendoredCopy) => `  - ${c.parentRepo}: ${c.path}`).join("\n");
+  const envVar = canonical === "crosspad-core" ? "CROSSPAD_CORE_ROOT" : "CROSSPAD_GUI_ROOT";
+  return (
+    `"${canonical}" is not a standalone checkout on this machine — it's vendored ` +
+    `as ${copies.length} separate, unlinked submodule checkouts:\n${list}\n` +
+    `These can be at different commits (dev-mode divergence), so picking one ` +
+    `automatically risks committing to the wrong copy. A parent repo's own ` +
+    `commit (repo="${copies[0].parentRepo}") only stages the submodule POINTER, ` +
+    `not file changes inside it — it cannot substitute for this. Set ${envVar} ` +
+    `to the exact checkout you mean (one of the paths above) and retry with ` +
+    `repo="${canonical}"; that commits inside the submodule itself. Afterwards, ` +
+    `the parent repo will show the submodule pointing at a new commit — stage ` +
+    `that pointer bump separately (\`crosspad_submodule_update\`, or a plain ` +
+    `\`git add <submodule-path>\` commit in the parent) if you want the parent ` +
+    `repo to track the update too.`
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -123,7 +175,7 @@ export function crosspadSubmoduleUpdate(
       commits_pulled: 0,
       changed_files: [],
       staged: false,
-      error: `Unknown repo "${repo}". Available: ${getAvailableRepoNames().join(", ")}`,
+      error: explainUnresolvedRepo(repo),
     };
   }
 
@@ -257,7 +309,7 @@ export function crosspadCommit(
       commit_hash: null,
       message,
       files_committed: [],
-      error: `Unknown repo "${repo}". Available: ${getAvailableRepoNames().join(", ")}`,
+      error: explainUnresolvedRepo(repo),
     };
   }
 
