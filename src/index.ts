@@ -29,6 +29,7 @@ import { crosspadInput } from "./tools/input.js";
 import { crosspadStats } from "./tools/stats.js";
 import { crosspadSettingsGet, crosspadSettingsSet } from "./tools/settings.js";
 import { crosspadMidiSend } from "./tools/midi.js";
+import { crosspadAudioRouteSet, crosspadAudioRouteQuery } from "./tools/audio-route.js";
 import {
   crosspadAppList,
   crosspadAppInstall,
@@ -353,6 +354,20 @@ const O_Midi = {
   type: z.enum(["note_on", "note_off", "cc", "program_change"]).optional(),
   channel: z.number().int().optional(),
   details: z.record(z.string(), z.number()).optional(),
+  ...ErrorField,
+};
+
+const O_AudioRoute = {
+  success: z.boolean(),
+  sent: z.array(z.string()).optional(),
+  state: z.object({
+    mic_src: z.number().int(),
+    adc_input: z.array(z.enum(["diff", "line1", "line2"])).length(2),
+    dac_output: z.array(z.enum(["line1", "line2", "all"])).length(2),
+    volume: z.array(z.number().int()).length(2),
+    mute: z.array(z.boolean()).length(2),
+  }).optional(),
+  port: z.string().optional(),
   ...ErrorField,
 };
 
@@ -1121,6 +1136,48 @@ server.registerTool(
         value,
         program,
       })),
+    });
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// ESP HW — audio routing (SysEx 0x1D)
+// ═══════════════════════════════════════════════════════════════════════
+
+server.registerTool(
+  "crosspad_audio_route",
+  {
+    description:
+      "[ESP HW] Runtime audio routing control on a connected CrossPad, over USB MIDI SysEx " +
+      "(CROSSPAD_CMD_AUDIO_ROUTE 0x1D; Linux, needs alsa-utils `amidi`). Works in both USB modes.\n" +
+      "  • action='query' → read back the full routing state (mic_src, ADC inputs, DAC outputs, volumes, mutes).\n" +
+      "  • action='set'   → apply any subset of: adc_input ('diff'|'line1'|'line2'), mic_src (0|1), " +
+      "dac_output ('line1'|'line2'|'all'), volume (0-100), mute. Per-codec fields need `codec` (0|1).\n" +
+      "Notes: codec1 LINE1 is the near-unity PCB loopback path (compresses above ~0.2 FS input); " +
+      "routing reverts to firmware defaults on device reset.",
+    inputSchema: {
+      action: z.enum(["set", "query"]).describe("'set' applies routing changes; 'query' reads the current state."),
+      codec: z.union([z.literal(0), z.literal(1)]).optional()
+        .describe("Target codec for adc_input/dac_output/volume/mute (0 = stock mic path, 1 = PCB-loopback codec)."),
+      adc_input: z.enum(["diff", "line1", "line2"]).optional()
+        .describe("ADC input mux of `codec`: differential, LINE1 (PCB loop on both codecs) or LINE2 (floating)."),
+      mic_src: z.union([z.literal(0), z.literal(1)]).optional()
+        .describe("Which codec feeds the USB mic path."),
+      dac_output: z.enum(["line1", "line2", "all"]).optional()
+        .describe("DAC output route of `codec`."),
+      volume: z.number().int().min(0).max(100).optional()
+        .describe("Codec output volume 0-100."),
+      mute: z.boolean().optional().describe("Codec output mute."),
+    },
+    outputSchema: O_AudioRoute,
+    annotations: ANN_SIDE_EFFECT,
+  },
+  async ({ action, codec, adc_input, mic_src, dac_output, volume, mute }) => {
+    if (action === "query") {
+      return jsonResponse({ ...(await crosspadAudioRouteQuery()) });
+    }
+    return jsonResponse({
+      ...(await crosspadAudioRouteSet({ codec, adc_input, mic_src, dac_output, volume, mute })),
     });
   }
 );
