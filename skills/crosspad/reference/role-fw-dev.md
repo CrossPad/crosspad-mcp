@@ -18,7 +18,9 @@ across repos instead of raw shell.
 
 - **crosspad-core** owns the interfaces; platforms (crosspad-pc, platform-idf,
   ESP32-S3) implement them. Add behavior at the right layer — shared logic in core,
-  platform specifics in the platform repo. See `reference/repos.md`.
+  platform specifics in the platform repo. See `reference/repos.md`, and
+  `reference/philosophy.md` for the principles behind the split ("if it could
+  work on another platform, it doesn't belong in a platform repo").
 - **crosspad-core/crosspad-gui are vendored in three separate, unlinked
   checkouts** (one per platform repo). A change in one does not propagate —
   `reference/repos.md` has the full warning and how to check which checkout

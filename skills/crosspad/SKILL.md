@@ -43,6 +43,7 @@ for a global install, or `<crosspad-mcp>/skills/crosspad/scripts/` in the repo/p
 |------|------|
 | Install / configure the crosspad-mcp server (Node, env vars, `.mcp.json`, Desktop) | `reference/install.md` — or run `scripts/setup.sh` for assisted install |
 | Understand the repos and what lives where | `reference/repos.md` |
+| Why the ecosystem is shaped this way — design principles, where code belongs | `reference/philosophy.md` |
 | I'm a **user** of the MCP/firmware (build sim, flash, manage apps, drive sim) | `reference/role-user.md` |
 | I'm a **firmware developer** (where the code is, interfaces, capabilities, tests) | `reference/role-fw-dev.md` |
 | I'm a **crosspad-mcp contributor** (server `src/`, add a tool, dev/build/test) | `reference/role-contributor.md` |
