@@ -23,11 +23,12 @@ jobs:
       # NOTE: do NOT set registry-url here — setup-node would write an .npmrc
       # with `_authToken=${NODE_AUTH_TOKEN}` (a dummy placeholder), and npm would
       # use that bogus token instead of performing the OIDC exchange.
+      # npm@latest (12.x) requires node >= 22.22 — node 20 can no longer install it.
       - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
 
-      # npm Trusted Publishing (OIDC) needs npm >= 11.5.1; node 20 ships npm 10.x.
+      # npm Trusted Publishing (OIDC) needs npm >= 11.5.1; node 22 ships npm 10.x.
       - run: npm install -g npm@latest
 
       - run: npm ci
