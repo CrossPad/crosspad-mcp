@@ -42,6 +42,11 @@ crosspad_test_run                      # build + run Catch2 suite (filter, list_
 crosspad_check    platform=pc          # health: stale exe, new sources, submodule drift
 ```
 
+To verify on the **real device** (boot smoke after every flash, soak runs,
+audio/MIDI measurements, remote pad/app control over CDC/SysEx), see
+`reference/hil-testing.md` — including the USB-topology and codec-routing traps
+that repeatedly cost debugging sessions.
+
 `crosspad_build` parses compiler output into a structured `errors[]` — read those
 rather than scrolling raw logs.
 

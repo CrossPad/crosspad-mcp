@@ -47,6 +47,7 @@ for a global install, or `<crosspad-mcp>/skills/crosspad/scripts/` in the repo/p
 | I'm a **firmware developer** (where the code is, interfaces, capabilities, tests) | `reference/role-fw-dev.md` |
 | I'm a **crosspad-mcp contributor** (server `src/`, add a tool, dev/build/test) | `reference/role-contributor.md` |
 | Which tool do I use for a task? | `reference/tools.md` |
+| Test on the **real device** (HIL: smoke after flash, soaks, audio/MIDI measurements, remote pad/app control) | `reference/hil-testing.md` |
 | Something is broken / a tool errors | `reference/faq.md` |
 | I just learned something non-obvious — where do I record it? | `reference/memory.md` |
 | Trace firmware variables in real time over SWD (ST-Link) | use the **`swd-tracer`** skill |
