@@ -1,6 +1,13 @@
 # crosspad-mcp-server
 
-MCP (Model Context Protocol) server that gives Claude Code full control over the CrossPad development workflow — build, test, manage app packages, interact with the simulator, search code across repos. All from natural language.
+[![npm](https://img.shields.io/npm/v/crosspad-mcp-server)](https://www.npmjs.com/package/crosspad-mcp-server)
+[![CI](https://github.com/CrossPad/crosspad-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/CrossPad/crosspad-mcp/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/crosspad-mcp-server)](package.json)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+
+MCP (Model Context Protocol) server that gives an LLM full control over the [CrossPad](https://github.com/CrossPad) development workflow — build, flash and test firmware (ESP32-S3 + STM32), drive the PC simulator, trace live variables over SWD, route audio on the physical device, manage app packages, and search code across every repo of the ecosystem. All from natural language.
+
+**30 tools · 4 resources · 2 bundled Claude Code skills · stdio & HTTP transports**
 
 ## Install
 
@@ -65,6 +72,14 @@ This package ships two Claude Code skills (bundled in the `crosspad` plugin):
   guides (user / firmware dev / server contributor), a tool cheat-sheet, and an FAQ.
   A fresh agent should read this first. Lives at `skills/crosspad/SKILL.md`;
   run `bash skills/crosspad/scripts/doctor.sh` to check your environment.
+  Reference guides bundled with it:
+  - `reference/philosophy.md` — the CrossPad design principles ("write once, run
+    everywhere", thin platform repos) and where code belongs
+  - `reference/hil-testing.md` — hardware-in-the-loop testing on the real device:
+    the flash→smoke workflow, every `tools/hil_*.py` script, the CDC/SysEx remote
+    control surface, and the hardware traps that cost real debugging sessions
+  - `reference/repos.md`, `reference/tools.md`, `reference/install.md`,
+    `reference/faq.md`, per-role guides
 - **`swd-tracer`** — real-time SWD variable tracing for CrossPad r20 (STM32G0B1)
   over ST-Link (see the SWD tracing section below).
 
@@ -75,9 +90,9 @@ Install both as a plugin:
 /plugin install crosspad@crosspad
 ```
 
-## Tools (28) + resources
+## Tools (30) + resources
 
-> v8 unifies platform-axis tools: build/run/kill/check/flash now take `platform` (or `transport`) as an arg instead of being split per-platform. Migration table at the bottom of this file.
+> v8 unified platform-axis tools: build/run/kill/check/flash take `platform` (or `transport`) as an arg instead of being split per-platform. Migration tables at the bottom of this file.
 
 Each tool is focused on a single action. Strict schema validation (ranges on MIDI/pad values, enums on platforms/repos) catches bad inputs before execution.
 
@@ -85,14 +100,15 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 
 | Tool | Purpose |
 |------|---------|
-| `crosspad_build` | Build for `platform: pc\|idf` (`mode`: incremental/clean/reconfigure for PC, incremental/clean/fullclean for IDF; `build_type` for PC) |
+| `crosspad_build` | Build for `platform: pc\|idf\|stm` (`mode`: incremental/clean, plus reconfigure for PC/STM, fullclean for IDF; `build_type` for PC/STM) |
 | `crosspad_run` | Launch built simulator (`platform: pc`), return PID + post-spawn TCP readiness probe |
 | `crosspad_kill` | Stop running simulator (`platform: pc`, SIGTERM by exe name match) |
 | `crosspad_check` | Health check (`platform: pc`): stale exe, new sources, submodule drift |
-| `crosspad_flash` | Flash firmware to device (`transport: uart\|ota`, `port?`, `firmware_path?` ota-only) |
+| `crosspad_flash` | Flash firmware (`target: esp` with `transport: uart\|ota`, or `target: stm` with `method: swd\|dfu`) |
 | `crosspad_log` | Capture logs (`target`: pc=spawn binary / idf=read serial) |
 | `crosspad_devices` | List USB serial devices, flag CrossPads |
 | `crosspad_trace` | Real-time SWD variable trace over ST-Link (non-halting RAM polling) |
+| `crosspad_audio_route` | Runtime codec routing on the physical device over MIDI SysEx (ADC inputs, DAC outputs, USB-mic source, volume/mute, query) |
 
 ### SWD tracing (crosspad_trace)
 
@@ -224,9 +240,10 @@ action=stop
 | `crosspad://apps/installed/<platform>` | Raw `apps.json` (installed manifest) per detected platform. |
 | `crosspad://symbols/{repo}/{symbol}` | Resource template — resolves a single symbol's definitions in `<repo>` (or `all`). MCP-native alternative to `crosspad_search_symbols` for known symbol+repo pairs. |
 
-### Migration: v7 → v8
+### Migrations
 
-Platform/transport now flows as an arg, not as part of the tool name. Net: 30 → 28 tools.
+<details>
+<summary><b>v7 → v8</b> — platform/transport became an arg, not part of the tool name (30 → 28 tools)</summary>
 
 | Old (v7) | New (v8) |
 |---|---|
@@ -238,9 +255,12 @@ Platform/transport now flows as an arg, not as part of the tool name. Net: 30 �
 | `crosspad_flash_uart` | `crosspad_flash` with `transport: uart` |
 | `crosspad_flash_ota` | `crosspad_flash` with `transport: ota` |
 
-Run/kill/check are PC-only today (the `platform` arg is reserved for future symmetry — IDF firmware doesn't run on the host). Build modes are validated per-platform: `reconfigure` is PC-only; `fullclean` is IDF-only.
+Run/kill/check are PC-only today (the `platform` arg is reserved for future symmetry — IDF firmware doesn't run on the host). Build modes are validated per-platform: `reconfigure` is PC/STM-only; `fullclean` is IDF-only.
 
-### Migration: v6 → v7
+</details>
+
+<details>
+<summary><b>v6 → v7</b> — input/MIDI/log consolidated into single tools with an action/type field (42 → 30 tools)</summary>
 
 Tools removed (logic moved to docs): `crosspad_scaffold_app`, `crosspad_test_scaffold`.
 Tools consolidated:
@@ -251,7 +271,9 @@ Tools consolidated:
 | `crosspad_midi_note_on`, `crosspad_midi_note_off`, `crosspad_midi_cc`, `crosspad_midi_program_change` | `crosspad_midi` with `type` field |
 | `crosspad_log_pc`, `crosspad_log_idf` | `crosspad_log` with `target` field |
 
-Net: 42 tools → 30 tools + 1 resource (v7). Subsequent unification in v8 → 28 tools (see above).
+Net: 42 tools → 30 tools + 1 resource (v7). Subsequent unification in v8 → 28 tools; v9 added `crosspad_trace` and `crosspad_audio_route` → 30.
+
+</details>
 
 All tools return a uniform envelope: `{ "success": boolean, ...data, "error"?: string }`. On failure the result also has the MCP-protocol `isError: true` flag set so clients can route errors distinctly from successful calls.
 
@@ -316,30 +338,25 @@ npm run test:watch  # tests in watch mode
 
 ```
 src/
-  index.ts              — 41 focused tool registrations (one tool per action)
-  config.ts             — per-repo env vars, dynamic discovery, IDF/MSVC paths
-  config.test.ts        — config unit tests (fs mocking)
-  utils/
-    exec.ts             — platform-aware command execution (MSVC/IDF/shell)
-    git.ts              — repo status, submodule pins
-    remote-client.ts    — TCP client for simulator (localhost:19840)
+  index.ts              — 30 focused tool registrations (one tool per action) + resources
+  config.ts             — per-repo env vars, dynamic discovery, IDF/MSVC/STM paths
+  utils/                — platform-aware exec (MSVC/IDF/shell), git helpers,
+                          TCP client for the simulator (localhost:19840)
   tools/
-    app-manager.ts      — crosspad_apps: multi-platform registry + Python subprocess
-    architecture.ts     — interfaces, REGISTER_APP scan
-    build.ts            — PC build + run
-    build-check.ts      — build health check
-    diff-core.ts        — submodule drift analysis
-    idf-build.ts        — ESP-IDF build
-    input.ts            — simulator input events
-    log.ts              — exe log capture
-    repos.ts            — multi-repo git status
-    scaffold.ts         — app boilerplate generation
-    screenshot.ts       — simulator screenshots
-    settings.ts         — simulator settings R/W
-    stats.ts            — simulator runtime stats
-    symbols.ts          — cross-repo symbol search
-    test.ts             — Catch2 test runner
-    *.test.ts           — unit tests for each module
+    build.ts / idf-build.ts / stm-build.ts   — per-platform builds behind crosspad_build
+    idf-flash.ts / stm-flash.ts              — ESP (uart/ota) and STM (swd/dfu) flashing
+    build-check.ts / diff-core.ts / repos.ts — health checks, submodule drift, git status
+    trace-*.ts            — SWD tracer: session, symbols (DWARF), buffer, export,
+                            device-state, write, doctor, web UI
+    audio-route.ts        — runtime codec routing over MIDI SysEx
+    input.ts / midi.ts / screenshot.ts / settings.ts / stats.ts — simulator interaction
+    app-manager.ts        — multi-platform app registry + Python subprocess
+    architecture.ts / symbols.ts             — interfaces, REGISTER_APP scan, symbol search
+    test.ts               — Catch2 test runner
+    *.test.ts             — unit tests alongside each module
+skills/                 — bundled Claude Code skills (crosspad, swd-tracer)
+tracer/                 — SWD tracer runtime (pyOCD host script + protocol docs)
+vscode-extension/       — companion VS Code extension
 ```
 
 ## License
