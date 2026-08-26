@@ -96,7 +96,7 @@ SAFETY: flash, bootloader/DFU requests, trace write/call are "danger" tier. In t
 
 export const server = new McpServer(
   { name: "crosspad", version },
-  { capabilities: { logging: {}, resources: {} }, instructions: SERVER_INSTRUCTIONS }
+  { capabilities: { logging: {}, resources: {}, prompts: {} }, instructions: SERVER_INSTRUCTIONS }
 );
 
 // v9 tools are still registered inline below. Capturing them here lets

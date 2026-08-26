@@ -14,6 +14,7 @@ import type { ToolContext } from "./tool-context.js";
 import { registerToolsetsTool } from "./tools/toolsets-tool.js";
 import { registerTaskTool } from "./tools/task.js";
 import { registerKnowledgeResources } from "./resources/knowledge.js";
+import { registerPrompts } from "./prompts.js";
 
 /** A v10 tool module's registration entry point, plus where the tool belongs. */
 export interface ToolRegistrar {
@@ -167,4 +168,7 @@ export function registerAll(
   // three daemon reads — so they are wired statically rather than through the
   // load-if-present path the device resources use.
   registerKnowledgeResources(server, ctx);
+
+  // ── prompts (user-selectable workflows; no tool-schema cost either) ──
+  registerPrompts(server);
 }
