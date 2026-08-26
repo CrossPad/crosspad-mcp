@@ -20,6 +20,7 @@ export interface FakeServerHandle {
   server: McpServer;
   tools: Map<string, FakeTool>;
   resources: Map<string, FakeResource>;
+  prompts: Map<string, { name: string; config: unknown; cb: unknown }>;
   listChanged: number;
   /** what server.server.getClientCapabilities() returns; default {} (no elicitation) */
   clientCapabilities: Record<string, unknown>;
@@ -27,11 +28,13 @@ export interface FakeServerHandle {
 
 export function fakeServer(): FakeServerHandle {
   const tools = new Map<string, FakeTool>();
+  const prompts = new Map<string, { name: string; config: unknown; cb: unknown }>();
   const resources = new Map<string, FakeResource>();
   const handle: FakeServerHandle = {
     server: undefined as unknown as McpServer,
     tools,
     resources,
+    prompts,
     listChanged: 0,
     clientCapabilities: {},
   };
@@ -49,6 +52,10 @@ export function fakeServer(): FakeServerHandle {
     },
     registerResource(name: string, uriOrTemplate: any, config: any, cb: any) {
       resources.set(name, { name, uriOrTemplate, config, cb });
+      return { enable() {}, disable() {}, remove() {}, update() {} };
+    },
+    registerPrompt(name: string, config: any, cb: any) {
+      prompts.set(name, { name, config, cb });
       return { enable() {}, disable() {}, remove() {}, update() {} };
     },
     sendToolListChanged() { handle.listChanged++; },
