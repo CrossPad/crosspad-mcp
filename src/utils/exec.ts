@@ -1,5 +1,6 @@
 import { execSync, spawn, SpawnOptions } from "child_process";
 import fs from "fs";
+import path from "path";
 import { VCVARSALL, IS_WINDOWS, IDF_PATH } from "../config.js";
 
 /** Callback invoked for each line of stdout/stderr during streaming exec. */
@@ -509,18 +510,31 @@ function normalizeLineEndings(s: string): string {
 
 /**
  * Spawn a detached process (for crosspad_run).
+ *
+ * With `logPath` both streams are appended to that file instead of discarded.
+ * A simulator that dies during startup says why on stderr, and with stdio
+ * ignored that explanation was gone by the time anyone asked.
  */
 export function spawnDetached(
   exe: string,
   args: string[],
-  cwd: string
+  cwd: string,
+  logPath?: string
 ): number | null {
+  let fd: number | undefined;
+  if (logPath) {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fd = fs.openSync(logPath, "a");
+  }
   const opts: SpawnOptions = {
     cwd,
     detached: true,
-    stdio: "ignore",
+    stdio: fd === undefined ? "ignore" : ["ignore", fd, fd],
   };
   const child = spawn(exe, args, opts);
   child.unref();
+  // The child holds its own duplicate of the descriptor; ours would otherwise
+  // keep the file open for the lifetime of the server.
+  if (fd !== undefined) fs.closeSync(fd);
   return child.pid ?? null;
 }

@@ -1,16 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import {
   parseErrors,
   countWarnings,
   findCrosspadPids,
   crosspadKill,
+  crosspadRun,
   canonicalize,
   stripDeletedSuffix,
+  simLogPath,
+  tailFile,
+  RUN_LOG_TAIL_LINES,
 } from "./build.js";
 import { BIN_EXE } from "../config.js";
 import * as remote from "../utils/remote-client.js";
+import * as exec from "../utils/exec.js";
 
 describe("parseErrors (PC build)", () => {
   it("extracts MSVC-style errors", () => {
@@ -420,4 +426,90 @@ linuxDescribe("crosspadKill (orchestration)", () => {
     expect(r.killed_pids).toEqual([]);
     expect(r.error).toMatch(/tcp_alive=true/);
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// crosspad_run log capture. A simulator that dies during startup used to
+// report only "the control port did not answer", which says nothing about
+// the missing SDL2, the unreadable kit or whatever actually killed it.
+// ─────────────────────────────────────────────────────────────────────
+
+describe("tailFile", () => {
+  it("returns the last n lines", () => {
+    const f = path.join(os.tmpdir(), `crosspad-tail-${process.pid}.log`);
+    fs.writeFileSync(f, Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n") + "\n");
+    const tail = tailFile(f, 30);
+    expect(tail).toHaveLength(30);
+    expect(tail[29]).toBe("line 99");
+    fs.rmSync(f, { force: true });
+  });
+
+  it("returns [] rather than throwing when there is no log", () => {
+    expect(tailFile("/definitely/not/here.log", 30)).toEqual([]);
+  });
+});
+
+describe("simLogPath", () => {
+  it("names one file per launch, under hil_logs", () => {
+    const a = simLogPath(Date.parse("2026-08-26T10:11:12Z"));
+    expect(a).toMatch(/hil_logs[/\\]sim_20260826_101112\.log$/);
+    expect(simLogPath(Date.parse("2026-08-26T10:11:13Z"))).not.toBe(a);
+  });
+});
+
+describe("crosspadRun (log capture)", () => {
+  const written: string[] = [];
+
+  beforeEach(() => {
+    // The binary is not built in CI; the launch path only needs it to exist.
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    for (const f of written.splice(0)) fs.rmSync(f, { force: true });
+    vi.restoreAllMocks();
+  });
+
+  /** Stand in for the spawn: write `output` where the real sim's stdio would go. */
+  function fakeSpawn(pid: number | null, output: string) {
+    vi.spyOn(exec, "spawnDetached").mockImplementation(((_e: string, _a: string[], _c: string, target?: string) => {
+      if (target) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, output);
+        written.push(target);
+      }
+      return pid;
+    }) as any);
+  }
+
+  it("hands back the log path when the sim comes up", async () => {
+    fakeSpawn(4242, "CrossPad ready\n");
+    let calls = 0;
+    vi.spyOn(remote, "isSimulatorRunning").mockImplementation(async () => ++calls > 1);
+    vi.spyOn(remote, "closeSimConnection").mockImplementation(() => {});
+
+    const r = await crosspadRun();
+    expect(r.responsive).toBe(true);
+    expect(r.log_path).toMatch(/hil_logs[/\\]sim_.*\.log$/);
+    // Nothing went wrong, so nothing is inlined — the link is enough.
+    expect(r.log_tail).toBeUndefined();
+  }, 10000);
+
+  it("brings back the sim's last words when it dies during the probe", async () => {
+    const output = Array.from({ length: 50 }, (_, i) => `startup ${i}`).join("\n") +
+      "\nerror while loading shared libraries: libSDL2-2.0.so.0\n";
+    fakeSpawn(4243, output);
+    vi.spyOn(remote, "isSimulatorRunning").mockResolvedValue(false);
+    vi.spyOn(remote, "closeSimConnection").mockImplementation(() => {});
+    // The process is gone by the first poll.
+    vi.spyOn(process, "kill").mockImplementation(((_pid: number) => {
+      throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+    }) as any);
+
+    const r = await crosspadRun();
+    expect(r.responsive).toBe(false);
+    expect(r.log_tail).toHaveLength(RUN_LOG_TAIL_LINES);
+    expect(r.log_tail!.at(-1)).toMatch(/libSDL2/);
+    expect(r.error).toMatch(/exited before the control port answered/);
+  }, 10000);
 });

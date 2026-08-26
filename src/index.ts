@@ -11,7 +11,7 @@ import { z } from "zod";
 import { jsonResponse, ok, err } from "./response.js";
 import type { RegisteredTool, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AnySchema, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
-import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { loadPolicy } from "./policy/policy.js";
 import { ToolsetManager, initialToolsets, hasReadOnlyFlag } from "./toolsets.js";
 import { registerAll, loadV10Modules } from "./registry.js";
@@ -41,7 +41,7 @@ import { crosspadInterfaces, crosspadApps } from "./tools/architecture.js";
 import { crosspadScreenshot } from "./tools/screenshot.js";
 import { crosspadInput } from "./tools/input.js";
 import { crosspadStats } from "./tools/stats.js";
-import { crosspadSettingsGet, crosspadSettingsSet } from "./tools/settings.js";
+import { crosspadSettingsGet, crosspadSettingsSet, settingsCategories } from "./tools/settings.js";
 import {
   crosspadAppList,
   crosspadAppInstall,
@@ -157,6 +157,23 @@ function makeProgressLogger(logger: string, extra: any): OnLine {
   };
 }
 
+/**
+ * Link the simulator's captured stdout/stderr rather than inline the file.
+ * A launch that failed already carries its last lines in `log_tail`; the link
+ * is there for the rest, which can be thousands of LVGL and SDL lines.
+ */
+function withSimLog(result: CallToolResult, logPath: string | undefined): CallToolResult {
+  if (!logPath) return result;
+  (result.content as unknown[]).push({
+    type: "resource_link",
+    uri: `file://${logPath}`,
+    name: logPath.split("/").pop() ?? "sim.log",
+    mimeType: "text/plain",
+    description: "Everything the simulator wrote to stdout and stderr",
+  });
+  return result;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // SHARED ZOD SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════
@@ -247,6 +264,8 @@ const O_Run = {
   exe_path: z.string(),
   already_running: z.boolean().optional(),
   responsive: z.boolean().optional(),
+  log_path: z.string().optional(),
+  log_tail: z.array(z.string()).optional(),
   ...ErrorField,
 };
 
@@ -327,6 +346,8 @@ const O_Test = {
   failed: z.number().int(),
   errors: z.array(z.string()),
   duration_seconds: z.number(),
+  runner: z.enum(["catch2", "ctest"]).optional(),
+  labels: z.array(z.string()).optional(),
   ...ErrorField,
 };
 
@@ -337,6 +358,7 @@ const O_Screenshot = {
   format: z.string().optional(),
   file_path: z.string().optional(),
   size: z.number().int().optional(),
+  region: z.enum(["full", "lcd"]).optional(),
   ...ErrorField,
 };
 
@@ -353,6 +375,7 @@ const O_Stats = {
 
 const O_SettingsGet = {
   success: z.boolean(),
+  category: z.string().optional(),
   settings: z.record(z.string(), z.unknown()).optional(),
   ...ErrorField,
 };
@@ -360,7 +383,7 @@ const O_SettingsGet = {
 const O_SettingsSet = {
   success: z.boolean(),
   key: z.string().optional(),
-  value: z.number().optional(),
+  value: z.union([z.number(), z.boolean()]).optional(),
   ...ErrorField,
 };
 
@@ -517,12 +540,24 @@ registerLegacy(
       return err(`Binary not found: ${result.exe_path}. Run crosspad_build first.`, { exe_path: result.exe_path });
     }
     if (result.responsive === false) {
-      return err(
-        `Simulator process started (pid=${result.pid}) but TCP control port did not respond within 3s. Process may have crashed during startup.`,
-        { pid: result.pid, exe_path: result.exe_path, responsive: false },
+      const why = result.error ?? `TCP control port did not respond within 3s. Process may have crashed during startup.`;
+      return withSimLog(
+        err(`Simulator process started (pid=${result.pid}) but ${why}`, {
+          pid: result.pid,
+          exe_path: result.exe_path,
+          responsive: false,
+          log_path: result.log_path,
+          // The failed probe says nothing about the cause; the sim's own last
+          // words usually do, so they ride along instead of only being linked.
+          log_tail: result.log_tail,
+        }),
+        result.log_path,
       );
     }
-    return ok({ pid: result.pid, exe_path: result.exe_path, responsive: result.responsive });
+    return withSimLog(
+      ok({ pid: result.pid, exe_path: result.exe_path, responsive: result.responsive, log_path: result.log_path }),
+      result.log_path,
+    );
   }
 );
 
@@ -865,19 +900,21 @@ registerLegacy(
 registerLegacy(
   "crosspad_test_run",
   {
-    description: "[PC] Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
+    description: "[PC] Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only. Pass `labels` to run the GUI harness instead: those cases live in a second executable that only CTest knows how to launch.",
     inputSchema: {
       filter: z.string().default("")
-        .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Default '' (empty) runs ALL tests — there is no opt-out for 'no tests'."),
+        .describe("Catch2 test filter (e.g. '[core]', 'PadManager*'). Default '' (empty) runs ALL tests — there is no opt-out for 'no tests'. With `labels` it becomes a regex over CTest entry names instead."),
       list_only: z.boolean().default(false)
         .describe("If true, list discovered tests matching `filter` without running them. Default false."),
+      labels: z.array(z.enum(["gui", "flaky"])).default([])
+        .describe("CTest labels to run instead of the Catch2 binary. 'gui' = the simulator harness ([gui] cases), which excludes the flaky entries unless 'flaky' is listed too. Default [] = the crosspad_tests binary, as before."),
     },
     outputSchema: O_Test,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
   },
-  async ({ filter, list_only }, extra: any) => {
+  async ({ filter, list_only, labels }, extra: any) => {
     const onLine = makeProgressLogger("test", extra);
-    return jsonResponse((await crosspadTest(filter, list_only, onLine, extra.signal)));
+    return jsonResponse((await crosspadTest(filter, list_only, onLine, extra.signal, labels)));
   }
 );
 
@@ -897,12 +934,14 @@ registerLegacy(
         .describe("Custom filename (saved under <crosspad-pc>/screenshots/). Default: screenshot_<timestamp>.png. Ignored when return_inline=true."),
       return_inline: z.boolean().default(false)
         .describe("false (default) = save to disk, return file_path (token-cheap). true = return base64 image content for the LLM to view (token-expensive — only when the image must be analyzed)."),
+      region: z.enum(["full", "lcd"]).default("full")
+        .describe("'full' (default) = the whole emulator window. 'lcd' = only the 320x240 screen, cropped by this server (the simulator's own lcd crop is 18 px stale)."),
     },
     outputSchema: O_Screenshot,
     annotations: ANN_SIDE_EFFECT,
   },
-  async ({ filename, return_inline }) => {
-    const result = await crosspadScreenshot(!return_inline, filename);
+  async ({ filename, return_inline, region }) => {
+    const result = await crosspadScreenshot(!return_inline, filename, region);
     if (!result.success) return jsonResponse({ ...result });
 
     if (return_inline) {
@@ -910,7 +949,7 @@ registerLegacy(
       // structuredContent so clients honoring outputSchema see metadata
       // alongside the image part.
       if (result.data_base64) {
-        const meta = { success: true, width: result.width, height: result.height, format: result.format };
+        const meta = { success: true, width: result.width, height: result.height, format: result.format, region: result.region };
         return {
           content: [
             { type: "image" as const, data: result.data_base64, mimeType: "image/png" },
@@ -929,6 +968,7 @@ registerLegacy(
       format: result.format,
       file_path: result.file_path,
       size: result.size,
+      region: result.region,
     });
   }
 );
@@ -1024,9 +1064,11 @@ registerLegacy(
   {
     description: "[PC sim] Read settings from the running simulator.",
     inputSchema: {
-      category: z.enum(["all", "display", "keypad", "vibration", "wireless", "audio", "system"])
+      // Derived from CrosspadSettings itself rather than typed out here, so a
+      // group added to the firmware does not need this file edited.
+      category: z.enum(settingsCategories() as [string, ...string[]])
         .default("all")
-        .describe("Settings category. Use 'all' to fetch everything."),
+        .describe("Settings category, one per group CrosspadSettings declares. Use 'all' to fetch everything."),
     },
     outputSchema: O_SettingsGet,
     annotations: ANN_READ_ONLY,
@@ -1041,8 +1083,8 @@ registerLegacy(
     inputSchema: {
       key: z.string().min(1)
         .describe("Setting key. Either a flat name ('lcd_brightness') or dotted category.field ('keypad.eco_mode', 'vibration.enable'). Use crosspad_settings_get to discover valid keys."),
-      value: z.number()
-        .describe("Numeric value. Booleans must be encoded as 0=false, 1=true (no native bool support over the wire)."),
+      value: z.union([z.number(), z.boolean()])
+        .describe("The value, matching the field's type in the CrosspadSettings schema: a number, or true/false for a bool field (encoded as 1/0 on the wire for you)."),
     },
     outputSchema: O_SettingsSet,
     annotations: ANN_DESTRUCTIVE,

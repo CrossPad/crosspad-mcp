@@ -3,7 +3,7 @@ import path from "path";
 import { spawnSync } from "child_process";
 import { CROSSPAD_PC_ROOT, BUILD_DIR, BIN_EXE, VCPKG_TOOLCHAIN } from "../config.js";
 import { runBuild, runBuildStream, spawnDetached, OnLine } from "../utils/exec.js";
-import { isSimulatorRunning } from "../utils/remote-client.js";
+import { isSimulatorRunning, closeSimConnection } from "../utils/remote-client.js";
 
 export interface BuildResult {
   success: boolean;
@@ -151,11 +151,50 @@ export interface RunResult {
   exe_path: string;
   already_running?: boolean;
   responsive?: boolean;
+  /** Where the simulator's stdout and stderr are being appended. */
+  log_path?: string;
+  /** Last lines of that file, filled in only when the sim failed to come up. */
+  log_tail?: string[];
   error?: string;
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** How many lines of the sim log a failed launch reports inline. */
+export const RUN_LOG_TAIL_LINES = 30;
+
+/** Where this launch's stdout/stderr goes: <crosspad-pc>/hil_logs/sim_<ts>.log */
+export function simLogPath(now: number = Date.now()): string {
+  const stamp = new Date(now).toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "_");
+  return path.join(CROSSPAD_PC_ROOT, "hil_logs", `sim_${stamp}.log`);
+}
+
+/** Last `n` non-empty lines of a log file, or [] if there is nothing to read. */
+export function tailFile(file: string, n: number): string[] {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf-8");
+  } catch {
+    return [];
+  }
+  const lines = text.split("\n").map((l) => l.replace(/\r$/, ""));
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines.slice(-n);
+}
+
+/**
+ * Is the process still there? EPERM means it is, owned by someone else.
+ * @internal exported for testing
+ */
+export function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    return e?.code === "EPERM";
+  }
 }
 
 /**
@@ -168,6 +207,10 @@ function delay(ms: number): Promise<void> {
  * After spawn we poll the TCP control port for up to ~3s — this distinguishes
  * "process started, ready to accept commands" from "process started but
  * crashed before binding" so callers don't fire screenshot/stats too early.
+ *
+ * Both streams go to a log file, and a sim that dies before answering brings
+ * its last lines back with it: a failed probe on its own reports that nothing
+ * answered, never that the vcpkg SDL2 was missing or the kit JSON was unreadable.
  */
 export async function crosspadRun(force: boolean = false): Promise<RunResult> {
   if (!fs.existsSync(BIN_EXE)) {
@@ -183,17 +226,36 @@ export async function crosspadRun(force: boolean = false): Promise<RunResult> {
     };
   }
 
-  const pid = spawnDetached(BIN_EXE, [], CROSSPAD_PC_ROOT);
-  if (pid === null) return { pid, exe_path: BIN_EXE };
+  // A socket left over from a previous instance points at a process that is
+  // about to be replaced.
+  closeSimConnection();
 
-  // Poll for TCP readiness so callers know if the sim actually came up.
+  const logPath = simLogPath();
+  const pid = spawnDetached(BIN_EXE, [], CROSSPAD_PC_ROOT, logPath);
+  if (pid === null) return { pid, exe_path: BIN_EXE, log_path: logPath };
+
+  // Poll for TCP readiness so callers know if the sim actually came up. A
+  // process that has already exited will never answer, so stop asking.
   let responsive = false;
+  let alive = true;
   for (let i = 0; i < 6; i++) {
     await delay(500);
     if (await isSimulatorRunning()) { responsive = true; break; }
+    if (!processAlive(pid)) { alive = false; break; }
   }
 
-  return { pid, exe_path: BIN_EXE, responsive };
+  if (responsive) return { pid, exe_path: BIN_EXE, responsive, log_path: logPath };
+
+  return {
+    pid,
+    exe_path: BIN_EXE,
+    responsive,
+    log_path: logPath,
+    log_tail: tailFile(logPath, RUN_LOG_TAIL_LINES),
+    error: alive
+      ? undefined
+      : `Simulator process ${pid} exited before the control port answered.`,
+  };
 }
 
 export interface KillResult {
@@ -331,6 +393,9 @@ function trySignal(pid: number, signal: NodeJS.Signals): string | undefined {
  * because Node swallowed EPERM and the user just saw success=false.
  */
 export async function crosspadKill(): Promise<KillResult> {
+  // Whatever we were talking to is the thing being killed; keeping the socket
+  // would hand the next caller a half-open connection instead of a reconnect.
+  closeSimConnection();
   const initialPids = findCrosspadPids();
   const tcpAliveInitial = await isSimulatorRunning();
   const wasRunning = initialPids.length > 0 || tcpAliveInitial;

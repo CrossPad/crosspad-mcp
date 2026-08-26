@@ -84,7 +84,7 @@ vi.mock("./tools/trace-session.js", () => {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { crosspadBuild, crosspadKill } from "./tools/build.js";
+import { crosspadBuild, crosspadKill, crosspadRun } from "./tools/build.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
 import { server, setTraceBrowserOpener } from "./index.js";
@@ -93,6 +93,7 @@ import { _setConfigPathForTest } from "./utils/userConfig.js";
 const mockedPcBuild = vi.mocked(crosspadBuild);
 const mockedIdfBuild = vi.mocked(crosspadIdfBuild);
 const mockedKill = vi.mocked(crosspadKill);
+const mockedRun = vi.mocked(crosspadRun);
 const mockedBuildCheck = vi.mocked(crosspadBuildCheck);
 
 let client: Client;
@@ -378,5 +379,84 @@ describe("crosspad_kill via MCP API", () => {
       was_running: true,
       error: expect.stringContaining("EPERM"),
     });
+  });
+});
+
+describe("crosspad_run via MCP API", () => {
+  it("links the captured log on a successful launch", async () => {
+    mockedRun.mockResolvedValueOnce({
+      pid: 4242,
+      exe_path: "/x/bin/CrossPad",
+      responsive: true,
+      log_path: "/x/hil_logs/sim_20260826_101112.log",
+    });
+    const r = await client.callTool({
+      name: "crosspad_run",
+      arguments: { platform: "pc" },
+    });
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toMatchObject({ success: true, pid: 4242, log_path: "/x/hil_logs/sim_20260826_101112.log" });
+    const link = (r.content as { type: string; uri?: string }[]).find((c) => c.type === "resource_link");
+    expect(link).toMatchObject({ uri: "file:///x/hil_logs/sim_20260826_101112.log", mimeType: "text/plain" });
+  });
+
+  it("says why a launch failed instead of only that the probe did — REGRESSION: a crashed sim reported nothing but a dead port", async () => {
+    mockedRun.mockResolvedValueOnce({
+      pid: 4243,
+      exe_path: "/x/bin/CrossPad",
+      responsive: false,
+      log_path: "/x/hil_logs/sim_20260826_101113.log",
+      log_tail: ["loading kits...", "error while loading shared libraries: libSDL2-2.0.so.0"],
+      error: "Simulator process 4243 exited before the control port answered.",
+    });
+    const r = await client.callTool({
+      name: "crosspad_run",
+      arguments: { platform: "pc" },
+    });
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent).toMatchObject({
+      success: false,
+      responsive: false,
+      log_path: "/x/hil_logs/sim_20260826_101113.log",
+    });
+    expect((r.structuredContent as { log_tail: string[] }).log_tail.at(-1)).toMatch(/libSDL2/);
+    expect((r.structuredContent as { error: string }).error).toMatch(/exited before the control port answered/);
+    expect((r.content as { type: string }[]).some((c) => c.type === "resource_link")).toBe(true);
+  });
+});
+
+// The sim tools' declared schemas (spec §3.8). These are what the model sees,
+// so they are asserted through tools/list rather than by reading the source.
+describe("sim toolset input schemas", () => {
+  async function schemaOf(name: string): Promise<any> {
+    const { tools } = await client.listTools();
+    const tool = tools.find((t) => t.name === name);
+    expect(tool, `${name} is not registered`).toBeTruthy();
+    return tool!.inputSchema as any;
+  }
+
+  it("crosspad_settings_get offers the categories CrosspadSettings declares", async () => {
+    const cats: string[] = (await schemaOf("crosspad_settings_get")).properties.category.enum;
+    expect(cats).toContain("all");
+    for (const c of ["display", "keypad", "vibration", "wireless", "audio", "system"]) {
+      expect(cats, `missing '${c}'`).toContain(c);
+    }
+  });
+
+  it("crosspad_settings_set takes a boolean as well as a number", async () => {
+    const value = (await schemaOf("crosspad_settings_set")).properties.value;
+    const types = (value.anyOf ?? [value]).map((v: any) => v.type);
+    expect(types).toContain("number");
+    expect(types).toContain("boolean");
+  });
+
+  it("crosspad_test_run can select the gui labels", async () => {
+    const labels = (await schemaOf("crosspad_test_run")).properties.labels;
+    expect(labels.type).toBe("array");
+    expect(labels.items.enum).toEqual(["gui", "flaky"]);
+  });
+
+  it("crosspad_screenshot can ask for the LCD only", async () => {
+    expect((await schemaOf("crosspad_screenshot")).properties.region.enum).toEqual(["full", "lcd"]);
   });
 });

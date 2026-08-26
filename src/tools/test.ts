@@ -12,7 +12,20 @@ export interface TestResult {
   failed: number;
   errors: string[];
   duration_seconds: number;
+  /** Which suite ran: the Catch2 binary, or ctest driving the labelled entries. */
+  runner?: "catch2" | "ctest";
+  labels?: string[];
 }
+
+/**
+ * CTest labels the crosspad-pc suite defines. The GUI harness is a second
+ * executable registered only as CTest entries, so `crosspad_tests` — the
+ * binary this tool has always run — cannot reach it at all: without a label
+ * the [gui] cases were simply unreachable from here.
+ */
+export type TestLabel = "gui" | "flaky";
+
+const GUI_TEST_TARGET = "gui_tests";
 
 const TESTS_DIR = path.join(CROSSPAD_PC_ROOT, "tests");
 const BIN_DIR = path.join(CROSSPAD_PC_ROOT, "bin");
@@ -28,7 +41,9 @@ export async function crosspadTest(
   listOnly: boolean = false,
   onLine?: OnLine,
   signal?: AbortSignal,
+  labels: TestLabel[] = [],
 ): Promise<TestResult> {
+  const useCtest = labels.length > 0;
   const startTime = Date.now();
 
   // Check if test infrastructure exists
@@ -73,7 +88,7 @@ export async function crosspadTest(
   // Build tests target
   onLine?.("stdout", "[crosspad] Building test target...");
 
-  const buildCmd = "cmake --build build --target crosspad_tests";
+  const buildCmd = `cmake --build build --target ${useCtest ? GUI_TEST_TARGET : "crosspad_tests"}`;
   let buildResult;
   if (onLine) {
     buildResult = await runBuildStream(buildCmd, CROSSPAD_PC_ROOT, onLine, 300_000, signal);
@@ -94,7 +109,7 @@ export async function crosspadTest(
     };
   }
 
-  if (!fs.existsSync(TEST_EXE)) {
+  if (!useCtest && !fs.existsSync(TEST_EXE)) {
     return {
       success: false,
       tests_found: true,
@@ -112,29 +127,36 @@ export async function crosspadTest(
   // shell injection. Catch2 filters are simple tag/glob strings so this
   // sanitization doesn't lose semantics.
   const safeFilter = filter.replace(/[`"$\\]/g, "\\$&");
-  let testCmd = `"${TEST_EXE}"`;
-  if (listOnly) {
-    testCmd += " --list-tests";
+  let testCmd: string;
+  if (useCtest) {
+    testCmd = ctestCommand(labels, safeFilter, listOnly);
   } else {
-    testCmd += " --reporter compact";
-    if (safeFilter) {
-      testCmd += ` "${safeFilter}"`;
+    testCmd = `"${TEST_EXE}"`;
+    if (listOnly) {
+      testCmd += " --list-tests";
+    } else {
+      testCmd += " --reporter compact";
+      if (safeFilter) {
+        testCmd += ` "${safeFilter}"`;
+      }
     }
   }
 
   onLine?.("stdout", "[crosspad] Running tests...");
 
+  // Each labelled CTest entry launches the simulator and has its own 60 s
+  // CMake timeout, so the whole run needs more room than one Catch2 binary.
+  const runTimeout = useCtest ? 300_000 : 120_000;
   let testResult;
   if (onLine) {
-    testResult = await runBuildStream(testCmd, CROSSPAD_PC_ROOT, onLine, 120_000, signal);
+    testResult = await runBuildStream(testCmd, CROSSPAD_PC_ROOT, onLine, runTimeout, signal);
   } else {
-    testResult = runBuild(testCmd, CROSSPAD_PC_ROOT, 120_000);
+    testResult = runBuild(testCmd, CROSSPAD_PC_ROOT, runTimeout);
   }
 
   const testOutput = testResult.stdout + "\n" + testResult.stderr;
 
-  // Parse Catch2 compact output
-  const { passed, failed } = parseCatch2Output(testOutput);
+  const { passed, failed } = useCtest ? parseCtestOutput(testOutput) : parseCatch2Output(testOutput);
 
   const result: TestResult = {
     success: testResult.success,
@@ -145,11 +167,57 @@ export async function crosspadTest(
     failed,
     errors: testResult.success ? [] : parseErrors(testOutput),
     duration_seconds: (Date.now() - startTime) / 1000,
+    runner: useCtest ? "ctest" : "catch2",
+    labels,
   };
 
   onLine?.("stdout", `[crosspad] Tests ${result.success ? "PASSED" : "FAILED"}: ${passed} passed, ${failed} failed (${result.duration_seconds.toFixed(1)}s)`);
 
   return result;
+}
+
+/**
+ * The ctest invocation for a label selection.
+ *
+ * `gui` without `flaky` excludes the flaky entries, which is the split the
+ * suite's own CMakeLists documents (`ctest -L gui -LE flaky`): the CITest
+ * audio self-test is intermittently red and must not redden the GUI harness.
+ * Asking for `flaky` explicitly is how you get it anyway.
+ *
+ * @internal exported for testing
+ */
+export function ctestCommand(labels: TestLabel[], filter: string, listOnly: boolean): string {
+  const parts = ["ctest --test-dir build --output-on-failure"];
+  if (labels.includes("gui")) {
+    parts.push("-L gui");
+    if (!labels.includes("flaky")) parts.push("-LE flaky");
+  } else if (labels.includes("flaky")) {
+    parts.push("-L flaky");
+  }
+  // ctest selects by test name, not by Catch2 tag, so the filter is a regex
+  // over the entry names (gui_integration, gui_audio_citest).
+  if (filter) parts.push(`-R "${filter}"`);
+  if (listOnly) parts.push("-N");
+  return parts.join(" ");
+}
+
+/** @internal exported for testing */
+export function parseCtestOutput(output: string): { passed: number; failed: number } {
+  // "100% tests passed, 0 tests failed out of 2"
+  const summary = /(\d+)\s+tests?\s+failed\s+out\s+of\s+(\d+)/i.exec(output);
+  if (summary) {
+    const failed = parseInt(summary[1], 10);
+    const total = parseInt(summary[2], 10);
+    return { passed: Math.max(total - failed, 0), failed };
+  }
+  // -N and interrupted runs print no summary; count the per-entry result lines.
+  let passed = 0;
+  let failed = 0;
+  for (const line of output.split("\n")) {
+    if (/Test\s+#\d+/.test(line) && /\bPassed\b/.test(line)) passed++;
+    else if (/\*\*\*(Failed|Timeout|Exception)/.test(line)) failed++;
+  }
+  return { passed, failed };
 }
 
 /** @internal exported for testing */
