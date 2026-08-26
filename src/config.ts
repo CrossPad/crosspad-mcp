@@ -9,7 +9,7 @@ export const IS_MAC = process.platform === "darwin";
 // BASE PATH — only used as fallback when per-repo env vars are not set
 // ═══════════════════════════════════════════════════════════════════════
 
-const GIT_DIR = process.env.CROSSPAD_GIT_DIR || path.join(os.homedir(), "GIT");
+export const GIT_DIR = process.env.CROSSPAD_GIT_DIR || path.join(os.homedir(), "GIT");
 
 // ═══════════════════════════════════════════════════════════════════════
 // PER-REPO PATHS — each overridable via its own env var

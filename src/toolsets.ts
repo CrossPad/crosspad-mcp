@@ -23,6 +23,7 @@ export const TOOLSETS: Record<string, string[]> = {
     "crosspad_settings_get", "crosspad_settings_set", "crosspad_test_run",
   ],
   code: [
+    "crosspad_docs_search",
     "crosspad_search_symbols", "crosspad_list_interfaces", "crosspad_interface_implementations",
     "crosspad_capabilities", "crosspad_list_apps_source",
   ],

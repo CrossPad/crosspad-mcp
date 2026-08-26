@@ -69,6 +69,7 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   crosspad_task: taskTier,
   // device
   // A scenario only stimulates the board unless it was told to flash.
+  crosspad_docs_search: "read",
   crosspad_hil_run: (args) =>
     (args as { params?: { flash?: unknown } } | undefined)?.params?.flash ? "danger" : "stimulus",
   crosspad_cdc: cdcTier,

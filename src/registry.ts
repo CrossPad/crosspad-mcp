@@ -62,6 +62,7 @@ export const V10_MODULES: ModuleSpec[] = [
 
 /** Resource modules loaded the same way. `toolset` is unused; it keeps one shape. */
 export const V10_RESOURCE_MODULES: ModuleSpec[] = [
+  { name: "crosspad_docs_search", toolset: "code", module: "./tools/docs-search.js", export: "registerDocsSearchTool" },
   { name: "crosspad_hil_run", toolset: "hil", module: "./tools/hil-run.js", export: "registerHilRunTool" },
   { name: "crosspad://device/*", toolset: "device", module: "./resources/device.js", export: "registerDeviceResources" },
 ];
