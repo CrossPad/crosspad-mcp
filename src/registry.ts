@@ -51,6 +51,9 @@ export const V10_MODULES: ModuleSpec[] = [
   { name: "crosspad_cdc", toolset: "device", module: "./tools/cdc.js", export: "registerCdcTool" },
   { name: "crosspad_console", toolset: "device", module: "./tools/console.js", export: "registerConsoleTool" },
   { name: "crosspad_ui", toolset: "device", module: "./tools/ui.js", export: "registerUiTool" },
+  { name: "crosspad_midi", toolset: "device", module: "./tools/midi.js", export: "registerMidiTool" },
+  { name: "crosspad_usb_mode", toolset: "device", module: "./tools/usb-mode.js", export: "registerUsbModeTool" },
+  { name: "crosspad_audio_route", toolset: "device", module: "./tools/audio-route.js", export: "registerAudioRouteTool" },
 ];
 
 /** Resource modules loaded the same way. `toolset` is unused; it keeps one shape. */

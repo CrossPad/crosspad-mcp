@@ -54,6 +54,8 @@ const traceTier: TierFn = (args) => {
 const consoleTier: TierFn = (args) => (str(args, "action") === "reset" ? "stimulus" : "read");
 const taskTier: TierFn = (args) => (str(args, "action") === "cancel" ? "stimulus" : "read");
 const audioRouteTier: TierFn = (args) => (str(args, "action") === "query" ? "read" : "stimulus");
+// action='get' is a devices.list read — it must stay reachable under --read-only.
+const usbModeTier: TierFn = (args) => (str(args, "action") === "get" ? "read" : "stimulus");
 
 export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   // core
@@ -70,7 +72,7 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   crosspad_console: consoleTier,
   crosspad_ui: "stimulus",
   crosspad_midi: "stimulus",
-  crosspad_usb_mode: "stimulus",
+  crosspad_usb_mode: usbModeTier,
   crosspad_audio_route: audioRouteTier,
   // sim
   crosspad_run: "stimulus",

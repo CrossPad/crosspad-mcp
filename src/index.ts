@@ -44,8 +44,6 @@ import { crosspadScreenshot } from "./tools/screenshot.js";
 import { crosspadInput } from "./tools/input.js";
 import { crosspadStats } from "./tools/stats.js";
 import { crosspadSettingsGet, crosspadSettingsSet } from "./tools/settings.js";
-import { crosspadMidiSend } from "./tools/midi.js";
-import { crosspadAudioRouteSet, crosspadAudioRouteQuery } from "./tools/audio-route.js";
 import {
   crosspadAppList,
   crosspadAppInstall,
@@ -359,28 +357,6 @@ const O_Screenshot = {
 
 const O_Input = {
   success: z.boolean(),
-  ...ErrorField,
-};
-
-const O_Midi = {
-  success: z.boolean(),
-  type: z.enum(["note_on", "note_off", "cc", "program_change"]).optional(),
-  channel: z.number().int().optional(),
-  details: z.record(z.string(), z.number()).optional(),
-  ...ErrorField,
-};
-
-const O_AudioRoute = {
-  success: z.boolean(),
-  sent: z.array(z.string()).optional(),
-  state: z.object({
-    mic_src: z.number().int(),
-    adc_input: z.array(z.enum(["diff", "line1", "line2"])).length(2),
-    dac_output: z.array(z.enum(["line1", "line2", "all"])).length(2),
-    volume: z.array(z.number().int()).length(2),
-    mute: z.array(z.boolean()).length(2),
-  }).optional(),
-  port: z.string().optional(),
   ...ErrorField,
 };
 
@@ -1092,106 +1068,6 @@ registerLegacy(
         ? { action, keycode: keycode! }
         : { action };
     return jsonResponse((await crosspadInput(params)));
-  }
-);
-
-// ═══════════════════════════════════════════════════════════════════════
-// SIM — MIDI
-// ═══════════════════════════════════════════════════════════════════════
-
-registerLegacy(
-  "crosspad_midi",
-  {
-    description:
-      "[PC sim] Send one MIDI event to the running PC simulator (consolidated; replaces 4 v5 tools). " +
-      "Pick a `type`, then supply ONLY the fields it needs — extras are ignored. " +
-      "Required fields per type:\n" +
-      "  • note_on        → note (velocity optional, default 127)\n" +
-      "  • note_off       → note (velocity optional, default 0)\n" +
-      "  • cc             → cc_num, value   ⚠️ NOT YET SUPPORTED BY PC SIM (no midi_cc handler — call fails fast)\n" +
-      "  • program_change → program          ⚠️ NOT YET SUPPORTED BY PC SIM (no midi_program_change handler — call fails fast)\n" +
-      "`channel` (0-15) defaults to 0 for every type. Only note_on/note_off actually reach the sim today.",
-    inputSchema: {
-      type: z.enum(["note_on", "note_off", "cc", "program_change"])
-        .describe("MIDI event type. Required params — note_on: note (velocity?); note_off: note (velocity?); cc: cc_num,value; program_change: program. channel? defaults 0 for all."),
-      channel: Channel,
-      note: Note.optional().describe("Required for type=note_on|note_off. MIDI note 0-127 (60 = middle C)."),
-      velocity: Velocity.optional().describe("Optional for type=note_on (default 127) and note_off (default 0). Ignored for cc/program_change."),
-      cc_num: Cc.optional().describe("Required for type=cc. MIDI controller number 0-127."),
-      value: Cc7.optional().describe("Required for type=cc. Controller value 0-127."),
-      program: Program.optional().describe("Required for type=program_change. Program number 0-127."),
-    },
-    outputSchema: O_Midi,
-    annotations: ANN_SIDE_EFFECT,
-  },
-  async ({ type, channel, note, velocity, cc_num, value, program }) => {
-    const need = (field: string, val: unknown): string | null =>
-      val === undefined ? `Field '${field}' is required for type='${type}'.` : null;
-    let missing: string | null = null;
-    switch (type) {
-      case "note_on":
-      case "note_off":
-        missing = need("note", note); break;
-      case "cc":
-        missing = need("cc_num", cc_num) ?? need("value", value); break;
-      case "program_change":
-        missing = need("program", program); break;
-    }
-    if (missing) return err(missing);
-
-    return jsonResponse({
-      ...(await crosspadMidiSend({
-        type,
-        channel,
-        note,
-        velocity: velocity ?? (type === "note_off" ? 0 : type === "note_on" ? 127 : undefined),
-        cc_num,
-        value,
-        program,
-      })),
-    });
-  }
-);
-
-// ═══════════════════════════════════════════════════════════════════════
-// ESP HW — audio routing (SysEx 0x1D)
-// ═══════════════════════════════════════════════════════════════════════
-
-registerLegacy(
-  "crosspad_audio_route",
-  {
-    description:
-      "[ESP HW] Runtime audio routing control on a connected CrossPad, over USB MIDI SysEx " +
-      "(CROSSPAD_CMD_AUDIO_ROUTE 0x1D; Linux, needs alsa-utils `amidi`). Works in both USB modes.\n" +
-      "  • action='query' → read back the full routing state (mic_src, ADC inputs, DAC outputs, volumes, mutes).\n" +
-      "  • action='set'   → apply any subset of: adc_input ('diff'|'line1'|'line2'), mic_src (0|1), " +
-      "dac_output ('line1'|'line2'|'all'), volume (0-100), mute. Per-codec fields need `codec` (0|1).\n" +
-      "Notes: codec1 LINE1 is the near-unity PCB loopback path (compresses above ~0.2 FS input); " +
-      "routing reverts to firmware defaults on device reset.",
-    inputSchema: {
-      action: z.enum(["set", "query"]).describe("'set' applies routing changes; 'query' reads the current state."),
-      codec: z.union([z.literal(0), z.literal(1)]).optional()
-        .describe("Target codec for adc_input/dac_output/volume/mute (0 = stock mic path, 1 = PCB-loopback codec)."),
-      adc_input: z.enum(["diff", "line1", "line2"]).optional()
-        .describe("ADC input mux of `codec`: differential, LINE1 (PCB loop on both codecs) or LINE2 (floating)."),
-      mic_src: z.union([z.literal(0), z.literal(1)]).optional()
-        .describe("Which codec feeds the USB mic path."),
-      dac_output: z.enum(["line1", "line2", "all"]).optional()
-        .describe("DAC output route of `codec`."),
-      volume: z.number().int().min(0).max(100).optional()
-        .describe("Codec output volume 0-100."),
-      mute: z.boolean().optional().describe("Codec output mute."),
-    },
-    outputSchema: O_AudioRoute,
-    annotations: ANN_SIDE_EFFECT,
-  },
-  async ({ action, codec, adc_input, mic_src, dac_output, volume, mute }) => {
-    if (action === "query") {
-      return jsonResponse({ ...(await crosspadAudioRouteQuery()) });
-    }
-    return jsonResponse({
-      ...(await crosspadAudioRouteSet({ codec, adc_input, mic_src, dac_output, volume, mute })),
-    });
   }
 );
 
