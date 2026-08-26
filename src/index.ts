@@ -1786,6 +1786,42 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  exitWhenStdinEnds(process.stdin, () => void shutdownStdioServer(server));
+}
+
+/**
+ * End the process when the client's end of the pipe closes.
+ *
+ * A stdio MCP server has exactly one client, and when that client goes there is
+ * nobody left to answer — but nothing was making it exit, so a client that came
+ * and went left a server running, and each of those holds a crosspad-hil daemon
+ * open on the board. Sixteen of both were found alive from one evening of
+ * testing.
+ */
+export function exitWhenStdinEnds(stream: NodeJS.ReadableStream, onEnd: () => void): () => void {
+  let fired = false;
+  const fire = () => {
+    if (fired) return;
+    fired = true;
+    onEnd();
+  };
+  stream.on("end", fire);
+  stream.on("close", fire);
+  return () => {
+    stream.off("end", fire);
+    stream.off("close", fire);
+  };
+}
+
+async function shutdownStdioServer(server: McpServer): Promise<void> {
+  try {
+    await server.close();
+  } catch {
+    // Closing is best effort: the pipe is already gone, so a failure here has
+    // nobody to be reported to and must not keep the process alive.
+  }
+  // The clangd hook runs on exit; the daemon child dies with its stdin.
+  process.exit(0);
 }
 
 // Run main() only when this module is the process entry point. Importing the

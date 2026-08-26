@@ -90,8 +90,7 @@ import { crosspadBuildCheck } from "./tools/build-check.js";
 import type { AddressInfo } from "net";
 import {
   server, setTraceBrowserOpener,
-  bearerMatches, resolveHttpToken, httpAllowedHosts, startHttpServer,
-} from "./index.js";
+  bearerMatches, resolveHttpToken, httpAllowedHosts, startHttpServer, exitWhenStdinEnds } from "./index.js";
 import { _setConfigPathForTest } from "./utils/userConfig.js";
 
 const mockedPcBuild = vi.mocked(crosspadBuild);
@@ -561,5 +560,27 @@ describe("sim toolset input schemas", () => {
 
   it("crosspad_screenshot can ask for the LCD only", async () => {
     expect((await schemaOf("crosspad_screenshot")).properties.region.enum).toEqual(["full", "lcd"]);
+  });
+});
+
+describe("exitWhenStdinEnds", () => {
+  it("fires once when the client's pipe ends, and can be detached", async () => {
+    // A stdio server has exactly one client. Nothing was ending the process
+    // when that client went, so an evening of testing left sixteen servers
+    // alive, each holding a crosspad-hil daemon open on the board.
+    const { PassThrough } = await import("node:stream");
+    const stream = new PassThrough();
+    let calls = 0;
+    const detach = exitWhenStdinEnds(stream, () => { calls += 1; });
+
+    stream.emit("end");
+    stream.emit("close");
+    expect(calls).toBe(1);
+
+    const other = new PassThrough();
+    detach();
+    exitWhenStdinEnds(other, () => { calls += 1; })();
+    other.emit("end");
+    expect(calls).toBe(1);
   });
 });
