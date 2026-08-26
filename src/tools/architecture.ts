@@ -7,7 +7,7 @@ import { git, type GitOpts } from "../utils/git.js";
 import { mapLimit, DEFAULT_CONCURRENCY } from "../utils/async.js";
 import type { ToolContext } from "../tool-context.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { errorResult, jsonResponse, type ToolResult } from "../tool-result.js";
+import { errorResult, jsonResponse, type ToolResult, ErrorSchema } from "../tool-result.js";
 
 // --- crosspad_interfaces ---
 
@@ -254,7 +254,7 @@ export const O_Architecture = {
   // schema: three actions with three different shapes cannot all be declared
   // in one closed record without the outputSchema rejecting whichever ran.
   result: z.record(z.string(), z.unknown()).optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
 };
 
 export type ArchitectureOutcome =

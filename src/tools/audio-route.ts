@@ -21,7 +21,7 @@ import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
-import { jsonResponse, type ToolResult } from "../tool-result.js";
+import { jsonResponse, type ToolResult, ErrorSchema } from "../tool-result.js";
 
 export type { DaemonRequester };
 
@@ -196,7 +196,7 @@ export const O_AudioRoute = {
   port: z.string().optional(),
   error: z.union([
     z.string(),
-    z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }),
+    ErrorSchema,
   ]).optional(),
   resultType: z.string().optional(),
   confirmation: z.record(z.string(), z.unknown()).optional(),

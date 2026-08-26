@@ -12,7 +12,7 @@ import type { ToolContext } from "../tool-context.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { decide } from "../policy/policy.js";
 import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
-import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
+import { jsonResponse, toolError, type ToolResult, ErrorSchema } from "../tool-result.js";
 import { HilError } from "../hil/daemon.js";
 
 export type MidiEventType = "note_on" | "note_off" | "cc" | "program_change";
@@ -239,7 +239,7 @@ export const O_Midi = {
   confirmation: z.record(z.string(), z.unknown()).optional(),
   error: z.union([
     z.string(),
-    z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }),
+    ErrorSchema,
   ]).optional(),
 };
 

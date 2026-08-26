@@ -8,7 +8,7 @@ import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolContext } from "../tool-context.js";
-import { jsonResponse, errorResult, type ToolResult } from "../tool-result.js";
+import { jsonResponse, errorResult, type ToolResult, ErrorSchema } from "../tool-result.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { assertAllowedPath } from "../utils/paths.js";
 
@@ -67,7 +67,7 @@ const O_Common = {
   handle: z.string().optional(),
   device: z.string().optional(),
   ts: z.number().optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
 };
 
 export function registerStimulusTool(server: McpServer, ctx: ToolContext): RegisteredTool {
@@ -236,7 +236,7 @@ export function registerDiagnoseCrashTool(server: McpServer, ctx: ToolContext): 
         likely_cause: z.unknown().optional(),
         report: Loose.optional(),
         ts: z.number().optional(),
-        error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+        error: ErrorSchema.optional(),
       },
       annotations: annotationsFor(tierOf(DIAG, {})),
     },

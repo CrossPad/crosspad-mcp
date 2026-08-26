@@ -10,7 +10,7 @@ import { DoctorCheckSchema, type DoctorCheck } from "../hil/schemas.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
+import { jsonResponse, toolError, type ToolResult, ErrorSchema } from "../tool-result.js";
 import { resolveConfigValue } from "../utils/userConfig.js";
 import { resolvedPython } from "./trace-symbols.js";
 import { runArgvStream } from "../utils/exec.js";
@@ -41,7 +41,7 @@ export const O_Doctor = {
   success: z.boolean(),
   ok: z.boolean().optional(),
   checks: z.array(DoctorCheckSchema).optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
   details: z.record(z.string(), z.unknown()).optional(),
 };
 

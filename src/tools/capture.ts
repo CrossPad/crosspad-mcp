@@ -10,7 +10,7 @@ import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolContext } from "../tool-context.js";
-import { jsonResponse, errorResult, type ToolResult } from "../tool-result.js";
+import { jsonResponse, errorResult, type ToolResult, ErrorSchema } from "../tool-result.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { assertAllowedPath } from "../utils/paths.js";
 
@@ -73,7 +73,7 @@ const O_Capture = {
   preset: z.string().optional(),
   result: z.record(z.string(), z.unknown()).optional(),
   ts: z.number().optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
 };
 
 /** Add the recorded file as a link rather than inlining audio into the transcript. */
@@ -187,7 +187,7 @@ const O_Analyze = {
   wav: z.string().optional(),
   verdict: z.record(z.string(), z.unknown()).optional(),
   ts: z.number().optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
 };
 
 export function registerAnalyzeTool(server: McpServer, ctx: ToolContext): RegisteredTool {

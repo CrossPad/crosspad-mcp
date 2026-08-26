@@ -10,7 +10,7 @@ import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
-import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
+import { jsonResponse, toolError, type ToolResult, ErrorSchema } from "../tool-result.js";
 
 export const TOOL_NAME = "crosspad_cdc";
 
@@ -113,7 +113,7 @@ export const O_Cdc = {
   ts: z.number().optional(),
   resultType: z.string().optional(),
   confirmation: z.record(z.string(), z.unknown()).optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
   details: z.record(z.string(), z.unknown()).optional(),
 };
 

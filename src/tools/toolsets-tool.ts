@@ -4,6 +4,7 @@
 import { z } from "zod";
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { jsonResponse, errorResult } from "../response.js";
+import { ErrorSchema } from "../tool-result.js";
 import { annotationsFor } from "../policy/tiers.js";
 import { enforce } from "../policy/confirm.js";
 import { TOOLSETS, TOOLSET_DESCRIPTIONS, type ToolsetManager } from "../toolsets.js";
@@ -30,7 +31,7 @@ const O_Toolsets = {
   added: z.array(z.string()).optional(),
   removed: z.array(z.string()).optional(),
   hidden_by_policy: z.array(z.string()).optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
 };
 
 export function registerToolsetsTool(server: McpServer, ctx: ToolContext, manager: ToolsetManager): RegisteredTool {

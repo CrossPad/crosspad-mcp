@@ -18,7 +18,7 @@ import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { requireConfirmation, CONFIRMATION_OUTPUT } from "../policy/confirm.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
+import { jsonResponse, toolError, type ToolResult, ErrorSchema } from "../tool-result.js";
 import type { OnLine } from "../utils/exec.js";
 import {
   appGuard,
@@ -114,7 +114,7 @@ export const O_Apps = {
   /** What the caller must still do for the change to reach the firmware. */
   next: z.string().optional(),
   ts: z.number().optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
 };
 
 /** Actions that rewrite a submodule and so need the local-work guard. */

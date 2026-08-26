@@ -12,7 +12,7 @@ import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
-import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
+import { jsonResponse, toolError, type ToolResult, ErrorSchema } from "../tool-result.js";
 
 export const TOOL_NAME = "crosspad_console";
 /** Spec §4.3: console reads capped at 2 000 lines per call. */
@@ -92,7 +92,7 @@ export const O_Console = {
   context: z.array(z.string()).optional(),
   elapsed_s: z.number().optional(),
   ts: z.number().optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
   details: z.record(z.string(), z.unknown()).optional(),
   // The snapshot action returns the parser's whole state (fatals, reboots,
   // markers_seen, heap, kit_requests, cdc_drops, ...). Pinning those field by

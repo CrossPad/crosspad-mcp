@@ -8,7 +8,7 @@ import { SnapshotSchema, type Snapshot } from "../hil/schemas.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
+import { jsonResponse, toolError, type ToolResult, ErrorSchema } from "../tool-result.js";
 import { sendRemoteCommand, isSimulatorRunning } from "../utils/remote-client.js";
 
 export const TOOL_NAME = "crosspad_snapshot";
@@ -138,7 +138,9 @@ export async function takeSimSnapshot(ctx: ToolContext, diffFrom: string | undef
 }
 
 export const SnapshotInputShape = {
-  target: z.enum(["device", "sim"]).describe("device = a connected CrossPad via the daemon; sim = the running PC simulator (ui is null there)"),
+  target: z.enum(["device", "sim"]).default("device").describe(
+    "Defaults to the attached board — the common case, and a snapshot with no arguments should not be a validation error. " +
+    "device = a connected CrossPad via the daemon; sim = the running PC simulator (ui is null there)"),
   device: z.string().min(1).optional().describe("Device id or port; omit when exactly one CrossPad is connected. Ignored for sim."),
   include: z.array(z.enum(INCLUDE_KEYS)).optional().describe("Sections to fill (default all). Fewer sections = fewer CDC round-trips."),
   diff_from: z.string().regex(/^snap_/).optional().describe("Earlier snapshot_id; result.changed lists the top-level keys that differ. Unknown id → full snapshot."),
@@ -154,7 +156,7 @@ export const SnapshotInput = z.object(SnapshotInputShape);
 // the first new daemon key would have failed every call at the client.
 export const O_Snapshot = SnapshotSchema.partial().extend({
   success: z.boolean(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
   details: z.record(z.string(), z.unknown()).optional(),
 });
 

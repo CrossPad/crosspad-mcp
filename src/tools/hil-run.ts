@@ -11,7 +11,7 @@ import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/proto
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolContext } from "../tool-context.js";
 import { ScenarioInfoSchema } from "../hil/schemas.js";
-import { jsonResponse, errorResult, type ToolResult } from "../tool-result.js";
+import { jsonResponse, errorResult, type ToolResult, ErrorSchema } from "../tool-result.js";
 import { decide } from "../policy/policy.js";
 import { requireConfirmation, CONFIRMATION_OUTPUT } from "../policy/confirm.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
@@ -62,7 +62,7 @@ const O_HilRun = {
   task: z.string().optional(),
   poll: z.string().optional(),
   ts: z.number().optional(),
-  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  error: ErrorSchema.optional(),
 };
 
 /** Scenarios that write firmware; everything else only stimulates the board. */

@@ -11,7 +11,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../tool-context.js";
-import { jsonResponse } from "../tool-result.js";
+import { jsonResponse, ErrorSchema } from "../tool-result.js";
 import type { ToolResult } from "../tool-result.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { CROSSPAD_IDF_ROOT, GIT_DIR } from "../config.js";
@@ -183,7 +183,7 @@ export function registerDocsSearchTool(server: McpServer, _ctx: ToolContext): Re
             }),
           )
           .optional(),
-        error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+        error: ErrorSchema.optional(),
       },
       annotations: annotationsFor(tierOf(TOOL, {})),
     },

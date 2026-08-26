@@ -1,5 +1,6 @@
 // src/tool-result.ts — the `{ success, ...data, error? }` envelope used by
 // every crosspad_* tool (same shape as the private helpers in src/index.ts).
+import { z } from "zod";
 import { HilError } from "./hil/daemon.js";
 
 export type ToolResult = {
@@ -11,6 +12,23 @@ export type ToolResult = {
 /** Emit structuredContent in addition to text content. Clients with an
  *  outputSchema validate structuredContent; the LLM sees the same JSON in
  *  `content`. `success === false` sets `isError` per the MCP spec. */
+/**
+ * The error object every tool reports, as a schema.
+ *
+ * Loose on purpose. `errorResult` attaches `details` whenever a HilError
+ * carries any, and the daemon decides what goes in there — a tool that
+ * declared `{code, message, hint}` and nothing else rejected its own error
+ * the first time one arrived with details, which is how a path-allowlist
+ * refusal came back as "structured content does not match the tool's output
+ * schema" instead of as the refusal.
+ */
+export const ErrorSchema = z.looseObject({
+  code: z.string(),
+  message: z.string(),
+  hint: z.string().nullish(),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
+
 export function jsonResponse(data: object): ToolResult {
   const rec = data as Record<string, unknown>;
   const result: ToolResult = {
