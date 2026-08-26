@@ -102,6 +102,7 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   // code
   crosspad_search_symbols: "read",
   crosspad_architecture: "read",
+  crosspad_symbol: "read",
   crosspad_list_interfaces: "read",
   crosspad_interface_implementations: "read",
   crosspad_capabilities: "read",

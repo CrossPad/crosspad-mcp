@@ -26,7 +26,7 @@ export const TOOLSETS: Record<string, string[]> = {
     "crosspad_settings_get", "crosspad_settings_set", "crosspad_test_run",
   ],
   code: [
-    "crosspad_docs_search", "crosspad_architecture",
+    "crosspad_docs_search", "crosspad_architecture", "crosspad_symbol",
     "crosspad_search_symbols", "crosspad_list_interfaces", "crosspad_interface_implementations",
     "crosspad_capabilities", "crosspad_list_apps_source",
   ],
@@ -40,7 +40,7 @@ export const TOOLSET_DESCRIPTIONS: Record<string, string> = {
   device: "Device I/O through the crosspad-hil daemon: CDC verbs, console, UI driving, MIDI, USB mode, audio routing.",
   hil: "Hardware-in-the-loop scenarios, audio capture and analysis, pad stimulus, host-side BLE.",
   sim: "PC simulator: run/kill/check, screenshot, input, stats, settings, test runner.",
-  code: "Code intelligence: symbol search, interfaces, implementations, capabilities, registered apps.",
+  code: "Code intelligence: clangd-backed symbol queries, symbol search, interfaces, implementations, capabilities, registered apps.",
   git: "Repo mutations: submodule drift, submodule update, commit.",
   apps: "App package manager (crosspad-apps registry): list/install/remove/update/sync.",
   trace: "STM32 SWD variable tracer.",

@@ -22,6 +22,7 @@ function probe(over: Partial<DoctorProbe> = {}): DoctorProbe {
     mtimeMs: (p) => (p.endsWith("CrossPad") || p.endsWith("CrossPad.bin") ? NOW - 60_000 : null),
     newestSourceMtimeMs: () => NOW - 120_000,
     simBinary: () => "/git/crosspad-pc/bin/CrossPad",
+    clangdPath: () => "/usr/bin/clangd",
     ...over,
   };
 }
@@ -95,5 +96,16 @@ describe("crosspad_doctor tool", () => {
     const names = (res.structuredContent.checks as any[]).map((c) => c.name);
     expect(names).toContain("port_locks");
     expect(names).toContain("hil_python");
+  });
+});
+
+describe("clangd check", () => {
+  it("names the install line when the language server is not there", async () => {
+    // Only crosspad_symbol needs it, so its absence must read as an absent
+    // binary rather than as a broken tool.
+    const checks = await runDoctorChecks(probe({ clangdPath: () => null }), async () => []);
+    const c = byName(checks).clangd;
+    expect(c.ok).toBe(false);
+    expect(c.fix).toContain("CROSSPAD_CLANGD");
   });
 });

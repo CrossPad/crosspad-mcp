@@ -60,6 +60,7 @@ export const V10_MODULES: ModuleSpec[] = [
   { name: "crosspad_audio_route", toolset: "device", module: "./tools/audio-route.js", export: "registerAudioRouteTool" },
   { name: "crosspad_docs_search", toolset: "code", module: "./tools/docs-search.js", export: "registerDocsSearchTool" },
   { name: "crosspad_architecture", toolset: "code", module: "./tools/architecture.js", export: "registerArchitectureTool" },
+  { name: "crosspad_symbol", toolset: "code", module: "./tools/symbol.js", export: "registerSymbolTool" },
   { name: "crosspad_stimulus", toolset: "hil", module: "./tools/stimulus.js", export: "registerStimulusTool" },
   { name: "crosspad_ble", toolset: "hil", module: "./tools/stimulus.js", export: "registerBleTool" },
   { name: "crosspad_diagnose_crash", toolset: "device", module: "./tools/stimulus.js", export: "registerDiagnoseCrashTool" },

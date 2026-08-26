@@ -3,6 +3,7 @@
 import fs from "fs";
 import path from "path";
 import { createRequire } from "module";
+import { findClangd } from "../utils/clangd.js";
 import { z } from "zod";
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { DoctorCheckSchema, type DoctorCheck } from "../hil/schemas.js";
@@ -33,6 +34,7 @@ export interface DoctorProbe {
   /** Newest *.c/*.cpp/*.h/*.hpp mtime under root/src (bounded walk), or null. */
   newestSourceMtimeMs(root: string): number | null;
   simBinary(): string;
+  clangdPath(): string | null;
 }
 
 export const O_Doctor = {
@@ -151,6 +153,16 @@ export async function runDoctorChecks(
     fix: found.length > 0 ? "" : "crosspad_build platform=idf (per rev: idf.py -B build_v2 -DSDKCONFIG=sdkconfig.v2 build).",
   });
 
+  // 6b. clangd — crosspad_symbol is the only thing that needs it, and a missing
+  // language server there looks like a broken tool rather than an absent binary.
+  const clangd = p.clangdPath();
+  checks.push({
+    name: "clangd",
+    ok: clangd !== null,
+    detail: clangd ?? "not on PATH (looked for clangd and clangd-14..20)",
+    fix: clangd ? "" : "Install clangd (apt install clangd / brew install llvm) or set CROSSPAD_CLANGD. Only crosspad_symbol needs it.",
+  });
+
   // 7. sim binary presence and staleness vs sources
   const sim = p.simBinary();
   if (!p.exists(sim)) {
@@ -246,6 +258,7 @@ export function realProbe(): DoctorProbe {
     mtimeMs: (p) => { try { return fs.statSync(p).mtimeMs; } catch { return null; } },
     newestSourceMtimeMs: (root) => newestMtimeUnder(path.join(root, "src")),
     simBinary: () => BIN_EXE,
+    clangdPath: () => findClangd(),
   };
 }
 

@@ -26,7 +26,7 @@ const InputShape = {
     .string()
     .regex(/^[a-z][a-z0-9_]*$/, "scenario names are lower_snake_case")
     .optional()
-    .describe("Scenario name, e.g. smoke, app_churn, kit_churn, led_state, usb_mode_cycle. Required for run"),
+    .describe("Scenario name, e.g. smoke, app_churn, kit_churn, stability, ble_midi. action=list gives the full catalog. Required for run"),
   params: z
     .record(z.string(), z.unknown())
     .optional()
@@ -79,7 +79,7 @@ export function registerHilRunTool(server: McpServer, ctx: ToolContext): Registe
     {
       title: "Run a hardware-in-the-loop scenario",
       description:
-        "[ESP HW] Run a HIL scenario on a real board as a task (these ARE the test suite — there are no firmware unit tests). action=list returns the catalog with each scenario's parameters; action=run starts one and returns a task handle to poll with crosspad_task. The report comes back with its console log and report.json as links. Scenarios: smoke (boot markers), app_churn (open/close every app, heap per app), kit_churn (swap kits while pads keep firing), led_state, usb_mode_cycle. A run that passes with no stimulus in the window proves nothing — kit_churn fails itself for that reason.",
+        "[ESP HW] Run a HIL scenario on a real board as a task (these ARE the test suite — there are no firmware unit tests). action=list returns the catalog with each scenario's parameters; action=run starts one and returns a task handle to poll with crosspad_task. The report comes back with its console log and report.json as links. Scenarios: smoke (boot markers), app_churn (open/close every app, heap per app), kit_churn (swap kits while pads keep firing), led_state, usb_mode_cycle, midi_bench, midi_stress, velocity, speedtest, rt_glitch, stability (multi-hour soak), audio_loopback, speaker_acoustic, sampler_record, ble_midi. Call action=list rather than trusting this sentence — it is the catalog the daemon actually has. A run that passes with no stimulus in the window proves nothing — kit_churn fails itself for that reason.",
       inputSchema: InputShape,
       outputSchema: O_HilRun,
       annotations: annotationsFor(tierOf(TOOL, { action: "run" })),
