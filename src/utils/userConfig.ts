@@ -6,6 +6,11 @@ import path from "path";
 export interface UserConfig {
   stm_elf_path?: string;
   pyocd_python?: string;
+  /** Python interpreter that has `crosspad-hil[all]` installed (used to spawn
+   *  `python -m crosspad_hil.serve`). Resolution at spawn time: this value →
+   *  $CROSSPAD_HIL_PYTHON → the tracer python (`pyocd_python` /
+   *  $CROSSPAD_TRACE_PYTHON) → "python3". Mirrors `pyocd_python`. */
+  hil_python?: string;
   probe_serial?: string;
   trace_dir?: string;
   /** Absolute path to STM32_Programmer_CLI (ST's flasher). Resolution order at
