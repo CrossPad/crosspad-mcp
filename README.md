@@ -7,7 +7,7 @@
 
 MCP (Model Context Protocol) server that gives an LLM full control over the [CrossPad](https://github.com/CrossPad) development workflow — build, flash and test firmware (ESP32-S3 + STM32), drive the PC simulator, trace live variables over SWD, route audio on the physical device, manage app packages, and search code across every repo of the ecosystem. All from natural language.
 
-**30 tools · 4 resources · 2 bundled Claude Code skills · stdio & HTTP transports**
+**37 tools in 8 toolsets (8 visible at start) · 10 resources · 2 bundled Claude Code skills · stdio & HTTP transports**
 
 ## Install
 
@@ -90,11 +90,28 @@ Install both as a plugin:
 /plugin install crosspad@crosspad
 ```
 
-## Tools (30) + resources
+## Tools + resources
 
-> v8 unified platform-axis tools: build/run/kill/check/flash take `platform` (or `transport`) as an arg instead of being split per-platform. Migration tables at the bottom of this file.
+> v10 put the tools behind **toolsets** and a **policy**: `tools/list` starts with the `core` toolset only, so the startup context stays small, and everything that writes to a device or the host is tiered and confirmable. Migration table at the bottom of this file.
 
 Each tool is focused on a single action. Strict schema validation (ranges on MIDI/pad values, enums on platforms/repos) catches bad inputs before execution.
+
+### Toolsets
+
+| Toolset | Contains | On at start |
+|---|---|---|
+| `core` | `crosspad_devices`, `crosspad_doctor`, `crosspad_snapshot`, `crosspad_build`, `crosspad_flash`, `crosspad_repo_status`, `crosspad_toolsets`, `crosspad_task` | yes |
+| `device` | `crosspad_cdc`, `crosspad_console`, `crosspad_ui`, `crosspad_midi`, `crosspad_usb_mode`, `crosspad_audio_route` | no |
+| `hil` | scenario runner (`crosspad_hil_run` and friends — P1) | no |
+| `sim` | `crosspad_run`, `crosspad_kill`, `crosspad_check`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats`, `crosspad_settings_get`, `crosspad_settings_set`, `crosspad_test_run`, `crosspad_log` | no |
+| `code` | `crosspad_search_symbols`, `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities`, `crosspad_list_apps_source` | no |
+| `git` | `crosspad_repo_diff`, `crosspad_submodule_update`, `crosspad_commit` | no |
+| `apps` | `crosspad_apps_list`, `crosspad_apps_install`, `crosspad_apps_remove`, `crosspad_apps_update`, `crosspad_apps_sync` | no |
+| `trace` | `crosspad_trace` | no |
+
+Enable one at runtime with `crosspad_toolsets action=enable toolset=device` (the tool list changes and the client is notified). At startup: `--toolsets device,code` (or `CROSSPAD_TOOLSETS=device,code`, keyword `all`). `--read-only` (or `CROSSPAD_MCP_POLICY=readonly`) removes every non-`read` tool from the list regardless of toolset flags — read-only always wins.
+
+Danger-tier tools (`crosspad_flash`, bootloader/DFU requests, `crosspad_trace` write/call) return `resultType="confirmation_required"` with a `confirm_token` valid for 120 s; re-issue the identical call carrying the token to proceed. A declined confirmation is `CANCELLED_BY_USER` and must not be retried automatically.
 
 ### Build & flash
 
@@ -105,10 +122,24 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | `crosspad_kill` | Stop running simulator (`platform: pc`, SIGTERM by exe name match) |
 | `crosspad_check` | Health check (`platform: pc`): stale exe, new sources, submodule drift |
 | `crosspad_flash` | Flash firmware (`target: esp` with `transport: uart\|ota`, or `target: stm` with `method: swd\|dfu`) |
-| `crosspad_log` | Capture logs (`target`: pc=spawn binary / idf=read serial) |
-| `crosspad_devices` | List USB serial devices, flag CrossPads |
+| `crosspad_log` | Capture simulator logs (`target: pc` spawns the binary). For device logs use `crosspad_console` — it does not reboot the board. |
+| `crosspad_devices` | Devices through the crosspad-hil daemon: USB mode, CDC + STM32-bridge ports, MIDI ports, UAC2 card, which one is selected |
 | `crosspad_trace` | Real-time SWD variable trace over ST-Link (non-halting RAM polling) |
 | `crosspad_audio_route` | Runtime codec routing on the physical device over MIDI SysEx (ADC inputs, DAC outputs, USB-mic source, volume/mute, query) |
+
+### Device (crosspad-hil daemon)
+
+Everything here needs a connected board (`[ESP HW]`) and the `device` toolset.
+
+| Tool | Purpose |
+|------|---------|
+| `crosspad_doctor` | Host + daemon environment checks (python, crosspad-hil version, IDF export, sim binary, ports) with a `fix` per failed check |
+| `crosspad_console` | STM32-bridge console: `open` (never reboots the board — DTR/RTS deasserted), `read`, `expect`, `reset`, `snapshot`, `close`. Log file linked as a resource, never inlined; reads cap at 2 000 lines |
+| `crosspad_cdc` | Typed CDC verbs (`app`, `kit`, `pad`, `enc`, `led`, `mem`, `audio`, `ble`, `system`, `raw`) — the `hil_control.cpp` command set with reply parsing |
+| `crosspad_ui` | Drive the UI by snapshot ref: rotate to a labelled row, press, back. Returns a fresh snapshot |
+| `crosspad_snapshot` | One coherent read of a device (apps, ui, kit, leds, pads, mem, ble, console) or of the simulator; diffable against a previous snapshot |
+| `crosspad_usb_mode` | Get/set the USB profile (`default` = MIDI+CDC, `audio` = UAC2) and wait for re-enumeration |
+| `crosspad_task` | `status` / `wait` / `cancel` / `list` for long operations (build, flash, scenarios) |
 
 ### SWD tracing (crosspad_trace)
 
@@ -239,8 +270,31 @@ action=stop
 | `crosspad://apps/registry/<platform>` | Raw `app-registry.json` per detected platform (pc / idf / esp32-s3). |
 | `crosspad://apps/installed/<platform>` | Raw `apps.json` (installed manifest) per detected platform. |
 | `crosspad://symbols/{repo}/{symbol}` | Resource template — resolves a single symbol's definitions in `<repo>` (or `all`). MCP-native alternative to `crosspad_search_symbols` for known symbol+repo pairs. |
+| `crosspad://devices` | Device inventory from the daemon — the raw `Device` dicts behind `crosspad_devices`. Re-discovered on every read. |
+| `crosspad://device/{id}/state` | Fresh snapshot of one device (apps, ui, kit, leds, pads, mem, ble, console). |
+| `crosspad://device/{id}/console/log` | The console log file of the most recent `crosspad_console open` for that device (last 1 MiB). |
+| `crosspad://cdc` | CDC verb catalog with reply grammar, from `crosspad_hil/knowledge/cdc.yaml`. Cached 1 h. |
+| `crosspad://sysex` | 0x7D SysEx catalog: USB-mode and audio-route ids, plus the host denylist. Cached 1 h. |
+| `crosspad://hil/catalog` | Scenarios the daemon can run, with parameters, defaults and help. Cached 1 h. |
 
 ### Migrations
+
+<details>
+<summary><b>v9 → v10</b> — the device side moved into the crosspad-hil daemon; tools live in toolsets</summary>
+
+| Old (v9) | New (v10) | Status |
+|---|---|---|
+| `crosspad_log` with `target: idf` | `crosspad_console` (`open`/`read`/`expect`/`snapshot`/`close`) | shipped — `crosspad_log` keeps `target: pc` |
+| `crosspad_devices` (serial-port list) | `crosspad_devices` (daemon `devices.list`: USB mode, paired STM32 bridge, MIDI, UAC2) | shipped — same name, richer result |
+| raw SysEx via `amidi` inside `crosspad_audio_route` | daemon `midi.sysex` / `midi.query_route`, tool schema unchanged | shipped |
+| `crosspad_flash` (fire and forget) | `crosspad_flash` with an always-returned preflight, a job handle and `wait_boot` | shipped |
+| — | `crosspad_cdc`, `crosspad_ui`, `crosspad_snapshot`, `crosspad_doctor`, `crosspad_usb_mode`, `crosspad_task`, `crosspad_toolsets` | new |
+| `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities` | `crosspad_architecture` with an `action` field | P1 — v9 names still registered (toolset `code`) |
+| `crosspad_apps_list/install/remove/update/sync` | `crosspad_apps` with an `action` field | P1 — v9 names still registered (toolset `apps`) |
+
+Startup surface: `tools/list` returns the `core` toolset only. Enable the rest with `crosspad_toolsets`, `--toolsets a,b` or `CROSSPAD_TOOLSETS`; hide every writing tool with `--read-only`. Requires `crosspad-hil` ≥ 1.0.0 (`package.json` → `hilVersion`); `crosspad_doctor` tells you when it is missing or too old.
+
+</details>
 
 <details>
 <summary><b>v7 → v8</b> — platform/transport became an arg, not part of the tool name (30 → 28 tools)</summary>

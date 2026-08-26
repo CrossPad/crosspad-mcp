@@ -1,6 +1,6 @@
 {
   "name": "crosspad-mcp-server",
-  "version": "9.3.0",
+  "version": "10.0.0",
   "hilVersion": "1.0.0",
   "description": "MCP development server for CrossPad — build, test, manage apps, interact with simulator",
   "type": "module",
@@ -39,7 +39,9 @@
     "prepublishOnly": "tsc",
     "dev": "tsc --watch",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "eval:grade": "node eval/grade.ts",
+    "typecheck:eval": "tsc -p tsconfig.eval.json --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
