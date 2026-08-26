@@ -2,7 +2,7 @@
 // The daemon owns device-side handles; this registry only tracks what this
 // server minted or was given, so `crosspad://workspace` and expiry messages
 // can name them. Single module, no globals inside tools (spec §3.7).
-export type HandleKind = "console" | "cdc" | "task" | "snapshot";
+export type HandleKind = "console" | "cdc" | "task" | "snapshot" | "capture" | "stimulus" | "ble";
 
 export interface HandleMeta {
   kind: HandleKind;

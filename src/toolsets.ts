@@ -15,9 +15,12 @@ export const TOOLSETS: Record<string, string[]> = {
     "crosspad_repo_status", "crosspad_toolsets", "crosspad_task",
   ],
   device: [
-    "crosspad_cdc", "crosspad_console", "crosspad_ui", "crosspad_midi", "crosspad_usb_mode", "crosspad_audio_route",
+    "crosspad_cdc", "crosspad_console", "crosspad_ui", "crosspad_midi", "crosspad_usb_mode", "crosspad_audio_route", "crosspad_diagnose_crash",
   ],
-  hil: ["crosspad_hil_run"],
+  hil: [
+    "crosspad_hil_run", "crosspad_capture", "crosspad_analyze",
+    "crosspad_stimulus", "crosspad_ble",
+  ],
   sim: [
     "crosspad_run", "crosspad_kill", "crosspad_check", "crosspad_screenshot", "crosspad_input", "crosspad_stats",
     "crosspad_settings_get", "crosspad_settings_set", "crosspad_test_run",
@@ -35,7 +38,7 @@ export const TOOLSETS: Record<string, string[]> = {
 export const TOOLSET_DESCRIPTIONS: Record<string, string> = {
   core: "Always on: device inventory, doctor, snapshot, build, flash (confirmed), repo status, toolsets, task control.",
   device: "Device I/O through the crosspad-hil daemon: CDC verbs, console, UI driving, MIDI, USB mode, audio routing.",
-  hil: "Hardware-in-the-loop scenarios, capture, analysis, stimulus, BLE (P1 — empty in this release).",
+  hil: "Hardware-in-the-loop scenarios, audio capture and analysis, pad stimulus, host-side BLE.",
   sim: "PC simulator: run/kill/check, screenshot, input, stats, settings, test runner.",
   code: "Code intelligence: symbol search, interfaces, implementations, capabilities, registered apps.",
   git: "Repo mutations: submodule drift, submodule update, commit.",

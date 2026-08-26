@@ -7,7 +7,7 @@
 
 MCP (Model Context Protocol) server that gives an LLM full control over the [CrossPad](https://github.com/CrossPad) development workflow — build, flash and test firmware (ESP32-S3 + STM32), drive the PC simulator, trace live variables over SWD, route audio on the physical device, manage app packages, and search code across every repo of the ecosystem. All from natural language.
 
-**39 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 2 bundled Claude Code skills · stdio & HTTP transports**
+**44 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 2 bundled Claude Code skills · stdio & HTTP transports**
 
 ## Install
 
@@ -101,8 +101,8 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | Toolset | Contains | On at start |
 |---|---|---|
 | `core` | `crosspad_devices`, `crosspad_doctor`, `crosspad_snapshot`, `crosspad_build`, `crosspad_flash`, `crosspad_repo_status`, `crosspad_toolsets`, `crosspad_task` | yes |
-| `device` | `crosspad_cdc`, `crosspad_console`, `crosspad_ui`, `crosspad_midi`, `crosspad_usb_mode`, `crosspad_audio_route` | no |
-| `hil` | scenario runner (`crosspad_hil_run` and friends — P1) | no |
+| `device` | `crosspad_cdc`, `crosspad_console`, `crosspad_ui`, `crosspad_midi`, `crosspad_usb_mode`, `crosspad_audio_route`, `crosspad_diagnose_crash` | no |
+| `hil` | `crosspad_hil_run`, `crosspad_capture`, `crosspad_analyze`, `crosspad_stimulus`, `crosspad_ble` | no |
 | `sim` | `crosspad_run`, `crosspad_kill`, `crosspad_check`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats`, `crosspad_settings_get`, `crosspad_settings_set`, `crosspad_test_run`, `crosspad_log` | no |
 | `code` | `crosspad_docs_search`, `crosspad_search_symbols`, `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities`, `crosspad_list_apps_source` | no |
 | `git` | `crosspad_repo_diff`, `crosspad_submodule_update`, `crosspad_commit` | no |
@@ -140,6 +140,20 @@ Everything here needs a connected board (`[ESP HW]`) and the `device` toolset.
 | `crosspad_snapshot` | One coherent read of a device (apps, ui, kit, leds, pads, mem, ble, console) or of the simulator; diffable against a previous snapshot |
 | `crosspad_usb_mode` | Get/set the USB profile (`default` = MIDI+CDC, `audio` = UAC2) and wait for re-enumeration |
 | `crosspad_task` | `status` / `wait` / `cancel` / `list` for long operations (build, flash, scenarios) |
+| `crosspad_diagnose_crash` | One call for a panic: reset reason, registers, backtrace decoded against the ELF that is actually flashed, heap after the restart, console context as a link |
+
+### Hardware-in-the-loop (toolset `hil`)
+
+The scenarios that used to be `platform-idf/tools/hil_*.py`, plus the loop that
+lets a model check what it played.
+
+| Tool | Purpose |
+|------|---------|
+| `crosspad_hil_run` | `list` the scenario catalog, `run` one as a task (smoke, app_churn, kit_churn, led_state, usb_mode_cycle, midi_bench, midi_stress, …) |
+| `crosspad_stimulus` | Play the pads: a rate across a pad set, or a pattern with real timings. Reports transport loss and engine loss separately |
+| `crosspad_capture` | Record the board through its own UAC2 endpoint — resumes the parked RT mixer and restores the USB profile for you. WAV returned as a link |
+| `crosspad_analyze` | Offline verdict on a WAV: onset, click, silence, multitone, velocity, psd. Touches no hardware |
+| `crosspad_ble` | Drive the host radio: scan, connect, send, status — the other end of the board's BLE MIDI |
 
 ### SWD tracing (crosspad_trace)
 

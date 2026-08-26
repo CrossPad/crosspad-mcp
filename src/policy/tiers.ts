@@ -70,6 +70,13 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   // device
   // A scenario only stimulates the board unless it was told to flash.
   crosspad_docs_search: "read",
+  // Recording drives the device (profile switch, mixer resume); analysis is a file read.
+  crosspad_capture: "stimulus",
+  crosspad_stimulus: "stimulus",
+  crosspad_ble: "stimulus",
+  // Reading a crash out of a log changes nothing on the board.
+  crosspad_diagnose_crash: "read",
+  crosspad_analyze: "read",
   crosspad_hil_run: (args) =>
     (args as { params?: { flash?: unknown } } | undefined)?.params?.flash ? "danger" : "stimulus",
   crosspad_cdc: cdcTier,
