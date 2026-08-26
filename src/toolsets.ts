@@ -17,7 +17,7 @@ export const TOOLSETS: Record<string, string[]> = {
   device: [
     "crosspad_cdc", "crosspad_console", "crosspad_ui", "crosspad_midi", "crosspad_usb_mode", "crosspad_audio_route",
   ],
-  hil: [],
+  hil: ["crosspad_hil_run"],
   sim: [
     "crosspad_run", "crosspad_kill", "crosspad_check", "crosspad_screenshot", "crosspad_input", "crosspad_stats",
     "crosspad_settings_get", "crosspad_settings_set", "crosspad_test_run",

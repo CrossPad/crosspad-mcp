@@ -7,7 +7,7 @@
 
 MCP (Model Context Protocol) server that gives an LLM full control over the [CrossPad](https://github.com/CrossPad) development workflow — build, flash and test firmware (ESP32-S3 + STM32), drive the PC simulator, trace live variables over SWD, route audio on the physical device, manage app packages, and search code across every repo of the ecosystem. All from natural language.
 
-**37 tools in 8 toolsets (8 visible at start) · 10 resources · 2 bundled Claude Code skills · stdio & HTTP transports**
+**38 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 2 bundled Claude Code skills · stdio & HTTP transports**
 
 ## Install
 

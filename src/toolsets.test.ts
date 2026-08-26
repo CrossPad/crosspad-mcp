@@ -39,7 +39,8 @@ describe("TOOLSETS", () => {
       "crosspad_devices", "crosspad_doctor", "crosspad_snapshot", "crosspad_build", "crosspad_flash",
       "crosspad_repo_status", "crosspad_toolsets", "crosspad_task",
     ]);
-    expect(TOOLSETS.hil).toEqual([]);
+    // P1 filled the hil toolset in; capture/analyze/stimulus/ble join it as they land.
+    expect(TOOLSETS.hil).toEqual(["crosspad_hil_run"]);
     expect(toolsetOf("crosspad_commit")).toBe("git");
     expect(toolsetOf("crosspad_log")).toBe("sim");
     expect(toolsetOf("nope")).toBeUndefined();
