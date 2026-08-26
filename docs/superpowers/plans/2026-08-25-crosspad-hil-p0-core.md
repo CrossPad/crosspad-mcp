@@ -9274,3 +9274,45 @@ Expected: all tests pass (the counts of earlier tasks plus 26 from this chunk).
 ```bash
 cd /home/matixan/GIT/crosspad-hil && git add crosspad_hil/ota.py tests/test_ota.py && git commit -m "feat(ota): port ota_flash and requestBootloader; flash() waits for boot on the console"
 ```
+
+---
+
+## Cross-plan verification (run 2026-08-26, before execution)
+
+Mechanical checks over the three assembled plans plus the frozen contract:
+
+| Check | Result |
+|---|---|
+| Placeholder scan (`TBD`, `TODO`, `implement later`, `similar to Task N`, `add appropriate …`, trailing `...`) | clean — the only `...` is the `Scenario` Protocol stub in plan B Task 1, which is valid Python |
+| Task numbering | no duplicates, no gaps: core 1–12, scenarios/CLI/daemon 1–10, mcp 1–11 |
+| Error codes | every code used across all plans is one of the 15 defined in the contract's `errors.py`; none invented |
+| Cross-plan call sites (`set_mode`, `take_snapshot`, `run_scenario`, `open_console`, `open_cdc`, `kit_load`, `app_start`) | argument names and defaults at every call site match the definitions in plan A |
+| Daemon op names | every op the MCP plan requests (`devices.list`, `devices.doctor`, `console.open/read/expect/reset/snapshot/close`, `cdc.transact`, `cdc.verb`, `snapshot.take`, `task.status/wait/cancel`, `serve.ping`, and in tasks 8–11 `midi.*`, `usbmode.set`, `ota.flash`, `console.wait_boot`, `scenario.list`, `knowledge.get`) is registered by plan B Task 9 — except `knowledge.get`, which plan C Task 10 explicitly flags as an op to add to `serve.py` |
+| Hardware in tests | no test in any plan opens a real port, spawns the real daemon, or needs a board; every I/O boundary is injected (`serial_factory`, `Backends`, `discover_fn`, mocked `HilDaemon`) |
+
+What this check does **not** cover, and should be done by a reader before task 1: semantic review of the ported regexes and byte sequences against the current firmware (`main/hil_control.cpp` moves), and whether each test actually fails for the stated reason.
+
+### Correction found on real hardware (2026-08-26)
+
+Plan A Task 4 pairs the ESP CDC and the STM console port by the longest common
+prefix of pyserial's `location`. On the connected rev2 board the two interfaces
+enumerate on **different USB paths**:
+
+```
+/dev/ttyACM1  0x303a:0x3456  'Crosspad'              serial='123456'        location=1-4:1.0
+/dev/ttyACM0  0x0483:0x5740  'CrossPad MIDI+Serial'  serial='205D36865830'  location=7-2:1.0
+```
+
+They are two independent USB devices (separate cables/hubs), so no location
+prefix is shared and the serial numbers are unrelated. Consequences for the
+implementation:
+
+- The single-pair rule (exactly one ESP side + exactly one STM side → one
+  `Device`) is the primary rule and must not be gated on location similarity.
+- Location prefix may only be used as a tie-breaker when **more than one** of
+  each kind is present, and when it yields no match the discovery must return
+  them as separate `Device`s and let `select()` raise `AMBIGUOUS_DEVICE` rather
+  than guess.
+- `Device.id` must come from the ESP serial (`123456` here — note it is not
+  unique across boards, so the id derivation needs the port path mixed in when
+  the serial is a known placeholder).

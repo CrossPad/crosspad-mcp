@@ -5721,45 +5721,3721 @@ registerDeviceResources(server, ctx);
 
 and `src/index.ts` must drop the v9 `crosspad_devices` block at lines 672-681 (the `listDevices()` import at line 20 stays only if `crosspad_log`/`crosspad_flash` still use `findCrosspadPort`).
 
+### Task 8: MIDI, USB mode and audio routing over the daemon
+
+**Files:**
+- Create: `/home/matixan/GIT/crosspad-mcp/src/hil/select.ts`
+- Create: `/home/matixan/GIT/crosspad-mcp/src/tools/usb-mode.ts`
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/tools/midi.ts` — keep lines 1–150 (`MidiEventType`, `MidiSendParams`, `MidiSendResult`, `crosspadMidiSend`) byte-for-byte; add imports at the top and append the v10 section
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/tools/audio-route.ts` — replace lines 1–17 (header + `execFileSync` import), delete `findEspMidiPort` (lines 52–66) and `decodeState` (lines 92–102), rewrite `crosspadAudioRouteSet` (lines 104–121) and `crosspadAudioRouteQuery` (lines 123–147); `buildSetFrames`, `ADC_CODE`/`ADC_NAME`/`DAC_CODE`/`DAC_NAME` and the exported types stay
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/policy/tiers.ts` — add `usbModeTier`, change `crosspad_usb_mode` from the fixed `"stimulus"` to `usbModeTier`
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/registry.ts` — three `manager.register(...)` lines in the `device` block
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/index.ts` — delete the inline `crosspad_midi` block (lines 1089–1141), the inline `crosspad_audio_route` block (lines 1147–1183), the `O_Midi` (352–358) and `O_AudioRoute` (360–372) consts, and the now-unused `crosspadMidiSend` / `crosspadAudioRouteSet` / `crosspadAudioRouteQuery` imports
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/tools/audio-route.test.ts` — line 2 (import) and the `decodeState` describe block (lines 47–70); the `buildSetFrames` block is untouched
+- Test: `/home/matixan/GIT/crosspad-mcp/src/hil/select.test.ts`
+- Test: `/home/matixan/GIT/crosspad-mcp/src/tools/midi.device.test.ts`
+- Test: `/home/matixan/GIT/crosspad-mcp/src/tools/usb-mode.test.ts`
+
+**Interfaces:**
+
+- Consumes:
+  - `HilDaemon.request<T>(op: string, args: Record<string, unknown>, opts?: {signal?: AbortSignal; timeoutMs?: number}): Promise<T>` and `class HilError extends Error { code: string; hint?: string; details: Record<string, unknown> }` from `src/hil/daemon.ts` (Task 1).
+  - `DeviceSchema` + `type Device` from `src/hil/schemas.ts` (Task 1).
+  - `ToolContext` (`{daemon: () => HilDaemon; policy: Policy; jobs: JobRegistry; handles: HandleRegistry}`) from `src/tool-context.ts` (Tasks 2/4).
+  - `decide(policy, tool, args): "allow"|"confirm"|"hidden"` from `src/policy/policy.ts` (Task 3); `tierOf(tool, args)`, `annotationsFor(tier)`, `TOOL_TIERS`, type `Tier` from `src/policy/tiers.ts` (Task 3).
+  - `requireConfirmation(server, extra, tool, args, summary)` → `{status:"approved"} | {status:"declined"} | {status:"token", result}` from `src/policy/confirm.ts` (Task 3).
+  - `jsonResponse(data: object): ToolResult`, `toolError(e: unknown): ToolResult` from `src/tool-result.ts` (Task 5).
+  - `fakeDaemon(handlers)`, `fakeServer()`, `fakeExtra()` from `src/testing/fake-daemon.ts` / `src/testing/fake-server.ts` (Task 5).
+  - `sendRemoteCommand`, `isSimulatorRunning` from `src/utils/remote-client.ts` (existing; used only by the unchanged sim path).
+  - Daemon ops verbatim from the contract's `serve.py` table: `devices.list {}` → `{"devices": [Device.to_dict]}`; `midi.sysex {device, role?, frame}` → `{"sent": n}`; `midi.note {device, role?, on, note, vel?, channel?}`; `midi.echo_rtt {device, n?}` → `{sent, received, lost, rtt_ms:{p50,p90,max}}`; `midi.query_route {device}` → `{mic_src, adc:[a0,a1], out:[o0,o1], vol:[v0,v1], mute:[m0,m1]}`; `usbmode.set {device, mode, wait?}` → `Device` dict.
+
+- Produces:
+  - `src/hil/select.ts`: `export interface DaemonRequester { request<T = unknown>(op: string, args: Record<string, unknown>, opts?: {signal?: AbortSignal; timeoutMs?: number}): Promise<T> }`; `export async function listHilDevices(daemon: DaemonRequester, signal?: AbortSignal): Promise<Device[]>`; `export function pickDevice(devices: Device[], device?: string): Device` (TS port of `devices.py select()`); `export function espSide(d: Device): boolean`; `export function portPaths(d: Device): Array<{role: "cdc"|"console"|"bootloader"; path: string}>`; `export function roleOfPort(d: Device, path: string): "cdc"|"console"|"bootloader"|null`.
+  - `src/tools/midi.ts` (additions): `export const TOOL_NAME = "crosspad_midi"`; `export type MidiRole = "esp" | "stm"`; `export const MidiInput` (`z.discriminatedUnion("target", [...])`); `export type MidiArgs = z.infer<typeof MidiInput>`; `export const O_Midi`; `export function toMidiOp(args: MidiArgs): {op: string; args: Record<string, unknown>}` (pure, unit-tested); `export function registerMidiTool(server: McpServer, ctx: ToolContext): RegisteredTool`. `crosspadMidiSend` and its types keep their current signatures.
+  - `src/tools/usb-mode.ts`: `export const TOOL_NAME = "crosspad_usb_mode"`; `export const UsbModeInput`; `export type UsbModeArgs`; `export const O_UsbMode`; `export function usbModeRow(d: Device): {device: string; usb_mode: string; cdc: string|null; console: string|null; uac2: string|null; esp_midi: string|null; board_rev: string|null}`; `export function registerUsbModeTool(server: McpServer, ctx: ToolContext): RegisteredTool`.
+  - `src/tools/audio-route.ts` (changed): `export const TOOL_NAME = "crosspad_audio_route"`; `export function hexFrame(bytes: number[]): string`; `export function stateFromQuery(q: Record<string, unknown>): AudioRouteState`; `export async function crosspadAudioRouteSet(daemon: DaemonRequester, device: string | undefined, params: AudioRouteSetParams, signal?: AbortSignal): Promise<AudioRouteResult>`; `export async function crosspadAudioRouteQuery(daemon: DaemonRequester, device: string | undefined, signal?: AbortSignal): Promise<AudioRouteResult>`; `export const AudioRouteInput`; `export type AudioRouteArgs`; `export const O_AudioRoute`; `export function registerAudioRouteTool(server: McpServer, ctx: ToolContext): RegisteredTool`. `buildSetFrames`, `AdcInput`, `DacOutput`, `AudioRouteSetParams`, `AudioRouteState`, `AudioRouteResult` unchanged. `findEspMidiPort` and `decodeState` are **removed** (the `amidi` transport they served no longer exists).
+  - `src/policy/tiers.ts` (changed): `const usbModeTier: TierFn = (args) => (str(args, "action") === "get" ? "read" : "stimulus");` wired as `crosspad_usb_mode: usbModeTier`.
+
+Contract choices stated here (the contract and Tasks 1–7 are silent):
+- `crosspad_midi.target` is **required** (a `z.discriminatedUnion("target", …)`), not defaulted. v10 is a breaking release and a silent default would send a sim call to hardware or the reverse.
+- `role` is accepted only on `target:"device"` with `action:"note"|"sysex"` — the contract gives `midi.echo_rtt` and `midi.query_route` no `role` arg (they need the ESP IN port; `MidiIO.receive` raises `NOT_SUPPORTED` for STM).
+- `crosspad_audio_route` gains one optional field, `device` — additive, so the v9 schema and the v9 `{success, sent?, state?, port?, error?}` output shape both still validate. `port` is now the resolved device's `ports.esp_midi.alsa_hw ?? ports.esp_midi.name` instead of an `amidi -l` line.
+- `crosspad_usb_mode` moves from the fixed `"stimulus"` of Task 3's table to arg-dependent: `action:"get"` is a pure `devices.list` read, so it stays available under `--read-only`. Task 3's `tiers.test.ts` only asserts `TOOL_TIERS.crosspad_usb_mode` is *defined*, so this keeps that suite green. `crosspad_midi` and `crosspad_audio_route` keep exactly the tiers Task 3 assigned.
+- `pickDevice` lives in a new `src/hil/select.ts` rather than in `src/tools/devices.ts` because three tools (`usb_mode`, `audio_route`, and `flash` in Task 9) need it and `devices.ts` owns presentation (`toV10DeviceRow`), not selection.
+
 ---
 
-## NOT YET WRITTEN — Tasks 8–11 (session limit hit while drafting)
+- [ ] **Step 1: Write the failing selection test**
 
-Tasks 1–7 above are complete and self-contained: the daemon client, handles/jobs,
-the policy engine with confirmations, toolsets, and the `core` + first `device`
-tools (`devices`, `doctor`, `console`, `cdc`, `ui`, `snapshot`) with their
-resources. They are implementable and testable as they stand.
+`/home/matixan/GIT/crosspad-mcp/src/hil/select.test.ts`:
 
-The remaining P0 scope for this plan, to be drafted in a follow-up session with
-the same contract (`scratchpad/contract.md`, TS contract section) and the same
-task format:
+```ts
+import { describe, it, expect } from "vitest";
+import { HilError } from "./daemon.js";
+import { listHilDevices, pickDevice, espSide, portPaths, roleOfPort } from "./select.js";
 
-- **Task 8 — MIDI / USB mode / audio routing over the daemon.** `src/tools/midi.ts`
-  gains `target: device` (daemon `midi.note`, `midi.sysex`, `midi.echo_rtt`,
-  `midi.query_route`, `port: esp|stm`) keeping the existing sim path;
-  new `src/tools/usb-mode.ts` (`crosspad_usb_mode {action: get|set, mode, wait}`);
-  `src/tools/audio-route.ts` rewired from the `amidi` `execSync` to daemon
-  `midi.sysex` + `midi.query_route`, tool schema unchanged.
-- **Task 9 — `crosspad_flash` rewrite.** Always-returned preflight (device USB
-  mode, port-role check refusing the STM console as flash target, firmware mtime
-  vs newest source under `main/` and `components/`, bin version at offset 48,
-  board rev from `sdkconfig.v*` vs build dir, bootloader PID present); OTA via
-  daemon `ota.flash` mirrored as a job with progress; UART via the existing argv
-  `idf.py` path as a job; `wait_boot` returning `BootResult`;
-  `requireConfirmation()` before any write.
-- **Task 10 — knowledge resources, release metadata, eval skeleton.**
-  `src/resources/knowledge.ts` (`crosspad://cdc`, `crosspad://sysex` via a new
-  daemon op `knowledge.get {name}` — add it to `serve.py` in plan B;
-  `crosspad://hil/catalog` from `scenario.list`); README v9→v10 migration table
-  and tool table; `package.json` 10.0.0 + `hilVersion`; plugin.json sync;
-  CHANGELOG; `eval/tasks.json` (10 tasks with `expected_tools` and
-  `forbidden_shell_patterns`) + `eval/grade.ts` + its vitest.
-- **Task 11 — async everywhere.** Convert the remaining `execSync`/`spawnSync`
-  in `src/utils/git.ts`, `src/tools/repos.ts` (concurrent per repo, limit 4),
-  `src/tools/symbols.ts`, `src/tools/architecture.ts`, `src/tools/trace-doctor.ts`
-  to promise-based `spawn` honouring `extra.signal`; public function names
-  unchanged; a vitest that asserts `repo_status` overlaps its git calls.
+function port(path: string, vid = 0x303a, pid = 0x3456) {
+  return { path, vid, pid, serial: null, product: null, location: "1-1.2" };
+}
 
-**Also pending for all three plans:** the cross-chunk verification pass
-(name/signature consistency between chunks, placeholder scan, spec-coverage
-check, task ordering). Run it before executing task 1 of any plan.
+const ESP = {
+  id: "dev_3f2a",
+  serial: "AABB",
+  usb_mode: "default" as const,
+  ports: { cdc: port("/dev/ttyACM0"), console: port("/dev/ttyACM1", 0x0483, 0x5740), esp_midi: null, stm_midi: null, uac2: null, bootloader: null },
+  board_rev: "v2",
+};
+const CONSOLE_ONLY = {
+  id: "dev_9911",
+  serial: "CCDD",
+  usb_mode: "unknown" as const,
+  ports: { cdc: null, console: port("/dev/ttyACM3", 0x0483, 0x5740), esp_midi: null, stm_midi: null, uac2: null, bootloader: null },
+  board_rev: null,
+};
+
+describe("listHilDevices", () => {
+  it("calls devices.list and parses every row", async () => {
+    const calls: Array<{ op: string; args: Record<string, unknown> }> = [];
+    const daemon = {
+      async request<T>(op: string, args: Record<string, unknown>): Promise<T> {
+        calls.push({ op, args });
+        return { devices: [ESP, CONSOLE_ONLY] } as unknown as T;
+      },
+    };
+    const rows = await listHilDevices(daemon);
+    expect(calls).toEqual([{ op: "devices.list", args: {} }]);
+    expect(rows.map((d) => d.id)).toEqual(["dev_3f2a", "dev_9911"]);
+    expect(rows[0].board_rev).toBe("v2");
+  });
+});
+
+describe("pickDevice", () => {
+  it("with no argument picks the only device that has an ESP side", () => {
+    expect(pickDevice([ESP, CONSOLE_ONLY]).id).toBe("dev_3f2a");
+  });
+
+  it("raises NO_DEVICE when nothing has an ESP side", () => {
+    try {
+      pickDevice([CONSOLE_ONLY]);
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(HilError);
+      expect((e as HilError).code).toBe("NO_DEVICE");
+      expect((e as HilError).message).toMatch(/bootloader/i);
+    }
+  });
+
+  it("raises AMBIGUOUS_DEVICE with the candidate ids", () => {
+    const second = { ...ESP, id: "dev_7c01" };
+    try {
+      pickDevice([ESP, second]);
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      const h = e as HilError;
+      expect(h.code).toBe("AMBIGUOUS_DEVICE");
+      expect(h.hint).toContain("device=");
+      expect(h.details.candidates).toEqual(["dev_3f2a", "dev_7c01"]);
+    }
+  });
+
+  it("matches by id and by any port path", () => {
+    expect(pickDevice([ESP, CONSOLE_ONLY], "dev_9911").id).toBe("dev_9911");
+    expect(pickDevice([ESP, CONSOLE_ONLY], "/dev/ttyACM3").id).toBe("dev_9911");
+    expect(pickDevice([ESP, CONSOLE_ONLY], "/dev/ttyACM1").id).toBe("dev_3f2a");
+  });
+
+  it("an unknown id is NO_DEVICE and lists what is there", () => {
+    try {
+      pickDevice([ESP], "dev_beef");
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      const h = e as HilError;
+      expect(h.code).toBe("NO_DEVICE");
+      expect(h.details.candidates).toEqual(["dev_3f2a"]);
+    }
+  });
+});
+
+describe("port roles", () => {
+  it("espSide is true only when a cdc or bootloader port exists", () => {
+    expect(espSide(ESP)).toBe(true);
+    expect(espSide(CONSOLE_ONLY)).toBe(false);
+  });
+
+  it("portPaths lists cdc, console and bootloader with their roles", () => {
+    expect(portPaths(ESP)).toEqual([
+      { role: "cdc", path: "/dev/ttyACM0" },
+      { role: "console", path: "/dev/ttyACM1" },
+    ]);
+  });
+
+  it("roleOfPort names the role of a path, or null", () => {
+    expect(roleOfPort(ESP, "/dev/ttyACM1")).toBe("console");
+    expect(roleOfPort(ESP, "/dev/ttyACM0")).toBe("cdc");
+    expect(roleOfPort(ESP, "/dev/ttyUSB9")).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/hil/select.test.ts`
+Expected: FAIL with `Failed to load url ./select.js (resolved id: ./select.js) in /home/matixan/GIT/crosspad-mcp/src/hil/select.test.ts`.
+
+- [ ] **Step 3: Write `src/hil/select.ts`**
+
+```ts
+// src/hil/select.ts — the TS half of devices.py discover()+select(). The daemon
+// re-resolves `device` on every op, so this module never caches: it exists so a
+// tool can name the device it is about to act on, refuse the wrong port role,
+// and produce the same NO_DEVICE / AMBIGUOUS_DEVICE errors the daemon would.
+import { HilError } from "./daemon.js";
+import { DeviceSchema, type Device } from "./schemas.js";
+
+export interface DaemonRequester {
+  request<T = unknown>(
+    op: string,
+    args: Record<string, unknown>,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<T>;
+}
+
+/** devices.list {} → parsed Device rows, in daemon order. */
+export async function listHilDevices(daemon: DaemonRequester, signal?: AbortSignal): Promise<Device[]> {
+  const raw = await daemon.request<{ devices: unknown[] }>("devices.list", {}, signal ? { signal } : undefined);
+  return (raw.devices ?? []).map((d) => DeviceSchema.parse(d));
+}
+
+/** True when the device has an ESP-side port (cdc or bootloader) — devices.py select(). */
+export function espSide(d: Device): boolean {
+  return !!d.ports.cdc || !!d.ports.bootloader;
+}
+
+/** Every serial port this device owns, tagged with its role. */
+export function portPaths(d: Device): Array<{ role: "cdc" | "console" | "bootloader"; path: string }> {
+  const out: Array<{ role: "cdc" | "console" | "bootloader"; path: string }> = [];
+  if (d.ports.cdc) out.push({ role: "cdc", path: d.ports.cdc.path });
+  if (d.ports.console) out.push({ role: "console", path: d.ports.console.path });
+  if (d.ports.bootloader) out.push({ role: "bootloader", path: d.ports.bootloader.path });
+  return out;
+}
+
+/** Which role a path plays on this device, or null when it is not one of its ports. */
+export function roleOfPort(d: Device, path: string): "cdc" | "console" | "bootloader" | null {
+  return portPaths(d).find((p) => p.path === path)?.role ?? null;
+}
+
+/**
+ * devices.py select(): no argument → the single device with an ESP side;
+ * an argument → the device with that id, or the device owning that port path.
+ */
+export function pickDevice(devices: Device[], device?: string): Device {
+  const candidates = devices.map((d) => d.id);
+  if (device === undefined || device === "") {
+    const withEsp = devices.filter(espSide);
+    if (withEsp.length === 1) return withEsp[0];
+    if (withEsp.length === 0) {
+      throw new HilError(
+        "NO_DEVICE",
+        "no CrossPad found; is it in bootloader/DFU?",
+        "Check the cable, then run crosspad_devices — a device seen only as an STM32 bridge console has no ESP side to talk to.",
+        { candidates },
+      );
+    }
+    throw new HilError(
+      "AMBIGUOUS_DEVICE",
+      `${withEsp.length} CrossPads are connected; say which one.`,
+      `pass device=<id> (one of ${withEsp.map((d) => d.id).join(", ")})`,
+      { candidates: withEsp.map((d) => d.id) },
+    );
+  }
+  const byId = devices.find((d) => d.id === device);
+  if (byId) return byId;
+  const byPort = devices.find((d) => roleOfPort(d, device) !== null);
+  if (byPort) return byPort;
+  throw new HilError(
+    "NO_DEVICE",
+    `no CrossPad matches "${device}"`,
+    "pass a device id from crosspad_devices, or one of its port paths",
+    { candidates },
+  );
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/hil/select.test.ts`
+Expected: PASS (8 tests).
+
+- [ ] **Step 5: Write the failing MIDI test**
+
+`/home/matixan/GIT/crosspad-mcp/src/tools/midi.device.test.ts`:
+
+```ts
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { fakeDaemon } from "../testing/fake-daemon.js";
+import { fakeServer, fakeExtra } from "../testing/fake-server.js";
+import { registerMidiTool, toMidiOp, TOOL_NAME } from "./midi.js";
+import type { ToolContext } from "../tool-context.js";
+import type { Policy } from "../policy/policy.js";
+import { jobs } from "../tasks.js";
+import { handles } from "../handles.js";
+
+const STRICT: Policy = { mode: "strict", rules: [] };
+
+function ctxFor(daemon: ReturnType<typeof fakeDaemon>): ToolContext {
+  return { daemon: () => daemon, policy: STRICT, jobs, handles };
+}
+
+describe("toMidiOp", () => {
+  it("maps note on/off to midi.note with the daemon's arg names", () => {
+    expect(toMidiOp({ target: "device", action: "note", on: true, note: 40, vel: 110, channel: 2, role: "esp" } as never))
+      .toEqual({ op: "midi.note", args: { role: "esp", on: true, note: 40, vel: 110, channel: 2 } });
+    expect(toMidiOp({ target: "device", action: "note", on: false, note: 40 } as never))
+      .toEqual({ op: "midi.note", args: { on: false, note: 40 } });
+  });
+
+  it("maps sysex to midi.sysex, keeping the hex string verbatim", () => {
+    expect(toMidiOp({ target: "device", action: "sysex", frame: "F0 7D 1D 10 F7", role: "stm" } as never))
+      .toEqual({ op: "midi.sysex", args: { role: "stm", frame: "F0 7D 1D 10 F7" } });
+  });
+
+  it("maps echo_rtt and query_route without a role", () => {
+    expect(toMidiOp({ target: "device", action: "echo_rtt", n: 50 } as never))
+      .toEqual({ op: "midi.echo_rtt", args: { n: 50 } });
+    expect(toMidiOp({ target: "device", action: "query_route" } as never))
+      .toEqual({ op: "midi.query_route", args: {} });
+  });
+});
+
+describe("crosspad_midi target=device", () => {
+  let fs: ReturnType<typeof fakeServer>;
+  beforeEach(() => { fs = fakeServer(); });
+
+  it("sends a note over the daemon and reports what it sent", async () => {
+    const d = fakeDaemon({ "midi.note": () => ({ ok: true }) });
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "device", action: "note", on: true, note: 36, vel: 100, device: "dev_3f2a" },
+      fakeExtra(),
+    );
+    expect(d.calls[0].op).toBe("midi.note");
+    expect(d.calls[0].args).toEqual({ device: "dev_3f2a", on: true, note: 36, vel: 100 });
+    expect(r.structuredContent).toMatchObject({ success: true, target: "device", action: "note", device: "dev_3f2a" });
+  });
+
+  it("passes the role through to the daemon", async () => {
+    const d = fakeDaemon({ "midi.sysex": () => ({ sent: 5 }) });
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "device", action: "sysex", frame: "F0 7D 1B 02 F7", role: "stm" },
+      fakeExtra(),
+    );
+    expect(d.calls[0].args).toEqual({ role: "stm", frame: "F0 7D 1B 02 F7" });
+    expect(r.structuredContent.result).toEqual({ sent: 5 });
+  });
+
+  it("rejects a frame that is not F0 … F7 before touching the daemon", async () => {
+    const d = fakeDaemon({});
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "device", action: "sysex", frame: "90 40 7F" },
+      fakeExtra(),
+    );
+    expect(r.isError).toBe(true);
+    expect(String((r.structuredContent.error as { message?: string })?.message)).toMatch(/F0/);
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("surfaces a daemon error as the v10 error envelope", async () => {
+    const { HilError } = await import("../hil/daemon.js");
+    const d = fakeDaemon({ "midi.query_route": () => { throw new HilError("TIMEOUT", "no query reply within 1.0 s", "is the firmware built with audio_route_control?"); } });
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "device", action: "query_route" }, fakeExtra());
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent.error).toMatchObject({ code: "TIMEOUT", hint: "is the firmware built with audio_route_control?" });
+  });
+
+  it("reports echo_rtt statistics unchanged", async () => {
+    const d = fakeDaemon({ "midi.echo_rtt": () => ({ sent: 20, received: 20, lost: 0, rtt_ms: { p50: 4.1, p90: 7.2, max: 11.0 } }) });
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "device", action: "echo_rtt", n: 20 }, fakeExtra());
+    expect(r.structuredContent.result).toMatchObject({ sent: 20, lost: 0 });
+  });
+});
+
+describe("crosspad_midi target=sim", () => {
+  let fs: ReturnType<typeof fakeServer>;
+  beforeEach(() => { fs = fakeServer(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("cc is still refused with an actionable message and never reaches the daemon", async () => {
+    const d = fakeDaemon({});
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "sim", type: "cc", channel: 0, cc_num: 7, value: 100 },
+      fakeExtra(),
+    );
+    expect(r.isError).toBe(true);
+    expect(String(r.structuredContent.error)).toMatch(/not yet supported by the PC simulator/i);
+    expect(String(r.structuredContent.error)).toMatch(/note_on\/note_off/);
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("program_change is refused the same way", async () => {
+    const d = fakeDaemon({});
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "sim", type: "program_change", channel: 0, program: 3 },
+      fakeExtra(),
+    );
+    expect(r.isError).toBe(true);
+    expect(String(r.structuredContent.error)).toMatch(/midi_program_change/);
+  });
+
+  it("note_on still goes through crosspadMidiSend, not the daemon", async () => {
+    const remote = await import("../utils/remote-client.js");
+    vi.spyOn(remote, "isSimulatorRunning").mockResolvedValue(true);
+    const send = vi.spyOn(remote, "sendRemoteCommand").mockResolvedValue({ ok: true } as never);
+    const d = fakeDaemon({});
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "sim", type: "note_on", channel: 0, note: 60 },
+      fakeExtra(),
+    );
+    expect(send).toHaveBeenCalledWith({ cmd: "midi_note_on", channel: 0, note: 60, velocity: 127 });
+    expect(r.structuredContent).toMatchObject({ success: true, target: "sim", type: "note_on" });
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("a missing note is refused before the sim is contacted", async () => {
+    const d = fakeDaemon({});
+    registerMidiTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "sim", type: "note_on", channel: 0 }, fakeExtra());
+    expect(r.isError).toBe(true);
+    expect(String(r.structuredContent.error)).toContain("'note' is required");
+  });
+});
+```
+
+- [ ] **Step 6: Run test to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/midi.device.test.ts`
+Expected: FAIL with `SyntaxError: The requested module './midi.js' does not provide an export named 'registerMidiTool'`.
+
+- [ ] **Step 7: Extend `src/tools/midi.ts`**
+
+Add these import lines directly under the existing `import { sendRemoteCommand, isSimulatorRunning } from "../utils/remote-client.js";` (line 8):
+
+```ts
+import { z } from "zod";
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolContext } from "../tool-context.js";
+import { annotationsFor, tierOf } from "../policy/tiers.js";
+import { decide } from "../policy/policy.js";
+import { requireConfirmation } from "../policy/confirm.js";
+import { jsonResponse, toolError } from "../tool-result.js";
+import { HilError } from "../hil/daemon.js";
+```
+
+Then append the whole v10 section to the end of the file (nothing above it changes):
+
+```ts
+// ═══════════════════════════════════════════════════════════════════════
+// v10 — the same tool over two transports.
+//   target="device" → the crosspad-hil daemon's MIDI ops against real hardware
+//   target="sim"    → the PC simulator's TCP RemoteControl (unchanged v9 path)
+// `target` is required: a MIDI note is a side effect and guessing which machine
+// receives it is exactly the mistake this tool must not make.
+// ═══════════════════════════════════════════════════════════════════════
+
+export const TOOL_NAME = "crosspad_midi";
+
+/** midi.py MidiRole — which USB MIDI endpoint the frame leaves by. */
+export type MidiRole = "esp" | "stm";
+
+const RoleArg = z.enum(["esp", "stm"]).optional()
+  .describe("Which MIDI endpoint: 'esp' (default) = the ESP's native USB MIDI, the only port that answers queries; 'stm' = the STM32 bridge port ('CrossPad MIDI+Serial').");
+const DeviceArg = z.string().min(1).optional()
+  .describe("Device id (dev_xxxx) or one of its port paths; omit when exactly one CrossPad is connected.");
+
+/** F0 … F7, whitespace-separated hex bytes. Validated before the daemon is called. */
+const SysexFrame = z.string()
+  .regex(/^\s*[Ff]0(\s+[0-9A-Fa-f]{2})*\s+[Ff]7\s*$/, "frame must be whitespace-separated hex bytes starting F0 and ending F7, e.g. 'F0 7D 1D 10 F7'")
+  .describe("Raw SysEx frame as hex bytes, e.g. 'F0 7D 1D 10 F7'. Manufacturer 0x7D is CrossPad's; the daemon refuses the host-denylisted frames.");
+
+export const MidiInput = z.discriminatedUnion("target", [
+  z.object({
+    target: z.literal("device"),
+    device: DeviceArg,
+    action: z.enum(["note", "sysex", "echo_rtt", "query_route"])
+      .describe("note = one note on/off; sysex = one raw frame; echo_rtt = round-trip timing over SysEx echo; query_route = read the audio routing state."),
+    role: RoleArg,
+    on: z.boolean().optional().describe("note: true = note on, false = note off."),
+    note: z.number().int().min(0).max(127).optional().describe("note: MIDI note number 0-127."),
+    vel: z.number().int().min(0).max(127).optional().describe("note: velocity 0-127 (default 100)."),
+    channel: z.number().int().min(0).max(15).optional().describe("note: MIDI channel 0-15 (default 0)."),
+    frame: SysexFrame.optional(),
+    n: z.number().int().min(1).max(500).optional().describe("echo_rtt: how many echo frames to send (default 20)."),
+  }),
+  z.object({
+    target: z.literal("sim"),
+    type: z.enum(["note_on", "note_off", "cc", "program_change"])
+      .describe("Sim MIDI event type. note_on/note_off need `note`; cc and program_change are not implemented by the sim and fail fast."),
+    channel: z.number().int().min(0).max(15).default(0).describe("MIDI channel 0-15 (default 0)."),
+    note: z.number().int().min(0).max(127).optional(),
+    velocity: z.number().int().min(0).max(127).optional(),
+    cc_num: z.number().int().min(0).max(127).optional(),
+    value: z.number().int().min(0).max(127).optional(),
+    program: z.number().int().min(0).max(127).optional(),
+  }),
+]);
+export type MidiArgs = z.infer<typeof MidiInput>;
+
+export const O_Midi = {
+  success: z.boolean(),
+  target: z.enum(["device", "sim"]).optional(),
+  action: z.string().optional(),
+  device: z.string().optional(),
+  role: z.string().optional(),
+  result: z.unknown().optional(),
+  type: z.enum(["note_on", "note_off", "cc", "program_change"]).optional(),
+  channel: z.number().int().optional(),
+  details: z.record(z.string(), z.number()).optional(),
+  ts: z.number().optional(),
+  resultType: z.string().optional(),
+  confirmation: z.record(z.string(), z.unknown()).optional(),
+  error: z.union([
+    z.string(),
+    z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }),
+  ]).optional(),
+};
+
+/** Pure: device-branch args → the daemon op and its args (`device` added by the caller). */
+export function toMidiOp(args: MidiArgs): { op: string; args: Record<string, unknown> } {
+  if (args.target !== "device") {
+    throw new HilError("BAD_ARGS", "toMidiOp is only defined for target='device'");
+  }
+  const out: Record<string, unknown> = {};
+  switch (args.action) {
+    case "note":
+      if (args.role !== undefined) out.role = args.role;
+      out.on = args.on ?? true;
+      if (args.note === undefined) throw new HilError("BAD_ARGS", "action='note' requires 'note' (0-127)");
+      out.note = args.note;
+      if (args.vel !== undefined) out.vel = args.vel;
+      if (args.channel !== undefined) out.channel = args.channel;
+      return { op: "midi.note", args: out };
+    case "sysex":
+      if (args.frame === undefined) throw new HilError("BAD_ARGS", "action='sysex' requires 'frame' (e.g. 'F0 7D 1D 10 F7')");
+      if (args.role !== undefined) out.role = args.role;
+      out.frame = args.frame;
+      return { op: "midi.sysex", args: out };
+    case "echo_rtt":
+      if (args.n !== undefined) out.n = args.n;
+      return { op: "midi.echo_rtt", args: out };
+    case "query_route":
+      return { op: "midi.query_route", args: out };
+  }
+}
+
+function summarizeMidi(args: MidiArgs): string {
+  if (args.target === "sim") return `crosspad_midi sim ${args.type}`;
+  return `crosspad_midi ${args.action} on ${args.device ?? "the only CrossPad"} (${args.role ?? "esp"} port)`;
+}
+
+async function runSim(args: Extract<MidiArgs, { target: "sim" }>) {
+  const need = (field: string, val: unknown): string | null =>
+    val === undefined ? `Field '${field}' is required for type='${args.type}'.` : null;
+  let missing: string | null = null;
+  switch (args.type) {
+    case "note_on":
+    case "note_off":
+      missing = need("note", args.note); break;
+    case "cc":
+      missing = need("cc_num", args.cc_num) ?? need("value", args.value); break;
+    case "program_change":
+      missing = need("program", args.program); break;
+  }
+  if (missing) return jsonResponse({ success: false, target: "sim", type: args.type, error: missing });
+
+  const sent = await crosspadMidiSend({
+    type: args.type,
+    channel: args.channel,
+    note: args.note,
+    velocity: args.velocity ?? (args.type === "note_off" ? 0 : args.type === "note_on" ? 127 : undefined),
+    cc_num: args.cc_num,
+    value: args.value,
+    program: args.program,
+  });
+  return jsonResponse({ target: "sim", ...sent });
+}
+
+export function registerMidiTool(server: McpServer, ctx: ToolContext): RegisteredTool {
+  return server.registerTool(
+    TOOL_NAME,
+    {
+      description:
+        "[PC sim | ESP HW] Send MIDI. target='device' talks to a connected CrossPad through the crosspad-hil daemon:\n" +
+        "  • action='note'        → note on/off (on, note, vel?, channel?, role?)\n" +
+        "  • action='sysex'       → one raw frame (frame='F0 7D … F7', role?). Manufacturer 0x7D is CrossPad's.\n" +
+        "  • action='echo_rtt'    → n? echo frames, returns {sent, received, lost, rtt_ms:{p50,p90,max}}\n" +
+        "  • action='query_route' → the audio routing state (same data crosspad_audio_route action='query' returns)\n" +
+        "  role='esp' (default) is the ESP's native USB MIDI — the ONLY port that answers queries; role='stm' is the STM32 bridge port.\n" +
+        "target='sim' drives the running PC simulator over TCP RemoteControl: type='note_on'|'note_off' need `note` " +
+        "(velocity defaults 127/0); type='cc' and 'program_change' are NOT implemented by the sim and fail fast. " +
+        "USB profile switches go through crosspad_usb_mode, not a hand-built 0x1B frame.",
+      inputSchema: MidiInput,
+      outputSchema: O_Midi,
+      annotations: annotationsFor(tierOf(TOOL_NAME, { target: "device", action: "note" })),
+    },
+    async (rawArgs, extra) => {
+      const args = MidiInput.parse(rawArgs);
+      const argsRec = args as unknown as Record<string, unknown>;
+      const decision = decide(ctx.policy, TOOL_NAME, argsRec);
+      if (decision === "hidden") {
+        return jsonResponse({ success: false, error: { code: "HIDDEN", message: `${TOOL_NAME} is hidden by policy` } });
+      }
+      if (decision === "confirm") {
+        const c = await requireConfirmation(server, extra, TOOL_NAME, argsRec, summarizeMidi(args));
+        if (c.status === "token") return c.result;
+        if (c.status === "declined") {
+          return jsonResponse({ success: false, error: { code: "CANCELLED_BY_USER", message: `${TOOL_NAME} was declined by the user.` } });
+        }
+      }
+      if (args.target === "sim") return runSim(args);
+      try {
+        const call = toMidiOp(args);
+        const opArgs: Record<string, unknown> = { ...call.args };
+        if (args.device !== undefined) opArgs.device = args.device;
+        const result = await ctx.daemon().request<unknown>(call.op, opArgs, { signal: extra.signal, timeoutMs: 30_000 });
+        return jsonResponse({
+          success: true,
+          target: "device",
+          action: args.action,
+          device: args.device,
+          role: args.role ?? "esp",
+          result,
+          ts: Date.now(),
+        });
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+}
+```
+
+- [ ] **Step 8: Run the MIDI tests**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/midi.device.test.ts src/tools/midi.test.ts`
+Expected: PASS — 11 new tests plus the existing `midi.test.ts` suite unchanged (the sim helper it covers was not touched).
+
+- [ ] **Step 9: Write the failing USB-mode and tier tests**
+
+`/home/matixan/GIT/crosspad-mcp/src/tools/usb-mode.test.ts`:
+
+```ts
+import { describe, it, expect, beforeEach } from "vitest";
+import { fakeDaemon } from "../testing/fake-daemon.js";
+import { fakeServer, fakeExtra } from "../testing/fake-server.js";
+import { registerUsbModeTool, usbModeRow, TOOL_NAME } from "./usb-mode.js";
+import { tierOf } from "../policy/tiers.js";
+import type { ToolContext } from "../tool-context.js";
+import type { Policy } from "../policy/policy.js";
+import { jobs } from "../tasks.js";
+import { handles } from "../handles.js";
+
+const STRICT: Policy = { mode: "strict", rules: [] };
+const ctxFor = (d: ReturnType<typeof fakeDaemon>): ToolContext => ({ daemon: () => d, policy: STRICT, jobs, handles });
+
+const port = (path: string, vid = 0x303a, pid = 0x3456) => ({ path, vid, pid, serial: null, product: null, location: "1-1.2" });
+
+const DEFAULT_MODE = {
+  id: "dev_3f2a", serial: "AABB", usb_mode: "default", board_rev: "v2",
+  ports: {
+    cdc: port("/dev/ttyACM0"),
+    console: port("/dev/ttyACM1", 0x0483, 0x5740),
+    esp_midi: { name: "Crosspad", rtmidi_out: 1, rtmidi_in: 1, alsa_hw: "hw:4,0,0", rawmidi: null },
+    stm_midi: null, uac2: null, bootloader: null,
+  },
+};
+const AUDIO_MODE = {
+  ...DEFAULT_MODE,
+  usb_mode: "audio",
+  ports: { ...DEFAULT_MODE.ports, cdc: null, uac2: { name: "Crosspad Audio", sounddevice_index: 3, alsa_id: "hw:4" } },
+};
+
+describe("usbModeRow", () => {
+  it("flattens the ports a mode switch changes", () => {
+    expect(usbModeRow(DEFAULT_MODE as never)).toEqual({
+      device: "dev_3f2a", usb_mode: "default", cdc: "/dev/ttyACM0", console: "/dev/ttyACM1",
+      uac2: null, esp_midi: "hw:4,0,0", board_rev: "v2",
+    });
+    expect(usbModeRow(AUDIO_MODE as never)).toMatchObject({ usb_mode: "audio", cdc: null, uac2: "Crosspad Audio" });
+  });
+});
+
+describe("crosspad_usb_mode", () => {
+  let fs: ReturnType<typeof fakeServer>;
+  beforeEach(() => { fs = fakeServer(); });
+
+  it("action=get reads devices.list and never writes", async () => {
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEFAULT_MODE] }) });
+    registerUsbModeTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "get" }, fakeExtra());
+    expect(d.calls.map((c) => c.op)).toEqual(["devices.list"]);
+    expect(r.structuredContent).toMatchObject({ success: true, action: "get", mode: "default", device: "dev_3f2a" });
+    expect((r.structuredContent as { ports: Record<string, unknown> }).ports).toMatchObject({ cdc: "/dev/ttyACM0", uac2: null });
+  });
+
+  it("action=get with several devices and no `device` says which ids exist", async () => {
+    const other = { ...DEFAULT_MODE, id: "dev_7c01" };
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEFAULT_MODE, other] }) });
+    registerUsbModeTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "get" }, fakeExtra());
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent.error).toMatchObject({ code: "AMBIGUOUS_DEVICE" });
+    expect((r.structuredContent as { details: { candidates: string[] } }).details.candidates).toEqual(["dev_3f2a", "dev_7c01"]);
+  });
+
+  it("action=set forwards mode and wait to usbmode.set and reports the refreshed device", async () => {
+    const d = fakeDaemon({
+      "devices.list": () => ({ devices: [DEFAULT_MODE] }),
+      "usbmode.set": () => AUDIO_MODE,
+    });
+    registerUsbModeTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "audio", device: "dev_3f2a" }, fakeExtra());
+    expect(d.calls.map((c) => c.op)).toEqual(["usbmode.set"]);
+    expect(d.calls[0].args).toEqual({ device: "dev_3f2a", mode: "audio", wait: true });
+    expect(r.structuredContent).toMatchObject({ success: true, action: "set", mode: "audio", device: "dev_3f2a" });
+    expect((r.structuredContent as { ports: Record<string, unknown> }).ports).toMatchObject({ cdc: null, uac2: "Crosspad Audio" });
+  });
+
+  it("action=set honours wait=false", async () => {
+    const d = fakeDaemon({ "usbmode.set": () => ({ ...DEFAULT_MODE, usb_mode: "unknown" }) });
+    registerUsbModeTool(fs.server, ctxFor(d));
+    await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "default", device: "dev_3f2a", wait: false }, fakeExtra());
+    expect(d.calls[0].args).toEqual({ device: "dev_3f2a", mode: "default", wait: false });
+  });
+
+  it("action=set without mode is refused before the daemon is touched", async () => {
+    const d = fakeDaemon({});
+    registerUsbModeTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "set" }, fakeExtra());
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent.error).toMatchObject({ code: "BAD_ARGS" });
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("a daemon TIMEOUT keeps its code and hint", async () => {
+    const { HilError } = await import("../hil/daemon.js");
+    const d = fakeDaemon({ "usbmode.set": () => { throw new HilError("TIMEOUT", "device did not re-enumerate as audio within 20.0 s", "unplug/replug, then crosspad_devices"); } });
+    registerUsbModeTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "audio", device: "dev_3f2a" }, fakeExtra());
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent.error).toMatchObject({ code: "TIMEOUT" });
+  });
+});
+
+describe("crosspad_usb_mode tier", () => {
+  it("get is read, set is stimulus", () => {
+    expect(tierOf("crosspad_usb_mode", { action: "get" })).toBe("read");
+    expect(tierOf("crosspad_usb_mode", { action: "set", mode: "audio" })).toBe("stimulus");
+    expect(tierOf("crosspad_usb_mode", {})).toBe("stimulus");
+  });
+});
+```
+
+- [ ] **Step 10: Run test to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/usb-mode.test.ts`
+Expected: FAIL with `Failed to load url ./usb-mode.js (resolved id: ./usb-mode.js)`.
+
+- [ ] **Step 11: Write `src/tools/usb-mode.ts` and adjust the tier**
+
+`/home/matixan/GIT/crosspad-mcp/src/tools/usb-mode.ts`:
+
+```ts
+// src/tools/usb-mode.ts — crosspad_usb_mode: read or switch the USB profile.
+// "default" is MIDI+CDC (the control port every hil_* script needs); "audio" is
+// MIDI+UAC2, which has NO CDC at all — every crosspad_cdc call fails with
+// NO_CDC_IN_AUDIO_MODE until the device is switched back. The switch is a
+// SysEx (0x1B) plus a re-enumeration wait, both owned by usbmode.py; this tool
+// only names the device and reports which ports came back.
+import { z } from "zod";
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { DeviceSchema, type Device } from "../hil/schemas.js";
+import { HilError } from "../hil/daemon.js";
+import { listHilDevices, pickDevice } from "../hil/select.js";
+import type { ToolContext } from "../tool-context.js";
+import { decide } from "../policy/policy.js";
+import { annotationsFor, tierOf } from "../policy/tiers.js";
+import { requireConfirmation } from "../policy/confirm.js";
+import { jsonResponse, toolError } from "../tool-result.js";
+
+export const TOOL_NAME = "crosspad_usb_mode";
+
+export const UsbModeInput = z.object({
+  action: z.enum(["get", "set"]).describe("'get' reads the current profile from devices.list; 'set' switches it."),
+  device: z.string().min(1).optional().describe("Device id (dev_xxxx) or one of its port paths; omit when exactly one CrossPad is connected."),
+  mode: z.enum(["default", "audio"]).optional()
+    .describe("Required for action='set'. 'default' = MIDI + CDC (control port available); 'audio' = MIDI + UAC2 (NO CDC — crosspad_cdc stops working until you switch back)."),
+  wait: z.boolean().optional()
+    .describe("action='set': wait for the device to re-enumerate in the new profile before returning (default true). false returns immediately and the reported ports are the pre-switch ones."),
+});
+export type UsbModeArgs = z.infer<typeof UsbModeInput>;
+
+export const O_UsbMode = {
+  success: z.boolean(),
+  action: z.enum(["get", "set"]).optional(),
+  device: z.string().optional(),
+  mode: z.string().optional(),
+  requested_mode: z.string().optional(),
+  ports: z.object({
+    device: z.string(),
+    usb_mode: z.string(),
+    cdc: z.string().nullable(),
+    console: z.string().nullable(),
+    uac2: z.string().nullable(),
+    esp_midi: z.string().nullable(),
+    board_rev: z.string().nullable(),
+  }).optional(),
+  ts: z.number().optional(),
+  resultType: z.string().optional(),
+  confirmation: z.record(z.string(), z.unknown()).optional(),
+  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
+};
+
+/** The ports a profile switch actually changes, flattened for the model. */
+export function usbModeRow(d: Device): {
+  device: string; usb_mode: string; cdc: string | null; console: string | null;
+  uac2: string | null; esp_midi: string | null; board_rev: string | null;
+} {
+  return {
+    device: d.id,
+    usb_mode: d.usb_mode,
+    cdc: d.ports.cdc?.path ?? null,
+    console: d.ports.console?.path ?? null,
+    uac2: d.ports.uac2?.name ?? null,
+    esp_midi: d.ports.esp_midi?.alsa_hw ?? d.ports.esp_midi?.name ?? null,
+    board_rev: d.board_rev ?? null,
+  };
+}
+
+export function registerUsbModeTool(server: McpServer, ctx: ToolContext): RegisteredTool {
+  return server.registerTool(
+    TOOL_NAME,
+    {
+      description:
+        "[ESP HW] Read or switch the CrossPad's USB profile through the crosspad-hil daemon.\n" +
+        "  • action='get' → the current profile and the ports that exist in it (cdc, console, uac2, esp_midi). Pure read.\n" +
+        "  • action='set' with mode='default' → MIDI + CDC: the control port every crosspad_cdc / crosspad_console call needs.\n" +
+        "  • action='set' with mode='audio'   → MIDI + UAC2 capture: there is NO CDC in this profile, so crosspad_cdc fails with " +
+        "NO_CDC_IN_AUDIO_MODE until you switch back. The STM32 bridge console survives both profiles — read logs there.\n" +
+        "wait=true (default) blocks until the device re-enumerates in the new profile and reports the refreshed ports.",
+      inputSchema: UsbModeInput,
+      outputSchema: O_UsbMode,
+      annotations: annotationsFor(tierOf(TOOL_NAME, { action: "set" })),
+    },
+    async (rawArgs, extra) => {
+      const args = UsbModeInput.parse(rawArgs);
+      const argsRec = args as unknown as Record<string, unknown>;
+      const decision = decide(ctx.policy, TOOL_NAME, argsRec);
+      if (decision === "hidden") {
+        return jsonResponse({ success: false, error: { code: "HIDDEN", message: `${TOOL_NAME} ${args.action} is hidden by policy` } });
+      }
+      if (decision === "confirm") {
+        const summary = args.action === "get"
+          ? `read the USB profile of ${args.device ?? "the only CrossPad"}`
+          : `switch ${args.device ?? "the only CrossPad"} to USB profile "${args.mode}"`;
+        const c = await requireConfirmation(server, extra, TOOL_NAME, argsRec, summary);
+        if (c.status === "token") return c.result;
+        if (c.status === "declined") {
+          return jsonResponse({ success: false, error: { code: "CANCELLED_BY_USER", message: `${TOOL_NAME} was declined by the user.` } });
+        }
+      }
+      try {
+        if (args.action === "get") {
+          const devices = await listHilDevices(ctx.daemon(), extra.signal);
+          const d = pickDevice(devices, args.device);
+          return jsonResponse({ success: true, action: "get", device: d.id, mode: d.usb_mode, ports: usbModeRow(d), ts: Date.now() });
+        }
+        if (args.mode === undefined) {
+          throw new HilError("BAD_ARGS", "action='set' requires 'mode' ('default' or 'audio')", "action='get' reads the current profile without changing it");
+        }
+        const opArgs: Record<string, unknown> = { mode: args.mode, wait: args.wait ?? true };
+        if (args.device !== undefined) opArgs.device = args.device;
+        const refreshed = DeviceSchema.parse(
+          await ctx.daemon().request<unknown>("usbmode.set", opArgs, { signal: extra.signal, timeoutMs: 45_000 }),
+        );
+        return jsonResponse({
+          success: true,
+          action: "set",
+          device: refreshed.id,
+          requested_mode: args.mode,
+          mode: refreshed.usb_mode,
+          ports: usbModeRow(refreshed),
+          ts: Date.now(),
+        });
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+}
+```
+
+In `/home/matixan/GIT/crosspad-mcp/src/policy/tiers.ts`, add this line directly after `const audioRouteTier: TierFn = …`:
+
+```ts
+// action='get' is a devices.list read — it must stay reachable under --read-only.
+const usbModeTier: TierFn = (args) => (str(args, "action") === "get" ? "read" : "stimulus");
+```
+
+and change the `TOOL_TIERS` entry from `crosspad_usb_mode: "stimulus",` to:
+
+```ts
+  crosspad_usb_mode: usbModeTier,
+```
+
+- [ ] **Step 12: Run the USB-mode and policy tests**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/usb-mode.test.ts src/policy`
+Expected: PASS — 7 new tests, and Task 3's `tiers.test.ts` / `policy.test.ts` / `confirm.test.ts` still green (they only assert `TOOL_TIERS.crosspad_usb_mode` is defined).
+
+- [ ] **Step 13: Write the failing audio-route test**
+
+In `/home/matixan/GIT/crosspad-mcp/src/tools/audio-route.test.ts`, change line 2 to:
+
+```ts
+import { buildSetFrames, hexFrame, stateFromQuery, crosspadAudioRouteSet, crosspadAudioRouteQuery } from "./audio-route.js";
+```
+
+and replace the `describe("decodeState", …)` block (lines 47–70) with:
+
+```ts
+  describe("hexFrame", () => {
+    it("renders a frame as uppercase space-separated bytes", () => {
+      expect(hexFrame([0xf0, 0x7d, 0x1d, 0x01, 1, 2, 0xf7])).toBe("F0 7D 1D 01 01 02 F7");
+    });
+  });
+
+  describe("stateFromQuery", () => {
+    it("decodes the hardware-verified reply of midi.query_route", () => {
+      expect(stateFromQuery({ mic_src: 0, adc: [2, 0], out: [3, 3], vol: [80, 80], mute: [0, 0] })).toEqual({
+        mic_src: 0,
+        adc_input: ["line2", "diff"],
+        dac_output: ["all", "all"],
+        volume: [80, 80],
+        mute: [false, false],
+      });
+    });
+
+    it("decodes the DAC→ADC loop state", () => {
+      expect(stateFromQuery({ mic_src: 1, adc: [1, 1], out: [1, 2], vol: [100, 65], mute: [0, 1] })).toEqual({
+        mic_src: 1,
+        adc_input: ["line1", "line1"],
+        dac_output: ["line1", "line2"],
+        volume: [100, 65],
+        mute: [false, true],
+      });
+    });
+
+    it("falls back to safe names on an out-of-range code rather than throwing", () => {
+      expect(stateFromQuery({ mic_src: 0, adc: [9, 9], out: [9, 9], vol: [0, 0], mute: [true, false] })).toEqual({
+        mic_src: 0,
+        adc_input: ["diff", "diff"],
+        dac_output: ["all", "all"],
+        volume: [0, 0],
+        mute: [true, false],
+      });
+    });
+  });
+
+  describe("crosspadAudioRouteSet over the daemon", () => {
+    const DEV = {
+      id: "dev_3f2a", serial: "AABB", usb_mode: "default", board_rev: "v2",
+      ports: {
+        cdc: { path: "/dev/ttyACM0", vid: 0x303a, pid: 0x3456, serial: null, product: null, location: "1-1.2" },
+        console: null,
+        esp_midi: { name: "Crosspad", rtmidi_out: 1, rtmidi_in: 1, alsa_hw: "hw:4,0,0", rawmidi: null },
+        stm_midi: null, uac2: null, bootloader: null,
+      },
+    };
+
+    it("sends one midi.sysex per frame and reports them as hex", async () => {
+      const calls: Array<{ op: string; args: Record<string, unknown> }> = [];
+      const daemon = {
+        async request<T>(op: string, args: Record<string, unknown>): Promise<T> {
+          calls.push({ op, args });
+          return (op === "devices.list" ? { devices: [DEV] } : { sent: 7 }) as unknown as T;
+        },
+      };
+      const r = await crosspadAudioRouteSet(daemon, undefined, { codec: 1, adc_input: "line1", volume: 90 });
+      expect(r.success).toBe(true);
+      expect(r.sent).toEqual(["F0 7D 1D 01 01 01 F7", "F0 7D 1D 04 01 5A F7"]);
+      expect(r.port).toBe("hw:4,0,0");
+      expect(calls.map((c) => c.op)).toEqual(["devices.list", "midi.sysex", "midi.sysex"]);
+      expect(calls[1].args).toEqual({ device: "dev_3f2a", frame: "F0 7D 1D 01 01 01 F7" });
+    });
+
+    it("refuses an invalid set before contacting the daemon", async () => {
+      const daemon = { async request<T>(): Promise<T> { throw new Error("must not be called"); } };
+      const r = await crosspadAudioRouteSet(daemon, undefined, { adc_input: "diff" });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain("codec");
+    });
+
+    it("reports which frames made it out when a later one fails", async () => {
+      const { HilError } = await import("../hil/daemon.js");
+      let n = 0;
+      const daemon = {
+        async request<T>(op: string): Promise<T> {
+          if (op === "devices.list") return { devices: [DEV] } as unknown as T;
+          if (n++ === 1) throw new HilError("PORT_BUSY", "MIDI out busy");
+          return { sent: 7 } as unknown as T;
+        },
+      };
+      const r = await crosspadAudioRouteSet(daemon, undefined, { codec: 0, adc_input: "line2", volume: 50 });
+      expect(r.success).toBe(false);
+      expect(r.sent).toEqual(["F0 7D 1D 01 00 02 F7"]);
+      expect(r.error).toContain("PORT_BUSY");
+    });
+  });
+
+  describe("crosspadAudioRouteQuery over the daemon", () => {
+    const DEV = {
+      id: "dev_3f2a", serial: "AABB", usb_mode: "default", board_rev: null,
+      ports: {
+        cdc: { path: "/dev/ttyACM0", vid: 0x303a, pid: 0x3456, serial: null, product: null, location: "1-1.2" },
+        console: null,
+        esp_midi: { name: "Crosspad", rtmidi_out: 1, rtmidi_in: 1, alsa_hw: null, rawmidi: null },
+        stm_midi: null, uac2: null, bootloader: null,
+      },
+    };
+
+    it("returns the v9 state shape from midi.query_route", async () => {
+      const daemon = {
+        async request<T>(op: string): Promise<T> {
+          if (op === "devices.list") return { devices: [DEV] } as unknown as T;
+          return { mic_src: 1, adc: [1, 1], out: [1, 1], vol: [100, 100], mute: [0, 0] } as unknown as T;
+        },
+      };
+      const r = await crosspadAudioRouteQuery(daemon, "dev_3f2a");
+      expect(r).toEqual({
+        success: true,
+        port: "Crosspad",
+        state: { mic_src: 1, adc_input: ["line1", "line1"], dac_output: ["line1", "line1"], volume: [100, 100], mute: [false, false] },
+      });
+    });
+
+    it("a daemon TIMEOUT becomes a readable error string, not a throw", async () => {
+      const { HilError } = await import("../hil/daemon.js");
+      const daemon = {
+        async request<T>(op: string): Promise<T> {
+          if (op === "devices.list") return { devices: [DEV] } as unknown as T;
+          throw new HilError("TIMEOUT", "no query reply within 1.0 s", "is the firmware built with audio_route_control?");
+        },
+      };
+      const r = await crosspadAudioRouteQuery(daemon, undefined);
+      expect(r.success).toBe(false);
+      expect(r.error).toContain("TIMEOUT");
+      expect(r.error).toContain("audio_route_control");
+    });
+  });
+```
+
+- [ ] **Step 14: Run test to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/audio-route.test.ts`
+Expected: FAIL with `SyntaxError: The requested module './audio-route.js' does not provide an export named 'hexFrame'`.
+
+- [ ] **Step 15: Rewrite `src/tools/audio-route.ts`**
+
+Whole file:
+
+```ts
+/**
+ * Runtime audio routing control for CrossPad hardware over USB MIDI SysEx.
+ *
+ * Speaks CROSSPAD_CMD_AUDIO_ROUTE (0x1D) from crosspad-core's SysEx protocol
+ * (handled by platform-idf main/audio_route_control.cpp): per-codec ADC input,
+ * USB-mic capture source, DAC output route, volume, mute, and a state query.
+ *
+ * Transport (v10): the crosspad-hil daemon — `midi.sysex` for each set frame,
+ * `midi.query_route` for the read-back. The daemon owns port discovery and the
+ * reply parse, so this module no longer shells out to `amidi` and no longer
+ * decodes raw bytes; that also makes it work on Windows and macOS, where the
+ * old ALSA-only path could not run at all. Frame construction stays here
+ * because it is the part worth unit-testing without a device.
+ */
+
+import { z } from "zod";
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { HilError } from "../hil/daemon.js";
+import { listHilDevices, pickDevice, type DaemonRequester } from "../hil/select.js";
+import type { ToolContext } from "../tool-context.js";
+import { decide } from "../policy/policy.js";
+import { annotationsFor, tierOf } from "../policy/tiers.js";
+import { requireConfirmation } from "../policy/confirm.js";
+import { jsonResponse } from "../tool-result.js";
+
+export type { DaemonRequester };
+
+export type AdcInput = "diff" | "line1" | "line2";
+export type DacOutput = "line1" | "line2" | "all";
+
+export interface AudioRouteSetParams {
+  codec?: 0 | 1;
+  adc_input?: AdcInput;
+  mic_src?: 0 | 1;
+  dac_output?: DacOutput;
+  volume?: number;
+  mute?: boolean;
+}
+
+export interface AudioRouteState {
+  mic_src: number;
+  adc_input: [AdcInput, AdcInput];
+  dac_output: [DacOutput, DacOutput];
+  volume: [number, number];
+  mute: [boolean, boolean];
+}
+
+export interface AudioRouteResult {
+  success: boolean;
+  sent?: string[];
+  state?: AudioRouteState;
+  port?: string;
+  error?: string;
+}
+
+const ADC_CODE: Record<AdcInput, number> = { diff: 0, line1: 1, line2: 2 };
+const ADC_NAME: AdcInput[] = ["diff", "line1", "line2"];
+const DAC_CODE: Record<DacOutput, number> = { line1: 1, line2: 2, all: 3 };
+const DAC_NAME: DacOutput[] = ["all", "line1", "line2", "all"]; // 1-based codes; 0 unused
+
+export const TOOL_NAME = "crosspad_audio_route";
+
+/** One SysEx frame as the daemon's `frame` argument wants it: "F0 7D 1D 01 00 02 F7". */
+export function hexFrame(bytes: number[]): string {
+  return bytes.map((b) => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
+}
+
+/** Build the SysEx frames for a set request (exported for tests). */
+export function buildSetFrames(p: AudioRouteSetParams): { frames: number[][]; error?: string } {
+  const frames: number[][] = [];
+  const needsCodec = p.adc_input !== undefined || p.dac_output !== undefined ||
+                     p.volume !== undefined || p.mute !== undefined;
+  if (needsCodec && p.codec === undefined) {
+    return { frames, error: "Field 'codec' (0|1) is required for adc_input/dac_output/volume/mute." };
+  }
+  const wrap = (body: number[]) => [0xf0, 0x7d, 0x1d, ...body, 0xf7];
+  if (p.adc_input !== undefined) frames.push(wrap([0x01, p.codec!, ADC_CODE[p.adc_input]]));
+  if (p.mic_src !== undefined) frames.push(wrap([0x02, p.mic_src]));
+  if (p.dac_output !== undefined) frames.push(wrap([0x03, p.codec!, DAC_CODE[p.dac_output]]));
+  if (p.volume !== undefined) {
+    if (p.volume < 0 || p.volume > 100) return { frames, error: "volume must be 0-100" };
+    frames.push(wrap([0x04, p.codec!, p.volume]));
+  }
+  if (p.mute !== undefined) frames.push(wrap([0x05, p.codec!, p.mute ? 1 : 0]));
+  if (frames.length === 0) return { frames, error: "Nothing to set — pass at least one of adc_input/mic_src/dac_output/volume/mute." };
+  return { frames };
+}
+
+/** midi.py parse_query_reply() dict → the v9 state shape this tool has always returned. */
+export function stateFromQuery(q: Record<string, unknown>): AudioRouteState {
+  const nums = (v: unknown): number[] => (Array.isArray(v) ? v.map((x) => Number(x)) : []);
+  const adc = nums(q.adc);
+  const out = nums(q.out);
+  const vol = nums(q.vol);
+  const mute = Array.isArray(q.mute) ? (q.mute as unknown[]) : [];
+  const truthy = (v: unknown): boolean => v === true || Number(v) !== 0;
+  return {
+    mic_src: Number(q.mic_src ?? 0),
+    adc_input: [ADC_NAME[adc[0]] ?? "diff", ADC_NAME[adc[1]] ?? "diff"],
+    dac_output: [DAC_NAME[out[0]] ?? "all", DAC_NAME[out[1]] ?? "all"],
+    volume: [vol[0] ?? 0, vol[1] ?? 0],
+    mute: [truthy(mute[0]), truthy(mute[1])],
+  };
+}
+
+function describeError(e: unknown): string {
+  if (e instanceof HilError) return e.hint ? `${e.code}: ${e.message} — ${e.hint}` : `${e.code}: ${e.message}`;
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** The MIDI endpoint the frames leave by, for the `port` field of the result. */
+async function resolvePort(
+  daemon: DaemonRequester,
+  device: string | undefined,
+  signal?: AbortSignal,
+): Promise<{ id: string; port: string | undefined }> {
+  const devices = await listHilDevices(daemon, signal);
+  const d = pickDevice(devices, device);
+  return { id: d.id, port: d.ports.esp_midi?.alsa_hw ?? d.ports.esp_midi?.name ?? undefined };
+}
+
+export async function crosspadAudioRouteSet(
+  daemon: DaemonRequester,
+  device: string | undefined,
+  params: AudioRouteSetParams,
+  signal?: AbortSignal,
+): Promise<AudioRouteResult> {
+  const { frames, error } = buildSetFrames(params);
+  if (error) return { success: false, error };
+  let target: { id: string; port: string | undefined };
+  try {
+    target = await resolvePort(daemon, device, signal);
+  } catch (e) {
+    return { success: false, error: describeError(e) };
+  }
+  const sent: string[] = [];
+  for (const frame of frames) {
+    const f = hexFrame(frame);
+    try {
+      await daemon.request("midi.sysex", { device: target.id, frame: f }, signal ? { signal } : undefined);
+    } catch (e) {
+      return { success: false, sent, port: target.port, error: `SysEx send failed: ${describeError(e)}` };
+    }
+    sent.push(f);
+  }
+  return { success: true, sent, port: target.port };
+}
+
+export async function crosspadAudioRouteQuery(
+  daemon: DaemonRequester,
+  device: string | undefined,
+  signal?: AbortSignal,
+): Promise<AudioRouteResult> {
+  let target: { id: string; port: string | undefined };
+  try {
+    target = await resolvePort(daemon, device, signal);
+  } catch (e) {
+    return { success: false, error: describeError(e) };
+  }
+  try {
+    const q = await daemon.request<Record<string, unknown>>("midi.query_route", { device: target.id }, signal ? { signal } : undefined);
+    return { success: true, port: target.port, state: stateFromQuery(q) };
+  } catch (e) {
+    return { success: false, port: target.port, error: describeError(e) };
+  }
+}
+
+export const AudioRouteInput = z.object({
+  action: z.enum(["set", "query"]).describe("'set' applies routing changes; 'query' reads the current state."),
+  device: z.string().min(1).optional()
+    .describe("Device id (dev_xxxx) or one of its port paths; omit when exactly one CrossPad is connected."),
+  codec: z.union([z.literal(0), z.literal(1)]).optional()
+    .describe("Target codec for adc_input/dac_output/volume/mute (0 = stock mic path, 1 = PCB-loopback codec)."),
+  adc_input: z.enum(["diff", "line1", "line2"]).optional()
+    .describe("ADC input mux of `codec`: differential, LINE1 (PCB loop on both codecs) or LINE2 (built-in mics on codec 0, jack on codec 1)."),
+  mic_src: z.union([z.literal(0), z.literal(1)]).optional()
+    .describe("Which codec feeds the USB mic path."),
+  dac_output: z.enum(["line1", "line2", "all"]).optional()
+    .describe("DAC output route of `codec`."),
+  volume: z.number().int().min(0).max(100).optional().describe("Codec output volume 0-100."),
+  mute: z.boolean().optional().describe("Codec output mute."),
+});
+export type AudioRouteArgs = z.infer<typeof AudioRouteInput>;
+
+export const O_AudioRoute = {
+  success: z.boolean(),
+  sent: z.array(z.string()).optional(),
+  state: z.object({
+    mic_src: z.number().int(),
+    adc_input: z.array(z.enum(["diff", "line1", "line2"])).length(2),
+    dac_output: z.array(z.enum(["line1", "line2", "all"])).length(2),
+    volume: z.array(z.number().int()).length(2),
+    mute: z.array(z.boolean()).length(2),
+  }).optional(),
+  port: z.string().optional(),
+  error: z.union([
+    z.string(),
+    z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }),
+  ]).optional(),
+  resultType: z.string().optional(),
+  confirmation: z.record(z.string(), z.unknown()).optional(),
+};
+
+export function registerAudioRouteTool(server: McpServer, ctx: ToolContext): RegisteredTool {
+  return server.registerTool(
+    TOOL_NAME,
+    {
+      description:
+        "[ESP HW] Runtime audio routing on a connected CrossPad, over USB MIDI SysEx " +
+        "(CROSSPAD_CMD_AUDIO_ROUTE 0x1D) through the crosspad-hil daemon. Works in both USB profiles.\n" +
+        "  • action='query' → read back the full routing state (mic_src, ADC inputs, DAC outputs, volumes, mutes).\n" +
+        "  • action='set'   → apply any subset of: adc_input ('diff'|'line1'|'line2'), mic_src (0|1), " +
+        "dac_output ('line1'|'line2'|'all'), volume (0-100), mute. Per-codec fields need `codec` (0|1).\n" +
+        "Notes: codec0 LINE2 is the built-in mics; every other input is the DAC→ADC loop, and codec1 LINE1 is the " +
+        "near-unity path with the better SNR (compresses above ~0.2 FS input). Routing reverts to firmware defaults " +
+        "on device reset — only the named preset is persisted, by the firmware, not by this tool.",
+      inputSchema: AudioRouteInput,
+      outputSchema: O_AudioRoute,
+      annotations: annotationsFor(tierOf(TOOL_NAME, { action: "set" })),
+    },
+    async (rawArgs, extra) => {
+      const args = AudioRouteInput.parse(rawArgs);
+      const argsRec = args as unknown as Record<string, unknown>;
+      const decision = decide(ctx.policy, TOOL_NAME, argsRec);
+      if (decision === "hidden") {
+        return jsonResponse({ success: false, error: { code: "HIDDEN", message: `${TOOL_NAME} ${args.action} is hidden by policy` } });
+      }
+      if (decision === "confirm") {
+        const summary = args.action === "query"
+          ? `read the audio routing of ${args.device ?? "the only CrossPad"}`
+          : `change the audio routing of ${args.device ?? "the only CrossPad"}`;
+        const c = await requireConfirmation(server, extra, TOOL_NAME, argsRec, summary);
+        if (c.status === "token") return c.result;
+        if (c.status === "declined") {
+          return jsonResponse({ success: false, error: { code: "CANCELLED_BY_USER", message: `${TOOL_NAME} was declined by the user.` } });
+        }
+      }
+      const daemon = ctx.daemon();
+      if (args.action === "query") {
+        return jsonResponse({ ...(await crosspadAudioRouteQuery(daemon, args.device, extra.signal)) });
+      }
+      return jsonResponse({
+        ...(await crosspadAudioRouteSet(daemon, args.device, {
+          codec: args.codec,
+          adc_input: args.adc_input,
+          mic_src: args.mic_src,
+          dac_output: args.dac_output,
+          volume: args.volume,
+          mute: args.mute,
+        }, extra.signal)),
+      });
+    },
+  );
+}
+```
+
+- [ ] **Step 16: Run the audio-route tests**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/audio-route.test.ts`
+Expected: PASS — the 5 untouched `buildSetFrames` tests plus 9 new ones (hexFrame 1, stateFromQuery 3, set 3, query 2).
+
+- [ ] **Step 17: Wire the three tools into `src/registry.ts` and drop the legacy blocks**
+
+In `registerAll`, after the `crosspad_ui` line of the device block:
+
+```ts
+  manager.register("crosspad_midi",        registerMidiTool(server, ctx),       "device");
+  registered.add("crosspad_midi");
+  manager.register("crosspad_usb_mode",    registerUsbModeTool(server, ctx),    "device");
+  registered.add("crosspad_usb_mode");
+  manager.register("crosspad_audio_route", registerAudioRouteTool(server, ctx), "device");
+  registered.add("crosspad_audio_route");
+```
+
+with the imports:
+
+```ts
+import { registerMidiTool } from "./tools/midi.js";
+import { registerUsbModeTool } from "./tools/usb-mode.js";
+import { registerAudioRouteTool } from "./tools/audio-route.js";
+```
+
+In `src/index.ts`: delete the `SIM — MIDI` banner and its `registerLegacy("crosspad_midi", …)` block (lines 1085–1141); delete the `ESP HW — audio routing (SysEx 0x1D)` banner and its `registerLegacy("crosspad_audio_route", …)` block (lines 1143–1183); delete the now-unused `O_Midi` (lines 352–358) and `O_AudioRoute` (lines 360–372) const blocks; delete the imports `crosspadMidiSend`, `crosspadAudioRouteSet`, `crosspadAudioRouteQuery`.
+
+- [ ] **Step 18: Run the whole suite and the type check**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run && npx tsc --noEmit`
+Expected: PASS for every file; `tsc` exits 0 with no output. `src/index.mcp.test.ts` still lists `crosspad_midi` and `crosspad_audio_route` because its `beforeAll` enables every toolset (Task 4) and the `device` toolset now owns them.
+
+- [ ] **Step 19: Commit**
+
+```bash
+cd /home/matixan/GIT/crosspad-mcp && git add src/hil/select.ts src/hil/select.test.ts src/tools/midi.ts src/tools/midi.device.test.ts src/tools/usb-mode.ts src/tools/usb-mode.test.ts src/tools/audio-route.ts src/tools/audio-route.test.ts src/policy/tiers.ts src/registry.ts src/index.ts && git commit -m "feat(v10): crosspad_midi target=device, crosspad_usb_mode, and audio routing over the hil daemon instead of amidi"
+```
+
+---
+
+### Task 9: `crosspad_flash` rewrite — preflight, confirmation, jobs and wait_boot
+
+**Files:**
+- Create: `/home/matixan/GIT/crosspad-mcp/src/tools/flash.ts`
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/tasks.ts` — extract the poll loop inside `JobRegistry.mirror()` into an exported `pumpDaemonTask`; `mirror()` keeps its signature and behaviour
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/registry.ts` — one `manager.register("crosspad_flash", …)` line in the `core` block
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/index.ts` — delete the `FLASH` banner and its `registerLegacy("crosspad_flash", …)` block (lines 581–631) and the `O_Flash` const (lines 260–271); delete the `crosspadIdfFlash` / `crosspadIdfOta` / `crosspadStmFlash` imports
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/tools/idf-flash.ts` — delete `crosspadIdfOta` (lines 105–184) and the helpers only it used (`extractDetectedPort`, `formatFileSize`); `crosspadIdfFlash` and `extractFlashError` stay
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/tools/idf-flash.test.ts` — delete the `crosspadIdfOta` describe block and its import
+- Test: `/home/matixan/GIT/crosspad-mcp/src/tasks.pump.test.ts`
+- Test: `/home/matixan/GIT/crosspad-mcp/src/tools/flash.preflight.test.ts`
+- Test: `/home/matixan/GIT/crosspad-mcp/src/tools/flash.test.ts`
+
+**Interfaces:**
+
+- Consumes:
+  - Daemon ops verbatim: `devices.list {}` → `{"devices": [Device.to_dict]}`; `ota.flash {device, firmware, delta_base?, wait_boot?}` → `{"task": "task_N"}`; `task.status {task}` → `{task, status, progress, total, message, result?, error?}`; `task.cancel {task}` → `{"ok"}`; `console.open {device, reset?, log_to?}` → `{"handle","port","log_path"}`; `console.wait_boot {handle, timeout_s?}` → `BootResult` dict; `console.close {handle}` → `{"ok"}`.
+  - `listHilDevices`, `pickDevice`, `roleOfPort`, `type DaemonRequester` from `src/hil/select.ts` (Task 8).
+  - `BootResultSchema`, `type BootResult`, `type Device` from `src/hil/schemas.ts` (Task 1); `HilError` from `src/hil/daemon.ts` (Task 1).
+  - `JobRegistry.create(kind: string, run: JobRun): string`, `JobRegistry.status(id): JobStatus`, `JobRegistry.wait(id, timeoutMs): Promise<JobStatus>`, `type ProgressFn`, `type DaemonLike`, `POLL_INTERVAL_MS`, `TaskStatusSchema` (already imported by `tasks.ts`) from `src/tasks.ts` (Task 2).
+  - `ToolContext` from `src/tool-context.ts`; `HandleRegistry.register(handle, {kind, device?})` / `.drop(handle)` / `.list()` from `src/handles.ts` (Task 2).
+  - `decide` (Task 3), `tierOf` / `annotationsFor` (Task 3), `requireConfirmation` (Task 3), `jsonResponse` / `toolError` (Task 5).
+  - `crosspadIdfFlash(port: string | undefined, onLine?: OnLine, signal?: AbortSignal): Promise<FlashResult>` from `src/tools/idf-flash.ts`; `crosspadStmFlash(method: "swd"|"dfu", buildType: string, firmwarePath: string | undefined, onLine?: OnLine, signal?: AbortSignal): Promise<StmFlashResult>` from `src/tools/stm-flash.ts`; `type OnLine` from `src/utils/exec.ts` (all unchanged — `crosspadIdfFlash` already goes through the argv-only `runIdfArgvStream` and honours `signal`).
+  - `CROSSPAD_IDF_ROOT`, `CROSSPAD_STM_ROOT`, `stmArtifact`, `type StmPreset` from `src/config.ts`.
+  - `fakeDaemon`, `fakeServer`, `fakeExtra` from `src/testing/` (Task 5).
+
+- Produces:
+  - `src/tasks.ts` (added): `export function pumpDaemonTask(daemon: DaemonLike, daemonTask: string, signal: AbortSignal, progress: ProgressFn, pollMs?: number): Promise<unknown>` — polls `task.status` every `pollMs` (default `POLL_INTERVAL_MS`), forwards `task.cancel` once on abort, resolves the daemon task's `result`, rejects with `HilError` on `failed` / `cancelled`. `mirror()` becomes `this.create(kind, (s, p) => pumpDaemonTask(daemon, daemonTask, s, p, pollIntervalMs))` plus the existing `daemonTask` stamp — signature and observable behaviour unchanged.
+  - `src/tools/flash.ts`:
+    - `export const TOOL_NAME = "crosspad_flash"`
+    - `export const SOURCE_SUBDIRS: string[]`
+    - `export interface FlashBlocker { code: string; message: string }`
+    - `export interface FlashPreflight` (fields listed in the implementation below)
+    - `export interface FlashProbe { exists(p: string): Promise<boolean>; mtimeMs(p: string): Promise<number | null>; binVersion(p: string): Promise<string | null>; newestSource(root: string, subdirs: string[]): Promise<{path: string; mtimeMs: number} | null>; buildBoardRev(idfRoot: string, buildDir: string): Promise<string | null> }`
+    - `export function realFlashProbe(): FlashProbe`
+    - `export function setFlashProbeForTest(p: FlashProbe): void`
+    - `export function normalizeRev(s: string | null | undefined): "v1" | "v2" | null`
+    - `export async function espPreflight(probe: FlashProbe, device: Device | null, args: {transport: "uart"|"ota"; port?: string; firmware_path?: string; build_dir?: string}, deviceError?: HilError): Promise<FlashPreflight>`
+    - `export async function stmPreflight(probe: FlashProbe, args: {method: "swd"|"dfu"; build_type?: string; firmware_path?: string}): Promise<FlashPreflight>`
+    - `export function applyForce(pf: FlashPreflight, force: boolean): FlashPreflight`
+    - `export async function waitBootOnConsole(daemon: DaemonRequester, device: string, handles: HandleRegistry, timeoutS: number, signal?: AbortSignal): Promise<BootResult>`
+    - `export const FlashInput`, `export type FlashArgs`, `export const O_Flash`
+    - `export function registerFlashTool(server: McpServer, ctx: ToolContext): RegisteredTool`
+  - Blocker codes (`FlashPreflight.blockers[].code`): `NO_BUILD_DIR`, `NO_FIRMWARE`, `NO_DEVICE`, `PORT_ROLE`, `BOARD_REV_MISMATCH`. Tool-level error code on refusal: `PREFLIGHT_BLOCKED`.
+
+Contract choices stated here (the contract and Tasks 1–7 are silent):
+- **Board-rev mismatch is a hard blocker**, not a warning. Flashing a rev-v1 binary onto a rev-v2 board gives a board with the wrong pinout — no display, no console, indistinguishable from dead hardware — and the recovery is a UART flash of the right image. `force: true` downgrades it; `PORT_ROLE` is the one blocker `force` cannot clear, because the STM console VCP is not a flash target under any argument.
+- **`wait_boot` is done TS-side**, so `ota.flash` is always called with `wait_boot: false`. That gives OTA and UART the identical `console.open` → `console.wait_boot` → `console.close` sequence, one `BootResult` shape either way, and the console handle appears in `ctx.handles` while it is open.
+- **One job handle covers flash + boot wait.** `jobs.create("flash", …)` wraps `ota.flash` + `pumpDaemonTask` + the optional boot wait in a single run function, rather than `jobs.mirror()` (which would mint a second handle for the boot wait). `pumpDaemonTask` is factored out of `mirror()` so there is exactly one daemon-task poll loop in the code base.
+- **`wait_seconds` (default 0)** keeps the v9 ergonomics: 0 returns the handle immediately, >0 awaits `jobs.wait()` and inlines the terminal `JobStatus`. A `jobs.wait()` timeout is not an error — the job keeps running and the handle is still returned.
+- **`dry_run`** returns the preflight and stops *before* the confirmation, so this danger-tier tool can be inspected without minting a token.
+- **`target: "stm"` stays on this tool**, delegating to the unchanged `crosspadStmFlash` as a job, with an STM-shaped preflight (firmware existence + mtime; the ESP-only fields are `null` and `notes` says why). Dropping it would have silently removed a documented capability nothing else covers.
+- **`crosspadIdfOta` is deleted.** OTA now runs through the daemon's `ota.flash`, and keeping a second, silently divergent OTA implementation (`tools/ota_flash.py` spawned from TS) is exactly the drift this rewrite removes.
+- Firmware default is `<build_dir>/CrossPad.bin` with `build_dir` defaulting to `<CROSSPAD_IDF_ROOT>/build` — the same default `idf-flash.ts` used; `build_dir` is an input so the per-revision `build_v1` / `build_v2` dirs are reachable.
+- Board rev is read from `<build_dir>/config/sdkconfig.json` key `BSP_BOARD_REV_STR` (verified present in every platform-idf build dir), falling back to `CONFIG_BSP_BOARD_REV_STR="…"` in `<idfRoot>/sdkconfig.v1|.v2|sdkconfig`.
+
+---
+
+- [ ] **Step 1: Write the failing `pumpDaemonTask` test**
+
+`/home/matixan/GIT/crosspad-mcp/src/tasks.pump.test.ts`:
+
+```ts
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { pumpDaemonTask, type DaemonLike, type ProgressFn } from "./tasks.js";
+import { HilError } from "./hil/daemon.js";
+
+function scriptedDaemon(statuses: unknown[]): DaemonLike & { calls: Array<[string, Record<string, unknown>]> } {
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  let i = 0;
+  return {
+    calls,
+    async request<T>(op: string, args: Record<string, unknown>): Promise<T> {
+      calls.push([op, args]);
+      if (op === "task.cancel") return { ok: true } as unknown as T;
+      return statuses[Math.min(i++, statuses.length - 1)] as T;
+    },
+  };
+}
+
+describe("pumpDaemonTask", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("forwards progress and resolves the daemon result", async () => {
+    const d = scriptedDaemon([
+      { task: "task_9", status: "working", progress: 4096, total: 1_200_000, message: "0%" },
+      { task: "task_9", status: "working", progress: 600_000, total: 1_200_000, message: "50%" },
+      { task: "task_9", status: "completed", result: { bytes: 1_200_000, seconds: 9.4, kbps: 128, version: "v20-3f2a", mode: "full" } },
+    ]);
+    const seen: Array<[number, number | undefined, string]> = [];
+    const progress: ProgressFn = (p, t, m) => seen.push([p, t, m]);
+    const promise = pumpDaemonTask(d, "task_9", new AbortController().signal, progress, 10);
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(promise).resolves.toMatchObject({ bytes: 1_200_000, version: "v20-3f2a" });
+    expect(seen[0]).toEqual([4096, 1_200_000, "0%"]);
+    expect(seen[1]).toEqual([600_000, 1_200_000, "50%"]);
+  });
+
+  it("rejects with the daemon's error code when the task fails", async () => {
+    const d = scriptedDaemon([{ task: "task_9", status: "failed", error: { code: "FLASH_FAILED", message: "OTA_ERROR at 40%", hint: "retry over UART" } }]);
+    const p = pumpDaemonTask(d, "task_9", new AbortController().signal, () => {}, 10);
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(p).rejects.toMatchObject({ code: "FLASH_FAILED", hint: "retry over UART" });
+  });
+
+  it("forwards task.cancel exactly once on abort", async () => {
+    const d = scriptedDaemon([
+      { task: "task_9", status: "working", progress: 1, total: 2, message: "" },
+      { task: "task_9", status: "cancelled" },
+    ]);
+    const ac = new AbortController();
+    const p = pumpDaemonTask(d, "task_9", ac.signal, () => {}, 10);
+    await vi.advanceTimersByTimeAsync(10);
+    ac.abort();
+    ac.abort();
+    await vi.advanceTimersByTimeAsync(30);
+    await expect(p).rejects.toBeInstanceOf(HilError);
+    expect(d.calls.filter(([op]) => op === "task.cancel")).toHaveLength(1);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tasks.pump.test.ts`
+Expected: FAIL with `SyntaxError: The requested module './tasks.js' does not provide an export named 'pumpDaemonTask'`.
+
+- [ ] **Step 3: Extract `pumpDaemonTask` in `src/tasks.ts`**
+
+Add this function immediately above `export class JobRegistry` (it uses `TaskStatusSchema` and `HilError`, both already imported at the top of the file):
+
+```ts
+/**
+ * Poll one daemon-side task ("task_N" from ota.flash / scenario.run) to its
+ * terminal state, forwarding progress. Abort forwards `task.cancel` once and
+ * keeps polling so the daemon's own `cancelled` state is the one observed.
+ * Factored out of JobRegistry.mirror() so flash can compose it with a boot
+ * wait inside a single job — there is exactly one poll loop in this code base.
+ */
+export function pumpDaemonTask(
+  daemon: DaemonLike,
+  daemonTask: string,
+  signal: AbortSignal,
+  progress: ProgressFn,
+  pollMs: number = POLL_INTERVAL_MS,
+): Promise<unknown> {
+  return new Promise<unknown>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelSent = false;
+    const poll = async (): Promise<void> => {
+      let st;
+      try {
+        st = TaskStatusSchema.parse(await daemon.request("task.status", { task: daemonTask }));
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      if (typeof st.progress === "number") {
+        progress(st.progress, typeof st.total === "number" ? st.total : undefined, st.message ?? "");
+      }
+      if (st.status === "completed") { resolve(st.result); return; }
+      if (st.status === "failed") {
+        reject(new HilError(
+          st.error?.code ?? "TASK_FAILED",
+          st.error?.message ?? `daemon task ${daemonTask} failed`,
+          st.error?.hint ?? undefined,
+        ));
+        return;
+      }
+      if (st.status === "cancelled") { reject(new HilError("CANCELLED", `daemon task ${daemonTask} cancelled`)); return; }
+      timer = setTimeout(() => { void poll(); }, pollMs);
+    };
+    signal.addEventListener("abort", () => {
+      if (cancelSent) return;
+      cancelSent = true;
+      daemon.request("task.cancel", { task: daemonTask }).catch(() => {});
+      if (timer === null) return;
+      clearTimeout(timer);
+      timer = null;
+      void poll();
+    }, { once: true });
+    void poll();
+  });
+}
+```
+
+and replace the whole body of `mirror()` with:
+
+```ts
+  /** Mirror a daemon task ("task_N" from scenario.run / ota.flash) as a local job. */
+  mirror(daemon: DaemonLike, daemonTask: string, kind: string, pollIntervalMs: number = POLL_INTERVAL_MS): string {
+    const id = this.create(kind, (signal, progress) => pumpDaemonTask(daemon, daemonTask, signal, progress, pollIntervalMs));
+    const job = this.jobs.get(id)!;
+    job.status.daemonTask = daemonTask;
+    return id;
+  }
+```
+
+- [ ] **Step 4: Run the task tests**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tasks.pump.test.ts src/tasks.test.ts src/tools/task.test.ts`
+Expected: PASS — 3 new tests plus Task 2's suites unchanged (`mirror()` behaviour is identical).
+
+- [ ] **Step 5: Write the failing preflight test**
+
+`/home/matixan/GIT/crosspad-mcp/src/tools/flash.preflight.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+import { espPreflight, stmPreflight, applyForce, normalizeRev, type FlashProbe } from "./flash.js";
+import { HilError } from "../hil/daemon.js";
+
+const port = (path: string, vid = 0x303a, pid = 0x3456) => ({ path, vid, pid, serial: null, product: null, location: "1-1.2" });
+
+const DEV_V2 = {
+  id: "dev_3f2a", serial: "AABB", usb_mode: "default" as const, board_rev: "v2",
+  ports: { cdc: port("/dev/ttyACM0"), console: port("/dev/ttyACM1", 0x0483, 0x5740), esp_midi: null, stm_midi: null, uac2: null, bootloader: null },
+};
+const DEV_BOOTLOADER = {
+  id: "dev_3f2a", serial: "AABB", usb_mode: "bootloader" as const, board_rev: "v2",
+  ports: { cdc: null, console: null, esp_midi: null, stm_midi: null, uac2: null, bootloader: port("/dev/ttyACM0", 0x303a, 0x1001) },
+};
+
+/** Probe over an in-memory file table. mtimes are ms since epoch. */
+function probeFor(
+  files: Record<string, number>,
+  opts: { version?: string | null; newest?: { path: string; mtimeMs: number } | null; rev?: string | null } = {},
+): FlashProbe {
+  return {
+    async exists(p) { return p in files; },
+    async mtimeMs(p) { return files[p] ?? null; },
+    async binVersion() { return opts.version ?? null; },
+    async newestSource() { return opts.newest ?? null; },
+    async buildBoardRev() { return opts.rev ?? null; },
+  };
+}
+
+const FW = "/idf/build/CrossPad.bin";
+const BUILD = "/idf/build";
+
+describe("normalizeRev", () => {
+  it("folds every spelling the two sides use", () => {
+    expect(normalizeRev("v2")).toBe("v2");
+    expect(normalizeRev("V2")).toBe("v2");
+    expect(normalizeRev("2.0")).toBe("v2");
+    expect(normalizeRev("rev1")).toBe("v1");
+    expect(normalizeRev("1.9")).toBe("v1");
+    expect(normalizeRev(null)).toBeNull();
+    expect(normalizeRev("v3")).toBeNull();
+  });
+});
+
+describe("espPreflight", () => {
+  it("passes on a fresh matching build and reports every field", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20-3f2a", newest: { path: "/idf/main/main.cpp", mtimeMs: 1000 }, rev: "v2" });
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "ota", firmware_path: FW, build_dir: BUILD });
+    expect(pf.ok).toBe(true);
+    expect(pf.blockers).toEqual([]);
+    expect(pf).toMatchObject({
+      target: "esp", device: "dev_3f2a", usb_mode: "default", transport: "ota",
+      firmware_path: FW, firmware_exists: true, firmware_version: "v20-3f2a",
+      stale: false, build_board_rev: "v2", device_board_rev: "v2", board_rev_match: true,
+      bootloader_pid: false, port: "/dev/ttyACM0", port_role: "cdc",
+    });
+  });
+
+  it("flags a firmware older than the newest source as stale, but does not block", async () => {
+    const probe = probeFor({ [FW]: 1000, [BUILD]: 1000 }, { version: "v20-old", newest: { path: "/idf/components/bsp/crosspad/bsp_imu.cpp", mtimeMs: 5000 }, rev: "v2" });
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "ota", firmware_path: FW, build_dir: BUILD });
+    expect(pf.stale).toBe(true);
+    expect(pf.newest_source_path).toContain("bsp_imu.cpp");
+    expect(pf.blockers).toEqual([]);
+    expect(pf.warnings.join(" ")).toMatch(/older than/);
+    expect(pf.ok).toBe(true);
+  });
+
+  it("blocks a missing firmware", async () => {
+    const probe = probeFor({ [BUILD]: 1 }, { rev: "v2" });
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "ota", firmware_path: FW, build_dir: BUILD });
+    expect(pf.ok).toBe(false);
+    expect(pf.blockers.map((b) => b.code)).toEqual(["NO_FIRMWARE"]);
+    expect(pf.blockers[0].message).toContain("crosspad_build platform=idf");
+  });
+
+  it("blocks a missing build directory", async () => {
+    const probe = probeFor({}, {});
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "uart", firmware_path: FW, build_dir: BUILD });
+    expect(pf.blockers.map((b) => b.code)).toContain("NO_BUILD_DIR");
+  });
+
+  it("refuses the STM console port and names its role", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20", newest: null, rev: "v2" });
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "uart", port: "/dev/ttyACM1", firmware_path: FW, build_dir: BUILD });
+    expect(pf.ok).toBe(false);
+    const blocker = pf.blockers.find((b) => b.code === "PORT_ROLE")!;
+    expect(blocker.message).toContain("/dev/ttyACM1");
+    expect(blocker.message).toContain("console");
+    expect(blocker.message).toContain("/dev/ttyACM0");
+    expect(pf.port_role).toBe("console");
+  });
+
+  it("blocks a board-revision mismatch and says which is which", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20", newest: null, rev: "v1" });
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "ota", firmware_path: FW, build_dir: BUILD });
+    expect(pf.board_rev_match).toBe(false);
+    const blocker = pf.blockers.find((b) => b.code === "BOARD_REV_MISMATCH")!;
+    expect(blocker.message).toMatch(/v1/);
+    expect(blocker.message).toMatch(/v2/);
+  });
+
+  it("warns rather than blocks when either revision is unknown", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20", newest: null, rev: null });
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "ota", firmware_path: FW, build_dir: BUILD });
+    expect(pf.board_rev_match).toBeNull();
+    expect(pf.blockers).toEqual([]);
+    expect(pf.warnings.join(" ")).toMatch(/revision/i);
+  });
+
+  it("reports a bootloader-PID port and does not warn about download mode", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20", newest: null, rev: "v2" });
+    const pf = await espPreflight(probe, DEV_BOOTLOADER as never, { transport: "uart", firmware_path: FW, build_dir: BUILD });
+    expect(pf.bootloader_pid).toBe(true);
+    expect(pf.port_role).toBe("bootloader");
+    expect(pf.warnings.join(" ")).not.toMatch(/download mode/i);
+  });
+
+  it("warns that UART needs download mode when no bootloader port is present", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20", newest: null, rev: "v2" });
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "uart", firmware_path: FW, build_dir: BUILD });
+    expect(pf.warnings.join(" ")).toMatch(/download mode/i);
+  });
+
+  it("carries a device-resolution failure into the preflight instead of throwing", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20", newest: null, rev: "v2" });
+    const pf = await espPreflight(probe, null, { transport: "ota", firmware_path: FW, build_dir: BUILD },
+      new HilError("NO_DEVICE", "no CrossPad found; is it in bootloader/DFU?", "check the cable"));
+    expect(pf.device).toBeNull();
+    expect(pf.blockers.map((b) => b.code)).toContain("NO_DEVICE");
+    expect(pf.firmware_exists).toBe(true);
+  });
+});
+
+describe("applyForce", () => {
+  it("downgrades every blocker except PORT_ROLE", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20", newest: null, rev: "v1" });
+    const pf = applyForce(await espPreflight(probe, DEV_V2 as never, { transport: "ota", firmware_path: FW, build_dir: BUILD }), true);
+    expect(pf.ok).toBe(true);
+    expect(pf.warnings.join(" ")).toMatch(/forced past/i);
+  });
+
+  it("never clears PORT_ROLE", async () => {
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20", newest: null, rev: "v2" });
+    const pf = applyForce(await espPreflight(probe, DEV_V2 as never, { transport: "uart", port: "/dev/ttyACM1", firmware_path: FW, build_dir: BUILD }), true);
+    expect(pf.ok).toBe(false);
+    expect(pf.blockers.map((b) => b.code)).toEqual(["PORT_ROLE"]);
+  });
+});
+
+describe("stmPreflight", () => {
+  it("checks the STM binary and marks the ESP-only fields null", async () => {
+    const bin = "/stm/build/Debug/CrossPad_STM32_r20.bin";
+    const pf = await stmPreflight(probeFor({ [bin]: 4000 }), { method: "swd", firmware_path: bin });
+    expect(pf).toMatchObject({ target: "stm", firmware_exists: true, device: null, usb_mode: null, board_rev_match: null });
+    expect(pf.ok).toBe(true);
+    expect(pf.notes.join(" ")).toMatch(/ST-Link|STM32_Programmer_CLI/);
+  });
+
+  it("blocks a missing STM binary", async () => {
+    const pf = await stmPreflight(probeFor({}), { method: "dfu" });
+    expect(pf.ok).toBe(false);
+    expect(pf.blockers.map((b) => b.code)).toEqual(["NO_FIRMWARE"]);
+  });
+});
+```
+
+- [ ] **Step 6: Run test to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/flash.preflight.test.ts`
+Expected: FAIL with `Failed to load url ./flash.js (resolved id: ./flash.js) in /home/matixan/GIT/crosspad-mcp/src/tools/flash.preflight.test.ts`.
+
+- [ ] **Step 7: Write the preflight half of `src/tools/flash.ts`**
+
+Create the file with everything up to (and excluding) the tool section — imports, types, probe, preflight, force, boot wait:
+
+```ts
+// src/tools/flash.ts — crosspad_flash: the one danger-tier tool.
+//
+// Shape: preflight (always returned, even on refusal) → confirmation → a job.
+// The preflight exists because every way this call goes wrong is knowable
+// before a single byte is written: the wrong port role, a firmware built for
+// the other board revision, a binary older than the sources, a device sitting
+// in USB-audio mode. Refusing with the reason beats a bricked-looking board.
+import fs from "fs";
+import path from "path";
+import { z } from "zod";
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { HilError } from "../hil/daemon.js";
+import { BootResultSchema, type BootResult, type Device } from "../hil/schemas.js";
+import { listHilDevices, pickDevice, roleOfPort, type DaemonRequester } from "../hil/select.js";
+import type { HandleRegistry } from "../handles.js";
+import { pumpDaemonTask, type ProgressFn } from "../tasks.js";
+import type { ToolContext } from "../tool-context.js";
+import { decide } from "../policy/policy.js";
+import { annotationsFor, tierOf } from "../policy/tiers.js";
+import { requireConfirmation } from "../policy/confirm.js";
+import { jsonResponse, toolError } from "../tool-result.js";
+import { CROSSPAD_IDF_ROOT, CROSSPAD_STM_ROOT, stmArtifact, type StmPreset } from "../config.js";
+import { crosspadIdfFlash } from "./idf-flash.js";
+import { crosspadStmFlash } from "./stm-flash.js";
+import type { OnLine } from "../utils/exec.js";
+
+export const TOOL_NAME = "crosspad_flash";
+
+/** Directories under the IDF project whose mtimes decide whether a build is stale. */
+export const SOURCE_SUBDIRS = ["main", "components"];
+/** Skipped while walking sources: build outputs and VCS metadata are not sources. */
+const SKIP_DIRS = new Set([".git", "managed_components", ".crosspad", "node_modules", "__pycache__"]);
+/** Safety valve for the source walk — platform-idf is ~2 000 units, not 200 000 files. */
+const MAX_SOURCE_FILES = 40_000;
+
+export interface FlashBlocker { code: string; message: string }
+
+export interface FlashPreflight {
+  target: "esp" | "stm";
+  transport: string;
+  device: string | null;
+  usb_mode: string | null;
+  port: string | null;
+  port_role: "cdc" | "console" | "bootloader" | null;
+  bootloader_pid: boolean;
+  build_dir: string | null;
+  firmware_path: string;
+  firmware_exists: boolean;
+  firmware_mtime_ms: number | null;
+  firmware_version: string | null;
+  newest_source_path: string | null;
+  newest_source_mtime_ms: number | null;
+  stale: boolean;
+  build_board_rev: string | null;
+  device_board_rev: string | null;
+  board_rev_match: boolean | null;
+  blockers: FlashBlocker[];
+  warnings: string[];
+  notes: string[];
+  ok: boolean;
+}
+
+export interface FlashProbe {
+  exists(p: string): Promise<boolean>;
+  mtimeMs(p: string): Promise<number | null>;
+  /** esp_app_desc_t.version: 32 bytes at file offset 48, NUL-terminated (ota_flash.py). */
+  binVersion(p: string): Promise<string | null>;
+  newestSource(root: string, subdirs: string[]): Promise<{ path: string; mtimeMs: number } | null>;
+  buildBoardRev(idfRoot: string, buildDir: string): Promise<string | null>;
+}
+
+export function realFlashProbe(): FlashProbe {
+  return {
+    async exists(p) {
+      try { await fs.promises.access(p); return true; } catch { return false; }
+    },
+    async mtimeMs(p) {
+      try { return (await fs.promises.stat(p)).mtimeMs; } catch { return null; }
+    },
+    async binVersion(p) {
+      let fh: Awaited<ReturnType<typeof fs.promises.open>> | null = null;
+      try {
+        fh = await fs.promises.open(p, "r");
+        const buf = Buffer.alloc(32);
+        const { bytesRead } = await fh.read(buf, 0, 32, 48);
+        if (bytesRead < 1) return null;
+        const nul = buf.indexOf(0);
+        const s = buf.subarray(0, nul === -1 ? bytesRead : nul).toString("latin1").trim();
+        return s.length > 0 && /^[\x20-\x7e]+$/.test(s) ? s : null;
+      } catch {
+        return null;
+      } finally {
+        if (fh) await fh.close().catch(() => {});
+      }
+    },
+    async newestSource(root, subdirs) {
+      let best: { path: string; mtimeMs: number } | null = null;
+      let seen = 0;
+      const walk = async (dir: string): Promise<void> => {
+        if (seen >= MAX_SOURCE_FILES) return;
+        let entries: fs.Dirent[];
+        try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+          if (seen >= MAX_SOURCE_FILES) return;
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) {
+            if (SKIP_DIRS.has(e.name) || e.name.startsWith("build")) continue;
+            await walk(full);
+            continue;
+          }
+          if (!e.isFile()) continue;
+          seen++;
+          let m: number;
+          try { m = (await fs.promises.stat(full)).mtimeMs; } catch { continue; }
+          if (!best || m > best.mtimeMs) best = { path: full, mtimeMs: m };
+        }
+      };
+      for (const sub of subdirs) await walk(path.join(root, sub));
+      return best;
+    },
+    async buildBoardRev(idfRoot, buildDir) {
+      try {
+        const j = JSON.parse(await fs.promises.readFile(path.join(buildDir, "config", "sdkconfig.json"), "utf-8")) as Record<string, unknown>;
+        const s = j.BSP_BOARD_REV_STR;
+        if (typeof s === "string" && s.length > 0) return s;
+      } catch { /* fall through to the sdkconfig text files */ }
+      const base = path.basename(buildDir);
+      const suffixes = base === "build_v1" ? [".v1", "", ".v2"] : base === "build_v2" ? [".v2", "", ".v1"] : ["", ".v2", ".v1"];
+      for (const suffix of suffixes) {
+        try {
+          const text = await fs.promises.readFile(path.join(idfRoot, `sdkconfig${suffix}`), "utf-8");
+          const m = text.match(/^CONFIG_BSP_BOARD_REV_STR="([^"]+)"/m);
+          if (m) return m[1];
+        } catch { /* try the next candidate */ }
+      }
+      return null;
+    },
+  };
+}
+
+/** "v2" / "V2" / "2.0" / "rev2" → "v2"; anything this project does not build → null. */
+export function normalizeRev(s: string | null | undefined): "v1" | "v2" | null {
+  if (typeof s !== "string") return null;
+  const m = s.trim().toLowerCase().match(/(\d+)/);
+  if (!m) return null;
+  const major = Number(m[1]);
+  if (major === 1) return "v1";
+  if (major === 2) return "v2";
+  return null;
+}
+
+function emptyPreflight(target: "esp" | "stm", transport: string, firmwarePath: string): FlashPreflight {
+  return {
+    target, transport,
+    device: null, usb_mode: null, port: null, port_role: null, bootloader_pid: false,
+    build_dir: null,
+    firmware_path: firmwarePath, firmware_exists: false, firmware_mtime_ms: null, firmware_version: null,
+    newest_source_path: null, newest_source_mtime_ms: null, stale: false,
+    build_board_rev: null, device_board_rev: null, board_rev_match: null,
+    blockers: [], warnings: [], notes: [], ok: true,
+  };
+}
+
+export async function espPreflight(
+  probe: FlashProbe,
+  device: Device | null,
+  args: { transport: "uart" | "ota"; port?: string; firmware_path?: string; build_dir?: string },
+  deviceError?: HilError,
+): Promise<FlashPreflight> {
+  const buildDir = args.build_dir ?? path.join(CROSSPAD_IDF_ROOT, "build");
+  const firmware = args.firmware_path ?? path.join(buildDir, "CrossPad.bin");
+  const pf = emptyPreflight("esp", args.transport, firmware);
+  pf.build_dir = buildDir;
+
+  // ── the build ─────────────────────────────────────────────────────────
+  if (!(await probe.exists(buildDir))) {
+    pf.blockers.push({
+      code: "NO_BUILD_DIR",
+      message: `No build directory at ${buildDir}. Run crosspad_build platform=idf first (or pass build_dir for a per-revision dir such as build_v1/build_v2).`,
+    });
+  }
+  pf.firmware_exists = await probe.exists(firmware);
+  if (!pf.firmware_exists) {
+    pf.blockers.push({ code: "NO_FIRMWARE", message: `Firmware not found at ${firmware}. Run crosspad_build platform=idf first.` });
+  } else {
+    pf.firmware_mtime_ms = await probe.mtimeMs(firmware);
+    pf.firmware_version = await probe.binVersion(firmware);
+  }
+  const newest = await probe.newestSource(CROSSPAD_IDF_ROOT, SOURCE_SUBDIRS);
+  if (newest) {
+    pf.newest_source_path = newest.path;
+    pf.newest_source_mtime_ms = newest.mtimeMs;
+    if (pf.firmware_mtime_ms !== null && newest.mtimeMs > pf.firmware_mtime_ms) {
+      pf.stale = true;
+      pf.warnings.push(`The firmware is older than ${newest.path} — you are about to flash a build from before that edit. Run crosspad_build platform=idf if that is not intended.`);
+    }
+  }
+
+  // ── the device ────────────────────────────────────────────────────────
+  if (!device) {
+    pf.blockers.push({
+      code: "NO_DEVICE",
+      message: deviceError
+        ? `${deviceError.message}${deviceError.hint ? ` (${deviceError.hint})` : ""}`
+        : "No CrossPad resolved for this flash.",
+    });
+  } else {
+    pf.device = device.id;
+    pf.usb_mode = device.usb_mode;
+    pf.device_board_rev = device.board_rev ?? null;
+    pf.bootloader_pid = !!device.ports.bootloader;
+    const requested = args.port;
+    if (requested !== undefined) {
+      const role = roleOfPort(device, requested);
+      pf.port = requested;
+      pf.port_role = role;
+      if (role === "console") {
+        const target = device.ports.bootloader?.path ?? device.ports.cdc?.path;
+        pf.blockers.push({
+          code: "PORT_ROLE",
+          message: `${requested} is this device's STM32 bridge console port (role: console) — it carries the ESP log, not the flash. ` +
+            (target
+              ? `Pass port=${target} (role: ${device.ports.bootloader ? "bootloader" : "cdc"}) or omit port to let the daemon choose.`
+              : "This device currently exposes no ESP-side port to flash; put it in download mode first."),
+        });
+      } else if (role === null) {
+        const known = [device.ports.cdc?.path, device.ports.console?.path, device.ports.bootloader?.path].filter(Boolean).join(", ");
+        pf.warnings.push(`${requested} is not one of ${device.id}'s ports (${known || "none"}); flashing it addresses something else.`);
+      }
+    } else {
+      pf.port = device.ports.bootloader?.path ?? device.ports.cdc?.path ?? null;
+      pf.port_role = device.ports.bootloader ? "bootloader" : device.ports.cdc ? "cdc" : null;
+    }
+    if (args.transport === "ota" && device.usb_mode === "audio") {
+      pf.notes.push("The device is in USB-audio mode, which has no CDC; ota.flash switches it back to the default profile first.");
+    }
+    if (args.transport === "uart" && !device.ports.bootloader && device.usb_mode !== "bootloader") {
+      pf.warnings.push("No bootloader-PID port is present — the device is not in download mode. idf.py will try the esptool DTR/RTS auto-reset (which the STM32 bridge emulates); if that fails, use transport='ota' or hold the boot button.");
+    }
+  }
+
+  // ── the revision ──────────────────────────────────────────────────────
+  const buildRevRaw = await probe.buildBoardRev(CROSSPAD_IDF_ROOT, buildDir);
+  pf.build_board_rev = buildRevRaw;
+  const buildRev = normalizeRev(buildRevRaw);
+  const devRev = normalizeRev(pf.device_board_rev);
+  if (buildRev !== null && devRev !== null) {
+    pf.board_rev_match = buildRev === devRev;
+    if (!pf.board_rev_match) {
+      pf.blockers.push({
+        code: "BOARD_REV_MISMATCH",
+        message: `The build in ${buildDir} is for board revision ${buildRev}, the device reports ${devRev}. ` +
+          "The revisions differ in pinout: flashing the wrong one leaves a board with no display and no console. " +
+          `Build with the matching sdkconfig (idf.py -B build_${devRev} -DSDKCONFIG=sdkconfig.${devRev} build), or pass force=true if you know better.`,
+      });
+    }
+  } else {
+    pf.board_rev_match = null;
+    pf.warnings.push(`Board revision could not be compared (build: ${buildRevRaw ?? "unknown"}, device: ${pf.device_board_rev ?? "unknown"}) — the revision guard is not protecting this flash.`);
+  }
+
+  pf.ok = pf.blockers.length === 0;
+  return pf;
+}
+
+export async function stmPreflight(
+  probe: FlashProbe,
+  args: { method: "swd" | "dfu"; build_type?: string; firmware_path?: string },
+): Promise<FlashPreflight> {
+  const preset: StmPreset = args.build_type === "Release" ? "Release" : "Debug";
+  const firmware = args.firmware_path ?? stmArtifact(preset, "bin");
+  const pf = emptyPreflight("stm", args.method, firmware);
+  pf.firmware_exists = await probe.exists(firmware);
+  if (!pf.firmware_exists) {
+    pf.blockers.push({ code: "NO_FIRMWARE", message: `STM firmware not found at ${firmware}. Run crosspad_build platform=stm first.` });
+  } else {
+    pf.firmware_mtime_ms = await probe.mtimeMs(firmware);
+  }
+  const newest = await probe.newestSource(CROSSPAD_STM_ROOT, ["Core", "Drivers"]);
+  if (newest) {
+    pf.newest_source_path = newest.path;
+    pf.newest_source_mtime_ms = newest.mtimeMs;
+    if (pf.firmware_mtime_ms !== null && newest.mtimeMs > pf.firmware_mtime_ms) {
+      pf.stale = true;
+      pf.warnings.push(`The STM binary is older than ${newest.path}.`);
+    }
+  }
+  pf.notes.push(
+    args.method === "swd"
+      ? "SWD flashing addresses the ST-Link probe, not a serial port — the ESP-side checks (USB mode, port role, board revision) do not apply."
+      : "DFU flashing addresses the STM32 system bootloader (hold pad 1 at boot) via STM32_Programmer_CLI — the ESP-side checks do not apply.",
+  );
+  pf.ok = pf.blockers.length === 0;
+  return pf;
+}
+
+/** force=true turns every blocker except the port-role refusal into a warning. */
+export function applyForce(pf: FlashPreflight, force: boolean): FlashPreflight {
+  if (!force) return pf;
+  const kept = pf.blockers.filter((b) => b.code === "PORT_ROLE");
+  const dropped = pf.blockers.filter((b) => b.code !== "PORT_ROLE");
+  return {
+    ...pf,
+    blockers: kept,
+    warnings: [...pf.warnings, ...dropped.map((b) => `forced past ${b.code}: ${b.message}`)],
+    ok: kept.length === 0,
+  };
+}
+
+/** console.open → console.wait_boot → console.close, with the handle tracked while it lives. */
+export async function waitBootOnConsole(
+  daemon: DaemonRequester,
+  device: string,
+  handles: HandleRegistry,
+  timeoutS: number,
+  signal?: AbortSignal,
+): Promise<BootResult> {
+  const opened = await daemon.request<{ handle: string; port: string; log_path: string | null }>(
+    "console.open", { device, reset: false }, signal ? { signal } : undefined,
+  );
+  handles.register(opened.handle, { kind: "console", device });
+  try {
+    return BootResultSchema.parse(
+      await daemon.request("console.wait_boot", { handle: opened.handle, timeout_s: timeoutS },
+        { ...(signal ? { signal } : {}), timeoutMs: timeoutS * 1000 + 15_000 }),
+    );
+  } finally {
+    await daemon.request("console.close", { handle: opened.handle }).catch(() => {});
+    handles.drop(opened.handle);
+  }
+}
+```
+
+- [ ] **Step 8: Run the preflight tests**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/flash.preflight.test.ts`
+Expected: PASS (16 tests).
+
+- [ ] **Step 9: Write the failing tool test**
+
+`/home/matixan/GIT/crosspad-mcp/src/tools/flash.test.ts`:
+
+```ts
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { fakeDaemon } from "../testing/fake-daemon.js";
+import { fakeServer, fakeExtra } from "../testing/fake-server.js";
+import { registerFlashTool, TOOL_NAME, setFlashProbeForTest, type FlashProbe } from "./flash.js";
+import { JobRegistry } from "../tasks.js";
+import { HandleRegistry } from "../handles.js";
+import type { ToolContext } from "../tool-context.js";
+import type { Policy } from "../policy/policy.js";
+
+const STRICT: Policy = { mode: "strict", rules: [] };
+
+const port = (path: string, vid = 0x303a, pid = 0x3456) => ({ path, vid, pid, serial: null, product: null, location: "1-1.2" });
+const DEV = {
+  id: "dev_3f2a", serial: "AABB", usb_mode: "default", board_rev: "v2",
+  ports: { cdc: port("/dev/ttyACM0"), console: port("/dev/ttyACM1", 0x0483, 0x5740), esp_midi: null, stm_midi: null, uac2: null, bootloader: null },
+};
+
+function goodProbe(over: Partial<FlashProbe> = {}): FlashProbe {
+  return {
+    async exists() { return true; },
+    async mtimeMs() { return 9_000; },
+    async binVersion() { return "v20-3f2a"; },
+    async newestSource() { return { path: "/idf/main/main.cpp", mtimeMs: 1_000 }; },
+    async buildBoardRev() { return "v2"; },
+    ...over,
+  };
+}
+
+function ctxFor(daemon: ReturnType<typeof fakeDaemon>): ToolContext & { jobs: JobRegistry; handles: HandleRegistry } {
+  return { daemon: () => daemon, policy: STRICT, jobs: new JobRegistry(), handles: new HandleRegistry() };
+}
+
+describe("crosspad_flash", () => {
+  let fs: ReturnType<typeof fakeServer>;
+  beforeEach(() => { fs = fakeServer(); setFlashProbeForTest(goodProbe()); });
+
+  it("without a token it returns the confirmation AND the preflight, and writes nothing", async () => {
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota" }, fakeExtra());
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.resultType).toBe("confirmation_required");
+    expect(sc.confirmation.token).toMatch(/^cfm_/);
+    expect(sc.preflight).toMatchObject({ ok: true, device: "dev_3f2a", firmware_version: "v20-3f2a", board_rev_match: true });
+    expect(d.calls.map((c) => c.op)).toEqual(["devices.list"]);
+  });
+
+  it("a blocked preflight refuses before the confirmation and still returns the preflight", async () => {
+    setFlashProbeForTest(goodProbe({ async buildBoardRev() { return "v1"; } }));
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota" }, fakeExtra());
+    const sc = r.structuredContent as Record<string, any>;
+    expect(r.isError).toBe(true);
+    expect(sc.error.code).toBe("PREFLIGHT_BLOCKED");
+    expect(sc.preflight.blockers.map((b: { code: string }) => b.code)).toEqual(["BOARD_REV_MISMATCH"]);
+    expect(sc.resultType).toBeUndefined();
+  });
+
+  it("dry_run returns the preflight without minting a token", async () => {
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", dry_run: true }, fakeExtra());
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc).toMatchObject({ success: true, dry_run: true });
+    expect(sc.preflight.ok).toBe(true);
+    expect(sc.confirmation).toBeUndefined();
+    expect(sc.task).toBeUndefined();
+  });
+
+  it("the console port is refused by name and role, and force cannot clear it", async () => {
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "esp", transport: "uart", port: "/dev/ttyACM1", force: true, dry_run: true },
+      fakeExtra(),
+    );
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.preflight.ok).toBe(false);
+    expect(sc.preflight.blockers[0].code).toBe("PORT_ROLE");
+    expect(sc.preflight.blockers[0].message).toContain("console");
+  });
+
+  it("an approved OTA starts ota.flash, polls it as a job and returns the handle", async () => {
+    const d = fakeDaemon({
+      "devices.list": () => ({ devices: [DEV] }),
+      "ota.flash": () => ({ task: "task_9" }),
+      "task.status": () => ({ task: "task_9", status: "completed", result: { bytes: 1_200_000, seconds: 9.4, kbps: 128, version: "v20-3f2a", mode: "full" } }),
+    });
+    registerFlashTool(fs.server, ctxFor(d));
+    const first = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota" }, fakeExtra());
+    const token = (first.structuredContent as Record<string, any>).confirmation.token as string;
+
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "esp", transport: "ota", confirm_token: token, wait_seconds: 5 },
+      fakeExtra(),
+    );
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.success).toBe(true);
+    expect(sc.task).toMatch(/^task_\d+$/);
+    expect(sc.status.status).toBe("completed");
+    expect(sc.status.result.flash).toMatchObject({ bytes: 1_200_000, version: "v20-3f2a" });
+    expect(sc.status.result.boot).toBeNull();
+    const ota = d.calls.find((c) => c.op === "ota.flash")!;
+    expect(ota.args).toMatchObject({ device: "dev_3f2a", wait_boot: false });
+    expect(String(ota.args.firmware)).toContain("CrossPad.bin");
+  });
+
+  it("wait_boot opens a console, waits, closes it, and returns the BootResult", async () => {
+    const d = fakeDaemon({
+      "devices.list": () => ({ devices: [DEV] }),
+      "ota.flash": () => ({ task: "task_9" }),
+      "task.status": () => ({ task: "task_9", status: "completed", result: { bytes: 10, seconds: 1, kbps: 10, version: "v20", mode: "full" } }),
+      "console.open": () => ({ handle: "con_1", port: "/dev/ttyACM1", log_path: "/tmp/console.log" }),
+      "console.wait_boot": () => ({ complete: true, missing: [], fatal: [], errors: [], bootloops: 0, seconds: 11.2 }),
+      "console.close": () => ({ ok: true }),
+    });
+    const ctx = ctxFor(d);
+    registerFlashTool(fs.server, ctx);
+    const first = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", wait_boot: true }, fakeExtra());
+    const token = (first.structuredContent as Record<string, any>).confirmation.token as string;
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "esp", transport: "ota", wait_boot: true, confirm_token: token, wait_seconds: 5 },
+      fakeExtra(),
+    );
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.status.result.boot).toMatchObject({ complete: true, bootloops: 0, seconds: 11.2 });
+    expect(d.calls.map((c) => c.op)).toContain("console.close");
+    expect(ctx.handles.list().filter((h) => h.kind === "console")).toHaveLength(0);
+  });
+
+  it("wait_seconds=0 returns the handle immediately without a terminal status", async () => {
+    const d = fakeDaemon({
+      "devices.list": () => ({ devices: [DEV] }),
+      "ota.flash": () => ({ task: "task_9" }),
+      "task.status": () => ({ task: "task_9", status: "working", progress: 1, total: 100, message: "1%" }),
+    });
+    const ctx = ctxFor(d);
+    registerFlashTool(fs.server, ctx);
+    const first = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota" }, fakeExtra());
+    const token = (first.structuredContent as Record<string, any>).confirmation.token as string;
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", confirm_token: token }, fakeExtra());
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.task).toMatch(/^task_\d+$/);
+    expect(sc.status).toBeUndefined();
+    expect(sc.hint).toContain("crosspad_task");
+    expect(ctx.jobs.status(sc.task).status).toBe("working");
+  });
+
+  it("a failed daemon flash surfaces the code on the job, with the preflight still present", async () => {
+    const d = fakeDaemon({
+      "devices.list": () => ({ devices: [DEV] }),
+      "ota.flash": () => ({ task: "task_9" }),
+      "task.status": () => ({ task: "task_9", status: "failed", error: { code: "FLASH_FAILED", message: "OTA_ERROR at 40%" } }),
+    });
+    registerFlashTool(fs.server, ctxFor(d));
+    const first = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota" }, fakeExtra());
+    const token = (first.structuredContent as Record<string, any>).confirmation.token as string;
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "esp", transport: "ota", confirm_token: token, wait_seconds: 5 },
+      fakeExtra(),
+    );
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.status.status).toBe("failed");
+    expect(sc.status.error.code).toBe("FLASH_FAILED");
+    expect(sc.preflight.ok).toBe(true);
+  });
+
+  it("UART runs the idf.py argv path as a job and never calls ota.flash", async () => {
+    const idf = await import("./idf-flash.js");
+    vi.spyOn(idf, "crosspadIdfFlash").mockResolvedValue({
+      success: true, method: "uart", port: "/dev/ttyACM0", duration_seconds: 31.2, output_tail: ["Hash of data verified."],
+    });
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    const first = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "uart" }, fakeExtra());
+    const token = (first.structuredContent as Record<string, any>).confirmation.token as string;
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "esp", transport: "uart", confirm_token: token, wait_seconds: 5 },
+      fakeExtra(),
+    );
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.status.status).toBe("completed");
+    expect(sc.status.result.flash).toMatchObject({ method: "uart", port: "/dev/ttyACM0" });
+    expect(d.calls.some((c) => c.op === "ota.flash")).toBe(false);
+    expect(idf.crosspadIdfFlash).toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it("target=stm needs a method and never resolves an ESP device", async () => {
+    const d = fakeDaemon({});
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "stm", dry_run: true }, fakeExtra());
+    expect(r.isError).toBe(true);
+    expect((r.structuredContent as Record<string, any>).error.code).toBe("BAD_ARGS");
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("target=stm dry_run reports an STM-shaped preflight", async () => {
+    const d = fakeDaemon({});
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "stm", method: "swd", dry_run: true }, fakeExtra());
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.preflight).toMatchObject({ target: "stm", transport: "swd", device: null, ok: true });
+    expect(d.calls).toHaveLength(0);
+  });
+});
+```
+
+- [ ] **Step 10: Run test to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/flash.test.ts`
+Expected: FAIL with `SyntaxError: The requested module './flash.js' does not provide an export named 'registerFlashTool'`.
+
+- [ ] **Step 11: Append the tool half of `src/tools/flash.ts`**
+
+Append to the file written in Step 7:
+
+```ts
+// ═══════════════════════════════════════════════════════════════════════
+// The tool
+// ═══════════════════════════════════════════════════════════════════════
+
+let activeProbe: FlashProbe = realFlashProbe();
+/** @internal vitest only — swap the filesystem probe for an in-memory one. */
+export function setFlashProbeForTest(p: FlashProbe): void { activeProbe = p; }
+
+export const FlashInput = z.object({
+  target: z.enum(["esp", "stm"]).default("esp")
+    .describe("'esp' = ESP32-S3 application firmware (transport uart|ota); 'stm' = STM32G0 bridge firmware via STM32_Programmer_CLI (method swd|dfu)."),
+  transport: z.enum(["uart", "ota"]).optional()
+    .describe("ESP only. 'ota' streams the binary over USB CDC with the device running (no bootloader mode); 'uart' runs idf.py flash and needs download mode."),
+  method: z.enum(["swd", "dfu"]).optional()
+    .describe("STM only. 'swd' = ST-Link; 'dfu' = the STM32 system bootloader (hold pad 1 at boot)."),
+  device: z.string().min(1).optional()
+    .describe("ESP only. Device id (dev_xxxx) or one of its port paths; omit when exactly one CrossPad is connected."),
+  port: z.string().min(1).optional()
+    .describe("ESP only. Serial port to flash. Omit to let the daemon choose. The STM32 bridge console port is refused — it carries logs, not the flash."),
+  build_dir: z.string().min(1).optional()
+    .describe("ESP only. Build directory holding the binary and its sdkconfig (default '<idf-root>/build'; per-revision dirs are build_v1 / build_v2)."),
+  firmware_path: z.string().min(1).optional()
+    .describe("Custom binary. ESP default '<build_dir>/CrossPad.bin'; STM default '<stm-root>/build/<preset>/CrossPad_STM32_r20.bin'."),
+  build_type: z.enum(["Debug", "Release", "RelWithDebInfo"]).optional()
+    .describe("STM only. Picks the build/<preset> dir for the default binary. Default Debug."),
+  delta_base: z.string().min(1).optional()
+    .describe("ESP OTA only. Previously flashed binary to diff against — sends a delta instead of the whole image."),
+  wait_boot: z.boolean().optional()
+    .describe("ESP only. After flashing, open the console and wait for the boot markers; the job result carries a BootResult {complete, missing, fatal, errors, bootloops, seconds}. Default false."),
+  boot_timeout_s: z.number().min(5).max(180).optional()
+    .describe("wait_boot: how long to wait for a complete boot (default 45, the firmware's own boot budget)."),
+  wait_seconds: z.number().min(0).max(900).optional()
+    .describe("0 (default) returns the task handle immediately — poll it with crosspad_task. >0 waits that long and inlines the task status; a timeout is not an error, the job keeps running."),
+  force: z.boolean().optional()
+    .describe("Proceed despite preflight blockers (stale build, board-revision mismatch, missing device). The port-role refusal is never overridden."),
+  dry_run: z.boolean().optional()
+    .describe("Run the preflight and stop: no confirmation token is minted and nothing is written."),
+  confirm_token: z.string().optional()
+    .describe("Token from a previous confirmation_required result. Re-issue the identical call with it to proceed."),
+});
+export type FlashArgs = z.infer<typeof FlashInput>;
+
+export const O_Flash = {
+  success: z.boolean(),
+  preflight: z.record(z.string(), z.unknown()).optional(),
+  task: z.string().optional(),
+  status: z.record(z.string(), z.unknown()).optional(),
+  target: z.enum(["esp", "stm"]).optional(),
+  transport: z.string().optional(),
+  device: z.string().optional(),
+  firmware_path: z.string().optional(),
+  dry_run: z.boolean().optional(),
+  hint: z.string().optional(),
+  ts: z.number().optional(),
+  resultType: z.string().optional(),
+  confirmation: z.record(z.string(), z.unknown()).optional(),
+  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
+};
+
+function summarizeFlash(args: FlashArgs, pf: FlashPreflight): string {
+  if (args.target === "stm") {
+    return `Flash STM32 firmware ${pf.firmware_path} over ${String(args.method).toUpperCase()} — the USB console, CDC and MIDI vanish until it completes.`;
+  }
+  const rev = pf.build_board_rev ? ` (board rev ${pf.build_board_rev})` : "";
+  const ver = pf.firmware_version ? ` version "${pf.firmware_version}"` : "";
+  const stale = pf.stale ? " ⚠ this binary is older than the newest source file" : "";
+  const warn = pf.warnings.length ? `\nWarnings: ${pf.warnings.join(" | ")}` : "";
+  return `Flash ${pf.firmware_path}${ver}${rev} to ${pf.device ?? "the only CrossPad"} over ${String(args.transport).toUpperCase()}` +
+    `${pf.port ? ` (${pf.port}, role ${pf.port_role})` : ""}. This overwrites the running firmware.${stale}${warn}`;
+}
+
+/** Drain a FlashResult-style onLine stream into the job's progress channel. */
+function progressLines(progress: ProgressFn, label: string): OnLine {
+  let n = 0;
+  return (_stream, line) => { progress(++n, undefined, `${label}: ${line.slice(0, 200)}`); };
+}
+
+export function registerFlashTool(server: McpServer, ctx: ToolContext): RegisteredTool {
+  return server.registerTool(
+    TOOL_NAME,
+    {
+      description:
+        "[ESP HW | STM HW] Flash firmware. Danger tier: it always runs a preflight first, always returns that preflight " +
+        "(refusal included), and needs a confirmation before writing anything.\n" +
+        "Preflight reports: the device's USB mode, which role the target port plays (the STM32 bridge console is refused as a " +
+        "flash target), the binary's own version string, whether it is older than the newest file under main/ or components/, " +
+        "and whether the build's board revision matches the device's — a mismatch is a blocker, because the revisions differ " +
+        "in pinout and the wrong image looks like dead hardware.\n" +
+        "target='esp': transport='ota' streams over USB CDC with the device running (no bootloader mode); transport='uart' " +
+        "runs idf.py flash and needs download mode. wait_boot=true then opens the console and returns a BootResult.\n" +
+        "target='stm': method='swd' (ST-Link) or 'dfu' (system bootloader, hold pad 1 at boot).\n" +
+        "The flash runs as a job: wait_seconds=0 (default) returns a task handle for crosspad_task; wait_seconds>0 inlines the " +
+        "final status. dry_run=true stops after the preflight. force=true overrides every blocker except the port-role refusal.",
+      inputSchema: FlashInput,
+      outputSchema: O_Flash,
+      annotations: annotationsFor(tierOf(TOOL_NAME, {})),
+    },
+    async (rawArgs, extra) => {
+      const args = FlashInput.parse(rawArgs);
+      const argsRec = args as unknown as Record<string, unknown>;
+      const daemon = ctx.daemon();
+
+      try {
+        // ── argument shape ────────────────────────────────────────────
+        if (args.target === "stm") {
+          if (!args.method) throw new HilError("BAD_ARGS", "target='stm' requires 'method' ('swd' or 'dfu')", "for ESP firmware use target='esp' with transport='uart'|'ota'");
+          if (args.transport) throw new HilError("BAD_ARGS", "'transport' is ESP-only; STM uses 'method'");
+          if (args.port || args.device) throw new HilError("BAD_ARGS", "'port'/'device' are ESP-only — STM flashing addresses the ST-Link or DFU device");
+        } else {
+          if (!args.transport) throw new HilError("BAD_ARGS", "target='esp' requires 'transport' ('ota' or 'uart')", "'ota' works with the device running; 'uart' needs download mode");
+          if (args.method) throw new HilError("BAD_ARGS", "'method' is STM-only; ESP uses 'transport'");
+          if (args.build_type) throw new HilError("BAD_ARGS", "'build_type' is STM-only — the ESP build type comes from sdkconfig");
+          if (args.transport === "uart" && args.delta_base) throw new HilError("BAD_ARGS", "'delta_base' is OTA-only");
+        }
+
+        // ── preflight (always computed, always returned) ──────────────
+        let preflight: FlashPreflight;
+        let device: Device | null = null;
+        if (args.target === "stm") {
+          preflight = await stmPreflight(activeProbe, {
+            method: args.method!,
+            build_type: args.build_type,
+            firmware_path: args.firmware_path,
+          });
+        } else {
+          let deviceError: HilError | undefined;
+          try {
+            device = pickDevice(await listHilDevices(daemon, extra.signal), args.device);
+          } catch (e) {
+            deviceError = e instanceof HilError ? e : new HilError("NO_DEVICE", e instanceof Error ? e.message : String(e));
+          }
+          preflight = await espPreflight(activeProbe, device, {
+            transport: args.transport!,
+            port: args.port,
+            firmware_path: args.firmware_path,
+            build_dir: args.build_dir,
+          }, deviceError);
+        }
+        preflight = applyForce(preflight, args.force === true);
+
+        if (args.dry_run === true) {
+          return jsonResponse({ success: true, dry_run: true, target: args.target, transport: preflight.transport, preflight, ts: Date.now() });
+        }
+        if (!preflight.ok) {
+          return jsonResponse({
+            success: false,
+            preflight,
+            error: {
+              code: "PREFLIGHT_BLOCKED",
+              message: preflight.blockers.map((b) => `${b.code}: ${b.message}`).join(" "),
+              hint: preflight.blockers.every((b) => b.code === "PORT_ROLE")
+                ? "Pass the ESP-side port (or omit port) — this blocker is never overridden."
+                : "Fix the cause, or re-issue with force=true if you are certain.",
+            },
+          });
+        }
+
+        // ── policy and confirmation ───────────────────────────────────
+        if (decide(ctx.policy, TOOL_NAME, argsRec) === "hidden") {
+          return jsonResponse({ success: false, preflight, error: { code: "HIDDEN", message: `${TOOL_NAME} is hidden by policy` } });
+        }
+        const c = await requireConfirmation(server, extra, TOOL_NAME, argsRec, summarizeFlash(args, preflight));
+        if (c.status === "token") {
+          return jsonResponse({ ...(c.result.structuredContent as Record<string, unknown>), preflight });
+        }
+        if (c.status === "declined") {
+          return jsonResponse({
+            success: false,
+            preflight,
+            error: {
+              code: "CANCELLED_BY_USER",
+              message: `${TOOL_NAME} was declined by the user.`,
+              hint: "Do not retry automatically; ask before issuing this call again.",
+            },
+          });
+        }
+
+        // ── the job ───────────────────────────────────────────────────
+        const bootTimeout = args.boot_timeout_s ?? 45;
+        const wantBoot = args.target === "esp" && args.wait_boot === true;
+        const deviceId = device?.id;
+
+        const taskId = ctx.jobs.create("flash", async (signal, progress) => {
+          let flashResult: unknown;
+          if (args.target === "stm") {
+            progress(0, undefined, `STM ${args.method} flash starting`);
+            flashResult = await crosspadStmFlash(args.method!, args.build_type ?? "Debug", args.firmware_path, progressLines(progress, "stm"), signal);
+          } else if (args.transport === "ota") {
+            const otaArgs: Record<string, unknown> = { firmware: preflight.firmware_path, wait_boot: false };
+            if (deviceId !== undefined) otaArgs.device = deviceId;
+            if (args.delta_base !== undefined) otaArgs.delta_base = args.delta_base;
+            progress(0, undefined, "requesting ota.flash");
+            const started = await daemon.request<{ task: string }>("ota.flash", otaArgs, { signal, timeoutMs: 30_000 });
+            flashResult = await pumpDaemonTask(daemon, started.task, signal, progress);
+          } else {
+            progress(0, undefined, "idf.py flash starting");
+            flashResult = await crosspadIdfFlash(args.port ?? preflight.port ?? undefined, progressLines(progress, "uart"), signal);
+          }
+          let boot: BootResult | null = null;
+          if (wantBoot) {
+            progress(0, undefined, "waiting for the boot markers");
+            boot = await waitBootOnConsole(daemon, deviceId ?? args.device ?? "", ctx.handles, bootTimeout, signal);
+          }
+          return { flash: flashResult, boot };
+        });
+        ctx.handles.register(taskId, { kind: "task", device: deviceId });
+
+        if ((args.wait_seconds ?? 0) > 0) {
+          const status = await ctx.jobs.wait(taskId, (args.wait_seconds ?? 0) * 1000);
+          return jsonResponse({
+            success: status.status !== "failed",
+            task: taskId,
+            status,
+            preflight,
+            target: args.target,
+            transport: preflight.transport,
+            device: deviceId,
+            firmware_path: preflight.firmware_path,
+            ts: Date.now(),
+          });
+        }
+        return jsonResponse({
+          success: true,
+          task: taskId,
+          preflight,
+          target: args.target,
+          transport: preflight.transport,
+          device: deviceId,
+          firmware_path: preflight.firmware_path,
+          hint: `Flashing in the background. Poll it with crosspad_task action='wait' task='${taskId}' (or action='status'); the result carries {flash, boot}.`,
+          ts: Date.now(),
+        });
+      } catch (e) {
+        return toolError(e);
+      }
+    },
+  );
+}
+```
+
+- [ ] **Step 12: Run the flash tests**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run src/tools/flash.test.ts src/tools/flash.preflight.test.ts`
+Expected: PASS (11 tool tests + 16 preflight tests).
+
+- [ ] **Step 13: Wire it in and drop the legacy block**
+
+In `src/registry.ts`, add to the `core` block (after `crosspad_snapshot`, keeping `TOOLSETS.core` order):
+
+```ts
+  manager.register("crosspad_flash", registerFlashTool(server, ctx), "core");
+  registered.add("crosspad_flash");
+```
+
+with `import { registerFlashTool } from "./tools/flash.js";`.
+
+In `src/index.ts`: delete the `FLASH — unified UART/OTA into one tool with 'transport' axis` banner and its `registerLegacy("crosspad_flash", …)` block (lines 581–631), delete the `O_Flash` const (lines 260–271), and delete the imports `crosspadIdfFlash`, `crosspadIdfOta`, `crosspadStmFlash`.
+
+In `src/tools/idf-flash.ts`: delete `crosspadIdfOta` and the two helpers only it used, `extractDetectedPort` and `formatFileSize`. `crosspadIdfFlash` and `extractFlashError` stay. In `src/tools/idf-flash.test.ts`: delete the `crosspadIdfOta` describe block and drop `crosspadIdfOta` from the import.
+
+- [ ] **Step 14: Run the whole suite and the type check**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && npx vitest run && npx tsc --noEmit`
+Expected: PASS for every file; `tsc` exits 0 with no output. `src/index.mcp.test.ts` still lists `crosspad_flash` (it is in `TOOLSETS.core`, enabled at startup).
+
+- [ ] **Step 15: Commit**
+
+```bash
+cd /home/matixan/GIT/crosspad-mcp && git add src/tools/flash.ts src/tools/flash.test.ts src/tools/flash.preflight.test.ts src/tasks.ts src/tasks.pump.test.ts src/tools/idf-flash.ts src/tools/idf-flash.test.ts src/registry.ts src/index.ts && git commit -m "feat(v10): crosspad_flash preflight, confirmation and job-backed OTA/UART with wait_boot"
+```
+
+# Plan C — chunk C4b: knowledge resources + release metadata + eval, and async everywhere
+
+Repo: `/home/matixan/GIT/crosspad-mcp` (TypeScript ESM, strict, zod 4, `@modelcontextprotocol/sdk` 1.29, vitest 4).
+Node: `export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22` before every `npx vitest` / `npx tsc` / `node eval/grade.ts` (system Node 18 is too old for vitest 4, and `eval/grade.ts` is run by Node's own TypeScript stripping, which needs ≥ 22.18).
+
+These two tasks close the P0 plan. Task 10 is documentation-and-metadata heavy but every claim it writes is asserted by a test; Task 11 is a pure refactor whose only new behaviour is concurrency and cancellation.
+
+Shared conventions (identical to chunks C1–C3):
+- Modules are ESM; relative imports end in `.js` even for `.ts` sources.
+- Test fakes come from `src/testing/fake-daemon.ts` (`fakeDaemon(handlers)` → `FakeDaemon` with `.calls`) and `src/testing/fake-server.ts` (`fakeServer()` → `{ server, tools, resources, listChanged, clientCapabilities }`), both created in Task 5, Step 1a.
+- Policy used in tests: `{ mode: "lab", rules: [] }`.
+- Daemon op names are verbatim from the Python contract's `serve.py` section.
+
+---
+
+### Task 10: knowledge resources, release metadata, eval skeleton
+
+**Files:**
+- Create: `/home/matixan/GIT/crosspad-mcp/src/resources/knowledge.ts`
+- Create: `/home/matixan/GIT/crosspad-mcp/src/resources/knowledge.test.ts`
+- Modify: `/home/matixan/GIT/crosspad-mcp/src/registry.ts` (import block at the top, and the resource-wiring lines at the end of `registerAll`, added by Task 6's wiring note)
+- Modify: `/home/matixan/GIT/crosspad-mcp/package.json` (line 3 `version`, new `hilVersion` line after it, `scripts` block lines 34–40)
+- Modify: `/home/matixan/GIT/crosspad-mcp/.claude-plugin/plugin.json` (line 4 `version`)
+- Create: `/home/matixan/GIT/crosspad-mcp/CHANGELOG.md`
+- Modify: `/home/matixan/GIT/crosspad-mcp/README.md` (line 10 banner; lines 93–97 heading + intro; the Build & flash table rows at lines 108–109; insert after line 111; Resources table after line 241; Migrations section after line 244)
+- Create: `/home/matixan/GIT/crosspad-mcp/src/release.test.ts`
+- Create: `/home/matixan/GIT/crosspad-mcp/eval/tasks.json`
+- Create: `/home/matixan/GIT/crosspad-mcp/eval/grade.ts`
+- Create: `/home/matixan/GIT/crosspad-mcp/eval/grade.test.ts`
+- Create: `/home/matixan/GIT/crosspad-mcp/tsconfig.eval.json`
+- Modify: `/home/matixan/GIT/crosspad-mcp/vitest.config.ts` (the `include` array, line 5)
+
+**Interfaces:**
+- Consumes:
+  - `HilDaemon.request<T>(op: string, args: Record<string, unknown>, opts?: {signal?: AbortSignal; timeoutMs?: number}): Promise<T>` from `src/hil/daemon.ts` (Task 1).
+  - `ToolContext { daemon: () => HilDaemon; policy: Policy; jobs: JobRegistry; handles: HandleRegistry }` from `src/tool-context.ts` (Task 2/4).
+  - `ScenarioInfoSchema` (`z.looseObject({name: z.string(), description: z.string(), params: z.array(ScenarioParamSchema)})`) from `src/hil/schemas.ts` (Task 1).
+  - `registerAll(server: McpServer, ctx: ToolContext, manager: ToolsetManager, legacy?: Map<string, RegisteredTool>): void` from `src/registry.ts` and `ToolsetManager`, `TOOLSETS` from `src/toolsets.ts` (Task 4).
+  - `McpServer.registerResource(name, uriOrTemplate, metadata, cb)` used exactly as `src/index.ts:1648-1670` and `src/resources/device.ts` (Task 6) use it.
+  - Daemon ops verbatim: `scenario.list {} → {"scenarios": [{name, description, params: [{name,type,default,help}]}]}`.
+  - **Contract extension — a new daemon op that plan B must add to `crosspad_hil/serve.py`:**
+    `knowledge.get {name: str} → dict`. It is a one-line wrapper over the contract's `crosspad_hil.knowledge.load(name)` (`knowledge/__init__.py`, `load(name) -> dict`), reading `crosspad_hil/knowledge/<name>.yaml` through `importlib.resources` with the same module-level cache. `name` must be one of `cdc`, `sysex`, `markers`; anything else raises `HilError(BAD_ARGS, "unknown knowledge file", hint="one of: cdc, sysex, markers")`. It is lock-free (no device is touched), so it belongs in the same "discovery is lock-free" group as `devices.list` and `scenario.list`. Add it to the OPS table in the contract next to `scenario.list`. Until it exists the three resources return their `{error: {...}}` payload instead of content — which is what the tests for the failure path assert, so this task is implementable and testable before plan B ships it.
+- Produces:
+  - `src/resources/knowledge.ts`:
+    - `export const KNOWLEDGE_TTL_MS = 3_600_000` (1 h — the spec's "long" ttl for `crosspad://cdc`, `crosspad://sysex`, `crosspad://hil/catalog`; these change only when the firmware/daemon package changes, never within a session).
+    - `export interface KnowledgeSpec { name: string; uri: string; op: string; args: Record<string, unknown>; description: string }`
+    - `export const KNOWLEDGE_RESOURCES: KnowledgeSpec[]` — three entries, resource names `crosspad-cdc-catalog`, `crosspad-sysex-catalog`, `crosspad-hil-catalog`.
+    - `export class KnowledgeCache { constructor(ttlMs?: number, now?: () => number); get(key: string): unknown | undefined; set(key: string, value: unknown): void; clear(): void; readonly size: number }`
+    - `export const knowledgeCache: KnowledgeCache`
+    - `export function registerKnowledgeResources(server: McpServer, ctx: ToolContext): void`
+  - `package.json`: `"version": "10.0.0"`, `"hilVersion": "1.0.0"` (read by `DoctorProbe.requiredHilVersion()` from Task 5), scripts `eval:grade` and `typecheck:eval`.
+  - `eval/grade.ts`: `export interface EvalTask { id: string; prompt: string; expected_tools: string[]; forbidden_shell_patterns: string[] }`; `export interface ToolCallRecord { tool: string; input?: Record<string, unknown> }`; `export interface ForbiddenHit { pattern: string; tool: string; command: string }`; `export interface EvalResult { id: string; passed: boolean; used_tools: string[]; missing_tools: string[]; forbidden_hits: ForbiddenHit[]; shell_calls: number; notes: string }`; `export const SHELL_TOOLS: Set<string>`; `export function shellCommandOf(call: ToolCallRecord): string | null`; `export function gradeTranscript(transcript: ToolCallRecord[], task: EvalTask): EvalResult`; `export function loadTasks(file?: string): EvalTask[]`; `export function formatResults(results: EvalResult[]): string`; `export function main(argv: string[]): number`.
+
+**Contract choices stated here (the contract is silent):**
+- The MCP resource metadata object has no `ttl` field, so "long ttl" is implemented on the server side: `KnowledgeCache` holds the fetched payload for `KNOWLEDGE_TTL_MS`, and the number is also advertised to clients in the resource `_meta` as `"crosspad/ttl_ms"` and repeated in the description. Errors are never cached.
+- `crosspad://hil/catalog` returns `{scenarios, ttl_ms, generated_at}` — the daemon's `scenario.list` payload plus the two cache fields, so a client can tell a stale catalog from a fresh one.
+- The v9 tool consolidations named in the README migration table (`crosspad_list_interfaces`/`crosspad_interface_implementations`/`crosspad_capabilities` → `crosspad_architecture`, `crosspad_apps_*` → `crosspad_apps`) are **not** implemented in P0. The migration table therefore carries a `status` column and marks them `P1 — v9 names still registered`, so the table documents what the server actually does. `crosspad_log target=idf` → `crosspad_console` **is** shipped (Task 6); `crosspad_log` stays registered for `target=pc`.
+
+- [ ] **Step 1: Write the failing knowledge-resource test**
+
+`/home/matixan/GIT/crosspad-mcp/src/resources/knowledge.test.ts`:
+
+```ts
+import { describe, it, expect, beforeEach } from "vitest";
+import { fakeDaemon } from "../testing/fake-daemon.js";
+import { fakeServer } from "../testing/fake-server.js";
+import {
+  registerKnowledgeResources,
+  KnowledgeCache,
+  knowledgeCache,
+  KNOWLEDGE_TTL_MS,
+  KNOWLEDGE_RESOURCES,
+} from "./knowledge.js";
+import { HandleRegistry } from "../handles.js";
+import { JobRegistry } from "../tasks.js";
+import { ToolsetManager } from "../toolsets.js";
+import { registerAll } from "../registry.js";
+import type { ToolContext } from "../tool-context.js";
+
+const CDC_YAML = {
+  verbs: {
+    KIT_LOAD: { args: ["id"], reply: "KITSTATUS:", end: null, profile: "default" },
+    ENC_GROUP: { args: [], reply: "ENCGROUP:", end: null, profile: "default" },
+  },
+};
+const SYSEX_YAML = {
+  manufacturer: 0x7d,
+  usb_mode: { id: 0x1b, default: 0x01, audio: 0x02 },
+  host_denylist: [[0x19, 0x01]],
+};
+const SCENARIOS = {
+  scenarios: [
+    { name: "smoke", description: "boot and check markers", params: [{ name: "timeout", type: "int", default: 25, help: "seconds" }] },
+    { name: "kit_churn", description: "swap kits while pads fire", params: [{ name: "rounds", type: "int", default: 20, help: "rounds" }] },
+  ],
+};
+
+function mk(handlers: Record<string, (a: Record<string, unknown>) => unknown>) {
+  const daemon = fakeDaemon(handlers);
+  const ctx: ToolContext = {
+    daemon: () => daemon,
+    policy: { mode: "lab", rules: [] },
+    jobs: new JobRegistry(),
+    handles: new HandleRegistry(),
+  };
+  const fs = fakeServer();
+  registerKnowledgeResources(fs.server, ctx);
+  return { daemon, res: fs.resources, ctx, fs };
+}
+
+beforeEach(() => {
+  knowledgeCache.clear();
+});
+
+describe("knowledge resources", () => {
+  it("registers the three long-ttl URIs", () => {
+    const { res } = mk({});
+    expect(res.get("crosspad-cdc-catalog")!.uriOrTemplate).toBe("crosspad://cdc");
+    expect(res.get("crosspad-sysex-catalog")!.uriOrTemplate).toBe("crosspad://sysex");
+    expect(res.get("crosspad-hil-catalog")!.uriOrTemplate).toBe("crosspad://hil/catalog");
+    expect(res.get("crosspad-cdc-catalog")!.config._meta["crosspad/ttl_ms"]).toBe(KNOWLEDGE_TTL_MS);
+    expect(KNOWLEDGE_RESOURCES.map((r) => r.name)).toEqual([
+      "crosspad-cdc-catalog",
+      "crosspad-sysex-catalog",
+      "crosspad-hil-catalog",
+    ]);
+  });
+
+  it("crosspad://cdc reads knowledge.get {name: cdc}", async () => {
+    const { res, daemon } = mk({ "knowledge.get": () => CDC_YAML });
+    const out = await res.get("crosspad-cdc-catalog")!.cb(new URL("crosspad://cdc"));
+    expect(daemon.calls[0]).toEqual({ op: "knowledge.get", args: { name: "cdc" } });
+    expect(out.contents[0].mimeType).toBe("application/json");
+    expect(JSON.parse(out.contents[0].text).verbs.KIT_LOAD.reply).toBe("KITSTATUS:");
+  });
+
+  it("crosspad://sysex reads knowledge.get {name: sysex}", async () => {
+    const { res, daemon } = mk({ "knowledge.get": () => SYSEX_YAML });
+    const out = await res.get("crosspad-sysex-catalog")!.cb(new URL("crosspad://sysex"));
+    expect(daemon.calls[0]).toEqual({ op: "knowledge.get", args: { name: "sysex" } });
+    expect(JSON.parse(out.contents[0].text).host_denylist).toEqual([[0x19, 0x01]]);
+  });
+
+  it("serves the second read from cache without touching the daemon", async () => {
+    const { res, daemon } = mk({ "knowledge.get": () => CDC_YAML });
+    await res.get("crosspad-cdc-catalog")!.cb(new URL("crosspad://cdc"));
+    await res.get("crosspad-cdc-catalog")!.cb(new URL("crosspad://cdc"));
+    expect(daemon.calls.length).toBe(1);
+  });
+
+  it("crosspad://hil/catalog reads scenario.list and validates params", async () => {
+    const { res, daemon } = mk({ "scenario.list": () => SCENARIOS });
+    const out = await res.get("crosspad-hil-catalog")!.cb(new URL("crosspad://hil/catalog"));
+    expect(daemon.calls[0]).toEqual({ op: "scenario.list", args: {} });
+    const parsed = JSON.parse(out.contents[0].text);
+    expect(parsed.scenarios.map((s: { name: string }) => s.name)).toEqual(["smoke", "kit_churn"]);
+    expect(parsed.scenarios[1].params[0].name).toBe("rounds");
+    expect(parsed.ttl_ms).toBe(KNOWLEDGE_TTL_MS);
+    expect(typeof parsed.generated_at).toBe("number");
+  });
+
+  it("reports a daemon error as a payload and does not cache it", async () => {
+    let calls = 0;
+    const { res, daemon } = mk({
+      "knowledge.get": () => {
+        calls++;
+        if (calls === 1) throw Object.assign(new Error("unknown knowledge file"), { code: "BAD_ARGS", hint: "one of: cdc, sysex, markers" });
+        return CDC_YAML;
+      },
+    });
+    const bad = await res.get("crosspad-cdc-catalog")!.cb(new URL("crosspad://cdc"));
+    const payload = JSON.parse(bad.contents[0].text);
+    expect(payload.error.code).toBe("BAD_ARGS");
+    expect(payload.error.hint).toBe("one of: cdc, sysex, markers");
+    const good = await res.get("crosspad-cdc-catalog")!.cb(new URL("crosspad://cdc"));
+    expect(JSON.parse(good.contents[0].text).verbs).toBeDefined();
+    expect(daemon.calls.length).toBe(2);
+  });
+
+  it("registerAll wires the knowledge resources", () => {
+    const fs = fakeServer();
+    const ctx: ToolContext = {
+      daemon: () => fakeDaemon({}),
+      policy: { mode: "lab", rules: [] },
+      jobs: new JobRegistry(),
+      handles: new HandleRegistry(),
+    };
+    const manager = new ToolsetManager(fs.server, ctx.policy);
+    registerAll(fs.server, ctx, manager);
+    expect(fs.resources.has("crosspad-cdc-catalog")).toBe(true);
+    expect(fs.resources.has("crosspad-sysex-catalog")).toBe(true);
+    expect(fs.resources.has("crosspad-hil-catalog")).toBe(true);
+  });
+});
+
+describe("KnowledgeCache", () => {
+  it("expires entries after ttlMs", () => {
+    let now = 1_000;
+    const c = new KnowledgeCache(500, () => now);
+    c.set("k", { a: 1 });
+    expect(c.get("k")).toEqual({ a: 1 });
+    now = 1_499;
+    expect(c.get("k")).toEqual({ a: 1 });
+    now = 1_501;
+    expect(c.get("k")).toBeUndefined();
+    expect(c.size).toBe(0);
+  });
+
+  it("clear() drops everything", () => {
+    const c = new KnowledgeCache(1000, () => 0);
+    c.set("a", 1);
+    c.set("b", 2);
+    expect(c.size).toBe(2);
+    c.clear();
+    expect(c.size).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22 >/dev/null && npx vitest run src/resources/knowledge.test.ts`
+Expected: FAIL with `Failed to load url ./knowledge.js`.
+
+- [ ] **Step 3: Write `src/resources/knowledge.ts`**
+
+```ts
+// src/resources/knowledge.ts — crosspad://cdc, crosspad://sysex,
+// crosspad://hil/catalog. Firmware-coupled reference data lives in the
+// crosspad-hil package (knowledge/*.yaml), not here: it must version with the
+// firmware, not with this server. These resources are the read-only window on
+// it, cached for KNOWLEDGE_TTL_MS because the payloads cannot change while the
+// daemon process lives.
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolContext } from "../tool-context.js";
+import { ScenarioInfoSchema } from "../hil/schemas.js";
+
+/** "long" ttl from spec §3.3 — one hour. */
+export const KNOWLEDGE_TTL_MS = 3_600_000;
+
+export interface KnowledgeSpec {
+  name: string;
+  uri: string;
+  op: string;
+  args: Record<string, unknown>;
+  description: string;
+}
+
+export const KNOWLEDGE_RESOURCES: KnowledgeSpec[] = [
+  {
+    name: "crosspad-cdc-catalog",
+    uri: "crosspad://cdc",
+    op: "knowledge.get",
+    args: { name: "cdc" },
+    description:
+      "CDC verb catalog with reply grammar (crosspad_hil/knowledge/cdc.yaml, generated from hil_control.cpp): every verb, its args, its reply prefix, whether the reply is single-line/OK/multi, and which USB profile it works in. Read this before sending a raw command with crosspad_cdc verb=raw — a reply prefix is not an acknowledgement of your command. Cached 1 h.",
+  },
+  {
+    name: "crosspad-sysex-catalog",
+    uri: "crosspad://sysex",
+    op: "knowledge.get",
+    args: { name: "sysex" },
+    description:
+      "0x7D SysEx catalog (crosspad_hil/knowledge/sysex.yaml): manufacturer id, USB-mode ids, the 0x1D audio-route sub-verbs, bootloader ids, and the host denylist (frames this server refuses to send). Cached 1 h.",
+  },
+  {
+    name: "crosspad-hil-catalog",
+    uri: "crosspad://hil/catalog",
+    op: "scenario.list",
+    args: {},
+    description:
+      "Scenarios the crosspad-hil daemon can run, with their parameters, defaults and help text — the machine-readable form of tools/hil_*.py. Cached 1 h.",
+  },
+];
+
+/** Time-boxed value cache. Errors are never stored. */
+export class KnowledgeCache {
+  private readonly ttlMs: number;
+  private readonly now: () => number;
+  private readonly entries = new Map<string, { value: unknown; at: number }>();
+
+  constructor(ttlMs: number = KNOWLEDGE_TTL_MS, now: () => number = Date.now) {
+    this.ttlMs = ttlMs;
+    this.now = now;
+  }
+
+  get(key: string): unknown | undefined {
+    const hit = this.entries.get(key);
+    if (!hit) return undefined;
+    if (this.now() - hit.at > this.ttlMs) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return hit.value;
+  }
+
+  set(key: string, value: unknown): void {
+    this.entries.set(key, { value, at: this.now() });
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+}
+
+export const knowledgeCache = new KnowledgeCache();
+
+function jsonContents(uri: string, data: unknown) {
+  return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(data, null, 2) }] };
+}
+
+// Same shape as src/resources/device.ts — a resource read never throws at the
+// client, it answers with the error it hit.
+function errorPayload(e: unknown): { error: { code: string; message: string; hint?: string } } {
+  const code = (e as { code?: string }).code ?? "INTERNAL";
+  const hint = (e as { hint?: string }).hint;
+  return { error: { code, message: e instanceof Error ? e.message : String(e), ...(hint ? { hint } : {}) } };
+}
+
+async function fetchKnowledge(ctx: ToolContext, spec: KnowledgeSpec): Promise<unknown> {
+  const cached = knowledgeCache.get(spec.uri);
+  if (cached !== undefined) return cached;
+
+  const raw = await ctx.daemon().request<Record<string, unknown>>(spec.op, spec.args, { timeoutMs: 15_000 });
+  const value =
+    spec.op === "scenario.list"
+      ? {
+          scenarios: (raw.scenarios as unknown[]).map((s) => ScenarioInfoSchema.parse(s)),
+          ttl_ms: KNOWLEDGE_TTL_MS,
+          generated_at: Date.now(),
+        }
+      : raw;
+
+  knowledgeCache.set(spec.uri, value);
+  return value;
+}
+
+export function registerKnowledgeResources(server: McpServer, ctx: ToolContext): void {
+  for (const spec of KNOWLEDGE_RESOURCES) {
+    server.registerResource(
+      spec.name,
+      spec.uri,
+      {
+        description: spec.description,
+        mimeType: "application/json",
+        _meta: { "crosspad/ttl_ms": KNOWLEDGE_TTL_MS },
+      },
+      async (uri) => {
+        try {
+          return jsonContents(uri.href, await fetchKnowledge(ctx, spec));
+        } catch (e) {
+          return jsonContents(uri.href, errorPayload(e));
+        }
+      },
+    );
+  }
+}
+```
+
+- [ ] **Step 4: Wire them into `registerAll`**
+
+`src/registry.ts` — add the import next to the existing resource import, and one call next to `registerDeviceResources(server, ctx)` (added by Task 6's wiring note) at the end of `registerAll`:
+
+```ts
+import { registerKnowledgeResources } from "./resources/knowledge.js";
+```
+
+```ts
+  registerDeviceResources(server, ctx);
+  registerKnowledgeResources(server, ctx);
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22 >/dev/null && npx vitest run src/resources/knowledge.test.ts && npx tsc --noEmit`
+Expected: `Test Files 1 passed`, `Tests 9 passed`; tsc prints nothing.
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd /home/matixan/GIT/crosspad-mcp && git add src/resources/knowledge.ts src/resources/knowledge.test.ts src/registry.ts && git commit -m "feat(v10): crosspad://cdc, crosspad://sysex and crosspad://hil/catalog resources with a 1 h cache"
+```
+
+- [ ] **Step 7: Write the failing release-metadata test**
+
+`/home/matixan/GIT/crosspad-mcp/src/release.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { TOOLSETS } from "./toolsets.js";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf-8");
+const pkg = JSON.parse(read("package.json")) as Record<string, string> & { scripts: Record<string, string> };
+const plugin = JSON.parse(read(".claude-plugin/plugin.json")) as Record<string, string>;
+const readme = read("README.md");
+const changelog = read("CHANGELOG.md");
+
+const ALL_TOOLS = [...new Set(Object.values(TOOLSETS).flat())];
+
+describe("release metadata", () => {
+  it("package.json is the 10.0.0 breaking release", () => {
+    expect(pkg.version).toBe("10.0.0");
+  });
+
+  it("declares the crosspad-hil version it requires", () => {
+    expect(pkg.hilVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pkg.hilVersion).toBe("1.0.0");
+  });
+
+  it("plugin.json version is synced with package.json", () => {
+    expect(plugin.version).toBe(pkg.version);
+  });
+
+  it("ships the eval scripts", () => {
+    expect(pkg.scripts["eval:grade"]).toBe("node eval/grade.ts");
+    expect(pkg.scripts["typecheck:eval"]).toBe("tsc -p tsconfig.eval.json --noEmit");
+  });
+
+  it("CHANGELOG's newest entry is 10.0.0", () => {
+    const firstHeading = changelog.split("\n").find((l) => l.startsWith("## ["));
+    expect(firstHeading).toBe("## [10.0.0] — 2026-08-26");
+    expect(changelog).toContain("crosspad-hil");
+  });
+});
+
+describe("README documents what the server actually does", () => {
+  it("has the v9 → v10 migration table", () => {
+    expect(readme).toContain("<b>v9 → v10</b>");
+    expect(readme).toContain("`crosspad_log` with `target: idf`");
+    expect(readme).toContain("`crosspad_architecture`");
+    expect(readme).toContain("`crosspad_apps`");
+    expect(readme).toContain("P1 — v9 names still registered");
+  });
+
+  it("documents every toolset name", () => {
+    for (const name of Object.keys(TOOLSETS)) {
+      expect(readme, `toolset ${name} missing from README`).toContain(`\`${name}\``);
+    }
+  });
+
+  it("documents the startup flags", () => {
+    expect(readme).toContain("--read-only");
+    expect(readme).toContain("--toolsets");
+    expect(readme).toContain("CROSSPAD_TOOLSETS");
+  });
+
+  it("names every tool that a toolset contains", () => {
+    for (const tool of ALL_TOOLS) {
+      expect(readme, `${tool} missing from README`).toContain(`\`${tool}\``);
+    }
+  });
+
+  it("the banner counts match the toolset map", () => {
+    const banner = readme.split("\n").find((l) => l.includes("tools in") && l.includes("toolsets"));
+    expect(banner, "README banner line not found").toBeDefined();
+    const toolCount = Number(banner!.match(/\*\*(\d+) tools/)![1]);
+    const toolsetCount = Number(banner!.match(/in (\d+) toolsets/)![1]);
+    expect(toolCount).toBe(ALL_TOOLS.length);
+    expect(toolsetCount).toBe(Object.keys(TOOLSETS).length);
+  });
+});
+```
+
+- [ ] **Step 8: Run it to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22 >/dev/null && npx vitest run src/release.test.ts`
+Expected: FAIL — first with `ENOENT: no such file or directory, open '.../CHANGELOG.md'`, then (once Step 9c lands) with `expected '9.3.0' to be '10.0.0'`.
+
+- [ ] **Step 9a: Bump `package.json`**
+
+Replace line 3 (`  "version": "9.3.0",`) with these two lines:
+
+```json
+  "version": "10.0.0",
+  "hilVersion": "1.0.0",
+```
+
+and replace the `scripts` block (lines 34–40) with:
+
+```json
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "eval:grade": "node eval/grade.ts",
+    "typecheck:eval": "tsc -p tsconfig.eval.json --noEmit"
+  },
+```
+
+- [ ] **Step 9b: Sync `.claude-plugin/plugin.json`**
+
+Replace line 4 (`  "version": "9.1.1",`) with:
+
+```json
+  "version": "10.0.0",
+```
+
+- [ ] **Step 9c: Write `CHANGELOG.md`**
+
+```markdown
+# Changelog
+
+All notable changes to crosspad-mcp-server. Format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [10.0.0] — 2026-08-26
+
+Breaking. The server stops being a bag of shell wrappers and becomes a thin,
+safe front over the [crosspad-hil](https://github.com/CrossPad/crosspad-hil)
+daemon (`hilVersion` 1.0.0, spawned as `python -m crosspad_hil.serve`).
+
+### Added
+- **Toolsets.** `tools/list` starts with the `core` toolset only (8 tools).
+  Everything else is registered disabled and enabled on demand with
+  `crosspad_toolsets action=enable toolset=<name>`, `--toolsets a,b` or
+  `CROSSPAD_TOOLSETS`. Toolsets: `core`, `device`, `hil`, `sim`, `code`, `git`,
+  `apps`, `trace`.
+- **Policy tiers and confirmations.** Every tool has a tier
+  (`read`/`stimulus`/`mutate-host`/`danger`); annotations are derived from it.
+  Danger-tier calls return `resultType="confirmation_required"` with a
+  120 s `confirm_token` instead of acting, or ask the client directly when it
+  supports elicitation. `--read-only` / `CROSSPAD_MCP_POLICY=readonly` hides
+  every non-`read` tool.
+- **Device tools over the daemon**: `crosspad_console` (boot log, `expect`,
+  parsed snapshot, log file as a `resource_link`), `crosspad_cdc` (typed verbs
+  from `verbs.py`), `crosspad_ui` (drive the encoder by snapshot ref),
+  `crosspad_snapshot`, `crosspad_doctor`, `crosspad_usb_mode`, `crosspad_task`.
+- **Handles and jobs.** `con_N` / `cdc_N` / `snap_N` / `task_N` are explicit;
+  long operations (build, flash, scenarios) run as jobs polled through
+  `crosspad_task {status|wait|cancel|list}` and keep results for 1 h.
+- **Resources**: `crosspad://devices`, `crosspad://device/{id}/state`,
+  `crosspad://device/{id}/console/log`, `crosspad://cdc`, `crosspad://sysex`,
+  `crosspad://hil/catalog` (the last three cached for 1 h).
+- **Eval harness** (`eval/tasks.json`, `eval/grade.ts`) for the meta-bug in
+  `todo.md`: 10 recorded-transcript tasks that fail when the model shells out
+  instead of calling a `crosspad_*` tool.
+
+### Changed
+- `crosspad_devices` enumerates through the daemon (`devices.list`): USB mode,
+  paired STM32 bridge, MIDI ports and the UAC2 card, not just a serial list.
+- `crosspad_flash` always returns a preflight (USB mode, port role, firmware
+  mtime vs sources, bin version, board rev) and runs as a job.
+- `crosspad_midi` and `crosspad_audio_route` talk to the daemon instead of
+  shelling out to `amidi`; `crosspad_midi` gained `target: device|sim`.
+- No `execSync`/`spawnSync` on the request path: `crosspad_repo_status` runs its
+  per-repo git calls concurrently (limit 4) and every subprocess honours
+  cancellation.
+
+### Removed
+- The v9 inline device enumeration (`listDevices()` on the tool path).
+- `logging/message` server logs (deprecated in MCP 2026-07-28); progress goes
+  through `notifications/progress`.
+
+### Requires
+- `crosspad-hil` ≥ 1.0.0 on the interpreter named by the `hil_python` config
+  key / `CROSSPAD_HIL_PYTHON` (falls back to the tracer's python, then
+  `python3`). `crosspad_doctor` reports the version mismatch.
+```
+
+- [ ] **Step 9d: Update `README.md`**
+
+(a) Replace line 10 (the banner) with:
+
+```markdown
+**38 tools in 8 toolsets (8 visible at start) · 10 resources · 2 bundled Claude Code skills · stdio & HTTP transports**
+```
+
+(b) Replace lines 93–97 (`## Tools (30) + resources` through the "Each tool is focused…" paragraph) with:
+
+```markdown
+## Tools + resources
+
+> v10 put the tools behind **toolsets** and a **policy**: `tools/list` starts with the `core` toolset only, so the startup context stays small, and everything that writes to a device or the host is tiered and confirmable. Migration table at the bottom of this file.
+
+Each tool is focused on a single action. Strict schema validation (ranges on MIDI/pad values, enums on platforms/repos) catches bad inputs before execution.
+
+### Toolsets
+
+| Toolset | Contains | On at start |
+|---|---|---|
+| `core` | `crosspad_devices`, `crosspad_doctor`, `crosspad_snapshot`, `crosspad_build`, `crosspad_flash`, `crosspad_repo_status`, `crosspad_toolsets`, `crosspad_task` | yes |
+| `device` | `crosspad_cdc`, `crosspad_console`, `crosspad_ui`, `crosspad_midi`, `crosspad_usb_mode`, `crosspad_audio_route` | no |
+| `hil` | scenario runner (`crosspad_hil_run` and friends — P1) | no |
+| `sim` | `crosspad_run`, `crosspad_kill`, `crosspad_check`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats`, `crosspad_settings_get`, `crosspad_settings_set`, `crosspad_test_run`, `crosspad_log` | no |
+| `code` | `crosspad_search_symbols`, `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities`, `crosspad_list_apps_source` | no |
+| `git` | `crosspad_repo_diff`, `crosspad_submodule_update`, `crosspad_commit` | no |
+| `apps` | `crosspad_apps_list`, `crosspad_apps_install`, `crosspad_apps_remove`, `crosspad_apps_update`, `crosspad_apps_sync` | no |
+| `trace` | `crosspad_trace` | no |
+
+Enable one at runtime with `crosspad_toolsets action=enable toolset=device` (the tool list changes and the client is notified). At startup: `--toolsets device,code` (or `CROSSPAD_TOOLSETS=device,code`, keyword `all`). `--read-only` (or `CROSSPAD_MCP_POLICY=readonly`) removes every non-`read` tool from the list regardless of toolset flags — read-only always wins.
+
+Danger-tier tools (`crosspad_flash`, bootloader/DFU requests, `crosspad_trace` write/call) return `resultType="confirmation_required"` with a `confirm_token` valid for 120 s; re-issue the identical call carrying the token to proceed. A declined confirmation is `CANCELLED_BY_USER` and must not be retried automatically.
+```
+
+(c) Replace the `crosspad_log` and `crosspad_devices` rows (lines 108–109) with:
+
+```markdown
+| `crosspad_log` | Capture simulator logs (`target: pc` spawns the binary). For device logs use `crosspad_console` — it does not reboot the board. |
+| `crosspad_devices` | Devices through the crosspad-hil daemon: USB mode, CDC + STM32-bridge ports, MIDI ports, UAC2 card, which one is selected |
+```
+
+(d) Insert after line 111 (the `crosspad_audio_route` row, before `### SWD tracing (crosspad_trace)`):
+
+```markdown
+
+### Device (crosspad-hil daemon)
+
+Everything here needs a connected board (`[ESP HW]`) and the `device` toolset.
+
+| Tool | Purpose |
+|------|---------|
+| `crosspad_doctor` | Host + daemon environment checks (python, crosspad-hil version, IDF export, sim binary, ports) with a `fix` per failed check |
+| `crosspad_console` | STM32-bridge console: `open` (never reboots the board — DTR/RTS deasserted), `read`, `expect`, `reset`, `snapshot`, `close`. Log file linked as a resource, never inlined; reads cap at 2 000 lines |
+| `crosspad_cdc` | Typed CDC verbs (`app`, `kit`, `pad`, `enc`, `led`, `mem`, `audio`, `ble`, `system`, `raw`) — the `hil_control.cpp` command set with reply parsing |
+| `crosspad_ui` | Drive the UI by snapshot ref: rotate to a labelled row, press, back. Returns a fresh snapshot |
+| `crosspad_snapshot` | One coherent read of a device (apps, ui, kit, leds, pads, mem, ble, console) or of the simulator; diffable against a previous snapshot |
+| `crosspad_usb_mode` | Get/set the USB profile (`default` = MIDI+CDC, `audio` = UAC2) and wait for re-enumeration |
+| `crosspad_task` | `status` / `wait` / `cancel` / `list` for long operations (build, flash, scenarios) |
+```
+
+(e) Append to the Resources table (after line 241):
+
+```markdown
+| `crosspad://devices` | Device inventory from the daemon — the raw `Device` dicts behind `crosspad_devices`. Re-discovered on every read. |
+| `crosspad://device/{id}/state` | Fresh snapshot of one device (apps, ui, kit, leds, pads, mem, ble, console). |
+| `crosspad://device/{id}/console/log` | The console log file of the most recent `crosspad_console open` for that device (last 1 MiB). |
+| `crosspad://cdc` | CDC verb catalog with reply grammar, from `crosspad_hil/knowledge/cdc.yaml`. Cached 1 h. |
+| `crosspad://sysex` | 0x7D SysEx catalog: USB-mode and audio-route ids, plus the host denylist. Cached 1 h. |
+| `crosspad://hil/catalog` | Scenarios the daemon can run, with parameters, defaults and help. Cached 1 h. |
+```
+
+(f) Insert directly after line 244 (the blank line under `### Migrations`, above the v7 → v8 block):
+
+```markdown
+<details>
+<summary><b>v9 → v10</b> — the device side moved into the crosspad-hil daemon; tools live in toolsets</summary>
+
+| Old (v9) | New (v10) | Status |
+|---|---|---|
+| `crosspad_log` with `target: idf` | `crosspad_console` (`open`/`read`/`expect`/`snapshot`/`close`) | shipped — `crosspad_log` keeps `target: pc` |
+| `crosspad_devices` (serial-port list) | `crosspad_devices` (daemon `devices.list`: USB mode, paired STM32 bridge, MIDI, UAC2) | shipped — same name, richer result |
+| raw SysEx via `amidi` inside `crosspad_audio_route` | daemon `midi.sysex` / `midi.query_route`, tool schema unchanged | shipped |
+| `crosspad_flash` (fire and forget) | `crosspad_flash` with an always-returned preflight, a job handle and `wait_boot` | shipped |
+| — | `crosspad_cdc`, `crosspad_ui`, `crosspad_snapshot`, `crosspad_doctor`, `crosspad_usb_mode`, `crosspad_task`, `crosspad_toolsets` | new |
+| `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities` | `crosspad_architecture` with an `action` field | P1 — v9 names still registered (toolset `code`) |
+| `crosspad_apps_list/install/remove/update/sync` | `crosspad_apps` with an `action` field | P1 — v9 names still registered (toolset `apps`) |
+
+Startup surface: `tools/list` returns the `core` toolset only. Enable the rest with `crosspad_toolsets`, `--toolsets a,b` or `CROSSPAD_TOOLSETS`; hide every writing tool with `--read-only`. Requires `crosspad-hil` ≥ 1.0.0 (`package.json` → `hilVersion`); `crosspad_doctor` tells you when it is missing or too old.
+
+</details>
+
+```
+
+- [ ] **Step 10: Run the release test**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22 >/dev/null && npx vitest run src/release.test.ts`
+Expected: `Test Files 1 passed`, `Tests 10 passed`.
+
+If `the banner counts match the toolset map` fails, the `TOOLSETS` map is authoritative: put the two numbers the failure reports (`expected 38 to be N`) into the README banner line and re-run. Do **not** change `TOOLSETS` to match the prose.
+
+- [ ] **Step 11: Commit**
+
+```bash
+cd /home/matixan/GIT/crosspad-mcp && git add package.json .claude-plugin/plugin.json CHANGELOG.md README.md src/release.test.ts && git commit -m "docs(v10): 10.0.0 release metadata, hilVersion, CHANGELOG and the v9 to v10 migration table"
+```
+
+- [ ] **Step 12: Write the failing eval-grader test**
+
+First make the `eval/` directory visible to vitest and to a type-check — `tsconfig.json` keeps `rootDir: "src"` so `npm run build` stays unchanged.
+
+`/home/matixan/GIT/crosspad-mcp/vitest.config.ts` — replace line 5:
+
+```ts
+    include: ["src/**/*.test.ts", "eval/**/*.test.ts"],
+```
+
+`/home/matixan/GIT/crosspad-mcp/tsconfig.eval.json` (new):
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false,
+    "sourceMap": false,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["eval/**/*.ts"]
+}
+```
+
+`/home/matixan/GIT/crosspad-mcp/eval/grade.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+import {
+  gradeTranscript,
+  loadTasks,
+  shellCommandOf,
+  formatResults,
+  SHELL_TOOLS,
+  type EvalTask,
+  type ToolCallRecord,
+} from "./grade.js";
+import { TOOLSETS } from "../src/toolsets.js";
+
+const ALL_TOOLS = new Set(Object.values(TOOLSETS).flat());
+
+const task: EvalTask = {
+  id: "repo-status-not-git-status",
+  prompt: "What is dirty across the CrossPad repos right now?",
+  expected_tools: ["crosspad_repo_status"],
+  forbidden_shell_patterns: ["\\bgit\\s+status\\b", "\\bgit\\s+-C\\b"],
+};
+
+describe("gradeTranscript", () => {
+  it("passes when the expected tool was called and no shell rule was broken", () => {
+    const t: ToolCallRecord[] = [{ tool: "crosspad_repo_status", input: {} }];
+    const r = gradeTranscript(t, task);
+    expect(r.passed).toBe(true);
+    expect(r.missing_tools).toEqual([]);
+    expect(r.forbidden_hits).toEqual([]);
+    expect(r.used_tools).toEqual(["crosspad_repo_status"]);
+    expect(r.id).toBe(task.id);
+  });
+
+  it("fails when the model shelled out instead", () => {
+    const t: ToolCallRecord[] = [{ tool: "Bash", input: { command: "cd ~/GIT/platform-idf && git status --porcelain" } }];
+    const r = gradeTranscript(t, task);
+    expect(r.passed).toBe(false);
+    expect(r.missing_tools).toEqual(["crosspad_repo_status"]);
+    expect(r.forbidden_hits).toEqual([
+      { pattern: "\\bgit\\s+status\\b", tool: "Bash", command: "cd ~/GIT/platform-idf && git status --porcelain" },
+    ]);
+    expect(r.shell_calls).toBe(1);
+  });
+
+  it("fails on a forbidden shell call even when the tool was also used", () => {
+    const t: ToolCallRecord[] = [
+      { tool: "crosspad_repo_status", input: {} },
+      { tool: "Bash", input: { command: "git status" } },
+    ];
+    const r = gradeTranscript(t, task);
+    expect(r.passed).toBe(false);
+    expect(r.missing_tools).toEqual([]);
+    expect(r.forbidden_hits.length).toBe(1);
+  });
+
+  it("allows unrelated shell calls", () => {
+    const t: ToolCallRecord[] = [
+      { tool: "crosspad_repo_status", input: {} },
+      { tool: "Bash", input: { command: "ls ~/GIT" } },
+    ];
+    const r = gradeTranscript(t, task).passed;
+    expect(t.length).toBe(2);
+    expect(r).toBe(true);
+  });
+
+  it("matches case-insensitively and reports each distinct pattern once per call", () => {
+    const t: ToolCallRecord[] = [{ tool: "Bash", input: { command: "GIT STATUS && git -C /x status" } }];
+    const r = gradeTranscript(t, task);
+    expect(r.forbidden_hits.map((h) => h.pattern).sort()).toEqual(["\\bgit\\s+-C\\b", "\\bgit\\s+status\\b"]);
+  });
+
+  it("deduplicates repeated tool calls in used_tools", () => {
+    const t: ToolCallRecord[] = [
+      { tool: "crosspad_repo_status", input: {} },
+      { tool: "crosspad_repo_status", input: {} },
+    ];
+    expect(gradeTranscript(t, task).used_tools).toEqual(["crosspad_repo_status"]);
+  });
+});
+
+describe("shellCommandOf", () => {
+  it("reads command / cmd / script from any known shell tool", () => {
+    expect(shellCommandOf({ tool: "Bash", input: { command: "ls" } })).toBe("ls");
+    expect(shellCommandOf({ tool: "shell", input: { cmd: "ls" } })).toBe("ls");
+    expect(shellCommandOf({ tool: "run_shell_command", input: { script: "ls" } })).toBe("ls");
+    expect(shellCommandOf({ tool: "crosspad_repo_status", input: { command: "ls" } })).toBeNull();
+    expect(shellCommandOf({ tool: "Bash" })).toBeNull();
+    expect(SHELL_TOOLS.has("Bash")).toBe(true);
+  });
+});
+
+describe("eval/tasks.json", () => {
+  const tasks = loadTasks();
+
+  it("has exactly 10 tasks with unique ids", () => {
+    expect(tasks.length).toBe(10);
+    expect(new Set(tasks.map((t) => t.id)).size).toBe(10);
+  });
+
+  it("every task names a real prompt, at least one expected tool and one forbidden pattern", () => {
+    for (const t of tasks) {
+      expect(t.prompt.length, t.id).toBeGreaterThan(20);
+      expect(t.expected_tools.length, t.id).toBeGreaterThan(0);
+      expect(t.forbidden_shell_patterns.length, t.id).toBeGreaterThan(0);
+    }
+  });
+
+  it("every expected tool exists in a toolset", () => {
+    for (const t of tasks) {
+      for (const tool of t.expected_tools) {
+        expect(ALL_TOOLS.has(tool), `${t.id} expects unknown tool ${tool}`).toBe(true);
+      }
+    }
+  });
+
+  it("every forbidden pattern compiles as a regex", () => {
+    for (const t of tasks) {
+      for (const p of t.forbidden_shell_patterns) {
+        expect(() => new RegExp(p, "i"), `${t.id}: ${p}`).not.toThrow();
+      }
+    }
+  });
+
+  it("a transcript that calls only the expected tools passes every task", () => {
+    for (const t of tasks) {
+      const transcript = t.expected_tools.map((tool) => ({ tool, input: {} }));
+      expect(gradeTranscript(transcript, t).passed, t.id).toBe(true);
+    }
+  });
+});
+
+describe("formatResults", () => {
+  it("renders one line per task with PASS/FAIL", () => {
+    const out = formatResults([
+      gradeTranscript([{ tool: "crosspad_repo_status" }], task),
+      gradeTranscript([{ tool: "Bash", input: { command: "git status" } }], task),
+    ]);
+    expect(out).toContain("PASS repo-status-not-git-status");
+    expect(out).toContain("FAIL repo-status-not-git-status");
+    expect(out).toContain("1/2 passed");
+  });
+});
+```
+
+- [ ] **Step 13: Run it to verify it fails**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22 >/dev/null && npx vitest run eval/grade.test.ts`
+Expected: FAIL with `Failed to load url ./grade.js`.
+
+- [ ] **Step 14: Write `eval/tasks.json`**
+
+Ten tasks aimed at the meta-bug recorded in `todo.md` (⭐ *Meta-bug*: "Claude w sesji często NIE używa `crosspad_*` tools — robi raw `git status`, `grep`, `cmake` ręcznie"). Each `prompt` is what the user says; `expected_tools` is what a correct run must call; `forbidden_shell_patterns` is what a wrong run reaches for instead.
+
+```json
+{
+  "version": 1,
+  "description": "Does the model use crosspad_* tools, or does it shell out? Each task is graded against a recorded transcript of tool calls by eval/grade.ts.",
+  "tasks": [
+    {
+      "id": "repo-status-not-git-status",
+      "prompt": "What's dirty across the CrossPad repos right now, and which submodule pins have drifted?",
+      "expected_tools": ["crosspad_repo_status"],
+      "forbidden_shell_patterns": ["\\bgit\\s+status\\b", "\\bgit\\s+-C\\b", "\\bgit\\s+submodule\\s+status\\b"]
+    },
+    {
+      "id": "symbols-not-grep",
+      "prompt": "Where is PadLedController defined, and which repos have a copy of it?",
+      "expected_tools": ["crosspad_search_symbols"],
+      "forbidden_shell_patterns": ["\\bgrep\\s+-[a-zA-Z]*r", "\\bgit\\s+grep\\b", "\\brg\\s", "\\back\\s", "\\bfind\\s+\\S+\\s+-name\\b"]
+    },
+    {
+      "id": "interfaces-not-find",
+      "prompt": "List the crosspad-core interfaces and tell me which classes implement IPadLogicHandler.",
+      "expected_tools": ["crosspad_list_interfaces", "crosspad_interface_implementations"],
+      "forbidden_shell_patterns": ["\\bls\\s+.*include/crosspad", "\\bfind\\s+\\S*crosspad-core", "\\bgit\\s+grep\\b", "\\bgrep\\s+-[a-zA-Z]*r"]
+    },
+    {
+      "id": "devices-not-lsusb",
+      "prompt": "Is a CrossPad plugged in, and which USB mode is it in?",
+      "expected_tools": ["crosspad_devices"],
+      "forbidden_shell_patterns": ["\\blsusb\\b", "\\bls\\s+/dev/tty", "\\bdmesg\\b", "\\bsystem_profiler\\b", "\\bmode -a\\b"]
+    },
+    {
+      "id": "console-not-idf-monitor",
+      "prompt": "The board reboots on startup — show me the boot log and tell me which required marker is missing.",
+      "expected_tools": ["crosspad_console"],
+      "forbidden_shell_patterns": ["idf\\.py\\s+monitor", "\\bcat\\s+/dev/tty", "\\bscreen\\s+/dev/tty", "\\bminicom\\b", "\\bpicocom\\b", "python3?\\s+\\S*tools/hil_smoke\\.py"]
+    },
+    {
+      "id": "build-not-idfpy",
+      "prompt": "Build the ESP-IDF firmware and tell me if it compiled clean.",
+      "expected_tools": ["crosspad_build"],
+      "forbidden_shell_patterns": ["idf\\.py\\s+build", "\\bninja\\b", "cmake\\s+--build", "\\bmake\\s+-j"]
+    },
+    {
+      "id": "flash-not-esptool",
+      "prompt": "Flash the firmware you just built over OTA and wait until it boots.",
+      "expected_tools": ["crosspad_flash", "crosspad_task"],
+      "forbidden_shell_patterns": ["idf\\.py\\s+.*flash", "\\besptool(\\.py)?\\b", "python3?\\s+\\S*tools/ota_flash\\.py", "python3?\\s+\\S*tools/requestBootloader\\.py", "\\bsleep\\s+\\d+"]
+    },
+    {
+      "id": "pad-hit-not-hil-script",
+      "prompt": "Press pad 3 with velocity 100 on the connected board and tell me whether the sampler played a voice.",
+      "expected_tools": ["crosspad_cdc"],
+      "forbidden_shell_patterns": ["python3?\\s+\\S*tools/hil_", "\\bamidi\\b", "python3?\\s+-c\\s+.*serial", "\\becho\\s+.*>\\s*/dev/tty"]
+    },
+    {
+      "id": "kit-load-not-serial-echo",
+      "prompt": "Load kit 8 on the device and confirm it finished loading rather than queueing behind another load.",
+      "expected_tools": ["crosspad_cdc"],
+      "forbidden_shell_patterns": ["\\becho\\s+.*KIT_LOAD", "python3?\\s+-c\\s+.*serial", "python3?\\s+\\S*tools/hil_kit_churn\\.py", "\\bcu\\s+-l\\b"]
+    },
+    {
+      "id": "missing-tool-enable-toolset",
+      "prompt": "I need to drive the encoder on the physical device but I only see the core tools. Get to a state where you can do it.",
+      "expected_tools": ["crosspad_toolsets", "crosspad_ui"],
+      "forbidden_shell_patterns": ["\\bnpx\\s+crosspad", "\\bnode\\s+\\S*dist/index\\.js", "claude\\s+mcp\\b", "\\bexport\\s+CROSSPAD_TOOLSETS"]
+    }
+  ]
+}
+```
+
+- [ ] **Step 15: Write `eval/grade.ts`**
+
+Run directly by Node's TypeScript stripping (`node eval/grade.ts`), so: no enums, no namespaces, no parameter properties, and no relative imports of other `.ts` files at runtime.
+
+```ts
+#!/usr/bin/env node
+// eval/grade.ts — grade a recorded transcript of tool calls against
+// eval/tasks.json. The bug being measured is in todo.md (⭐ Meta-bug): the
+// model shells out (`git status`, `grep -r`, `idf.py flash`) instead of calling
+// the crosspad_* tool that exists for exactly that job. A task passes only when
+// every expected tool was called AND no forbidden shell command was issued.
+//
+//   node eval/grade.ts transcripts/run-2026-08-26.json
+//   node eval/grade.ts transcripts/*.json --json
+//
+// Transcript file format:
+//   { "runs": [ { "task": "<task id>",
+//                 "calls": [ { "tool": "Bash", "input": { "command": "git status" } } ] } ] }
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+export interface EvalTask {
+  id: string;
+  prompt: string;
+  expected_tools: string[];
+  forbidden_shell_patterns: string[];
+}
+
+export interface ToolCallRecord {
+  tool: string;
+  input?: Record<string, unknown>;
+}
+
+export interface ForbiddenHit {
+  pattern: string;
+  tool: string;
+  command: string;
+}
+
+export interface EvalResult {
+  id: string;
+  passed: boolean;
+  used_tools: string[];
+  missing_tools: string[];
+  forbidden_hits: ForbiddenHit[];
+  shell_calls: number;
+  notes: string;
+}
+
+interface TranscriptRun {
+  task: string;
+  calls: ToolCallRecord[];
+}
+
+/** Tool names that execute a shell command, across the clients we grade. */
+export const SHELL_TOOLS = new Set([
+  "Bash",
+  "BashOutput",
+  "shell",
+  "run_shell_command",
+  "execute_command",
+  "terminal",
+]);
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_TASKS_FILE = path.join(HERE, "tasks.json");
+
+/** The shell command a call issued, or null when the call is not a shell call. */
+export function shellCommandOf(call: ToolCallRecord): string | null {
+  if (!SHELL_TOOLS.has(call.tool)) return null;
+  const input = call.input ?? {};
+  for (const key of ["command", "cmd", "script"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+export function gradeTranscript(transcript: ToolCallRecord[], task: EvalTask): EvalResult {
+  const used: string[] = [];
+  for (const call of transcript) {
+    if (!used.includes(call.tool)) used.push(call.tool);
+  }
+
+  const missing = task.expected_tools.filter((t) => !used.includes(t));
+
+  const hits: ForbiddenHit[] = [];
+  let shellCalls = 0;
+  for (const call of transcript) {
+    const command = shellCommandOf(call);
+    if (command === null) continue;
+    shellCalls++;
+    for (const pattern of task.forbidden_shell_patterns) {
+      if (new RegExp(pattern, "i").test(command)) {
+        hits.push({ pattern, tool: call.tool, command });
+      }
+    }
+  }
+
+  const passed = missing.length === 0 && hits.length === 0;
+  const notes = passed
+    ? `called ${task.expected_tools.join(", ")}${shellCalls > 0 ? ` (${shellCalls} unrelated shell call(s))` : ""}`
+    : [
+        missing.length > 0 ? `never called ${missing.join(", ")}` : "",
+        hits.length > 0 ? `shelled out: ${hits.map((h) => h.command).join(" | ")}` : "",
+      ]
+        .filter((s) => s.length > 0)
+        .join("; ");
+
+  return { id: task.id, passed, used_tools: used, missing_tools: missing, forbidden_hits: hits, shell_calls: shellCalls, notes };
+}
+
+export function loadTasks(file: string = DEFAULT_TASKS_FILE): EvalTask[] {
+  const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as { tasks: EvalTask[] };
+  return parsed.tasks;
+}
+
+export function formatResults(results: EvalResult[]): string {
+  const lines = results.map((r) => `${r.passed ? "PASS" : "FAIL"} ${r.id} — ${r.notes}`);
+  const passed = results.filter((r) => r.passed).length;
+  lines.push(`${passed}/${results.length} passed`);
+  return lines.join("\n");
+}
+
+export function main(argv: string[]): number {
+  const asJson = argv.includes("--json");
+  const tasksFlag = argv.indexOf("--tasks");
+  const tasksFile = tasksFlag >= 0 ? argv[tasksFlag + 1] : DEFAULT_TASKS_FILE;
+  const files = argv.filter((a, i) => !a.startsWith("--") && i !== tasksFlag + 1);
+
+  if (files.length === 0) {
+    process.stderr.write("usage: node eval/grade.ts <transcript.json> [more.json] [--tasks eval/tasks.json] [--json]\n");
+    return 2;
+  }
+
+  const tasks = new Map(loadTasks(tasksFile).map((t) => [t.id, t]));
+  const results: EvalResult[] = [];
+
+  for (const file of files) {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as { runs: TranscriptRun[] };
+    for (const run of parsed.runs) {
+      const task = tasks.get(run.task);
+      if (!task) {
+        process.stderr.write(`error: transcript ${file} references unknown task "${run.task}"\n`);
+        return 2;
+      }
+      results.push(gradeTranscript(run.calls, task));
+    }
+  }
+
+  process.stdout.write(asJson ? `${JSON.stringify(results, null, 2)}\n` : `${formatResults(results)}\n`);
+  return results.every((r) => r.passed) ? 0 : 1;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exit(main(process.argv.slice(2)));
+}
+```
+
+- [ ] **Step 16: Run the eval tests, type-check and smoke the CLI**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22 >/dev/null && npx vitest run eval/grade.test.ts && npm run typecheck:eval`
+Expected: `Test Files 1 passed`, `Tests 14 passed`; `tsc -p tsconfig.eval.json` prints nothing.
+
+Run (CLI smoke — a two-run transcript, one correct and one shelled out):
+```bash
+cd /home/matixan/GIT/crosspad-mcp && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22 >/dev/null
+cat > /tmp/crosspad-eval-smoke.json <<'JSON'
+{"runs":[
+ {"task":"repo-status-not-git-status","calls":[{"tool":"crosspad_repo_status","input":{}}]},
+ {"task":"symbols-not-grep","calls":[{"tool":"Bash","input":{"command":"grep -rn PadLedController ~/GIT"}}]}
+]}
+JSON
+node eval/grade.ts /tmp/crosspad-eval-smoke.json; echo "exit=$?"
+```
+Expected:
+```
+PASS repo-status-not-git-status — called crosspad_repo_status
+FAIL symbols-not-grep — never called crosspad_search_symbols; shelled out: grep -rn PadLedController ~/GIT
+1/2 passed
+exit=1
+```
+
+- [ ] **Step 17: Run the whole suite**
+
+Run: `cd /home/matixan/GIT/crosspad-mcp && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22 >/dev/null && npx vitest run && npx tsc --noEmit`
+Expected: every test file passes (the eval file is now picked up by the `include` change); tsc silent.
+
+- [ ] **Step 18: Commit**
+
+```bash
+cd /home/matixan/GIT/crosspad-mcp && git add eval/tasks.json eval/grade.ts eval/grade.test.ts tsconfig.eval.json vitest.config.ts && git commit -m "test(eval): 10-task shell-vs-tool eval with a transcript grader"
+```
+
+---
+
+---
+
+## Cross-plan verification (run 2026-08-26, before execution)
+
+Mechanical checks over the three assembled plans plus the frozen contract:
+
+| Check | Result |
+|---|---|
+| Placeholder scan (`TBD`, `TODO`, `implement later`, `similar to Task N`, `add appropriate …`, trailing `...`) | clean — the only `...` is the `Scenario` Protocol stub in plan B Task 1, which is valid Python |
+| Task numbering | no duplicates, no gaps: core 1–12, scenarios/CLI/daemon 1–10, mcp 1–11 |
+| Error codes | every code used across all plans is one of the 15 defined in the contract's `errors.py`; none invented |
+| Cross-plan call sites (`set_mode`, `take_snapshot`, `run_scenario`, `open_console`, `open_cdc`, `kit_load`, `app_start`) | argument names and defaults at every call site match the definitions in plan A |
+| Daemon op names | every op the MCP plan requests (`devices.list`, `devices.doctor`, `console.open/read/expect/reset/snapshot/close`, `cdc.transact`, `cdc.verb`, `snapshot.take`, `task.status/wait/cancel`, `serve.ping`, and in tasks 8–11 `midi.*`, `usbmode.set`, `ota.flash`, `console.wait_boot`, `scenario.list`, `knowledge.get`) is registered by plan B Task 9 — except `knowledge.get`, which plan C Task 10 explicitly flags as an op to add to `serve.py` |
+| Hardware in tests | no test in any plan opens a real port, spawns the real daemon, or needs a board; every I/O boundary is injected (`serial_factory`, `Backends`, `discover_fn`, mocked `HilDaemon`) |
+
+What this check does **not** cover, and should be done by a reader before task 1: semantic review of the ported regexes and byte sequences against the current firmware (`main/hil_control.cpp` moves), and whether each test actually fails for the stated reason.
+
+### Correction found on real hardware (2026-08-26)
+
+Plan A Task 4 pairs the ESP CDC and the STM console port by the longest common
+prefix of pyserial's `location`. On the connected rev2 board the two interfaces
+enumerate on **different USB paths**:
+
+```
+/dev/ttyACM1  0x303a:0x3456  'Crosspad'              serial='123456'        location=1-4:1.0
+/dev/ttyACM0  0x0483:0x5740  'CrossPad MIDI+Serial'  serial='205D36865830'  location=7-2:1.0
+```
+
+They are two independent USB devices (separate cables/hubs), so no location
+prefix is shared and the serial numbers are unrelated. Consequences for the
+implementation:
+
+- The single-pair rule (exactly one ESP side + exactly one STM side → one
+  `Device`) is the primary rule and must not be gated on location similarity.
+- Location prefix may only be used as a tie-breaker when **more than one** of
+  each kind is present, and when it yields no match the discovery must return
+  them as separate `Device`s and let `select()` raise `AMBIGUOUS_DEVICE` rather
+  than guess.
+- `Device.id` must come from the ESP serial (`123456` here — note it is not
+  unique across boards, so the id derivation needs the port path mixed in when
+  the serial is a known placeholder).
