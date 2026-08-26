@@ -24,7 +24,10 @@ describe("crosspad_console open", () => {
   it("registers the handle, indexes the log and returns a resource_link", async () => {
     const t = mk({ "console.open": OPEN });
     const res = await t.call({ action: "open", device: "dev_3f2a", reset: true });
-    expect(t.daemon.calls[0]).toEqual({ op: "console.open", args: { device: "dev_3f2a", reset: true } });
+    // the tool names a log file when the caller did not: it promises a resource_link to one
+    expect(t.daemon.calls[0].op).toBe("console.open");
+    expect(t.daemon.calls[0].args).toMatchObject({ device: "dev_3f2a", reset: true });
+    expect(String((t.daemon.calls[0].args as Record<string, unknown>).log_to)).toMatch(/^hil_logs\/console_.*\.log$/);
     expect(res.structuredContent).toMatchObject({ success: true, handle: "con_1", port: "/dev/ttyACM1", device: "dev_3f2a" });
     expect(t.handles.get("con_1")).toMatchObject({ kind: "console", device: "dev_3f2a" });
     expect(consoleLogs.byHandle("con_1")?.logPath).toBe("/tmp/hil_logs/console_dev_3f2a_20260826.log");
@@ -94,7 +97,8 @@ describe("crosspad_console expect / reset / snapshot / close", () => {
     const t = mk({ "console.open": OPEN, "console.snapshot": () => ({ fatals: [], reboots: 1, reset_reasons: ["POWERON"], errors: [], markers_seen: {}, boot_complete: true, missing_markers: [], bootloops: 0, heap: {}, kit_requests: [], cdc_drops: 0, seq: 400, lines_lost: 0, log_path: "/tmp/x.log", port: "/dev/ttyACM1" }) });
     await t.call({ action: "open", device: "dev_3f2a" });
     const res = await t.call({ action: "snapshot", handle: "con_1" });
-    expect(res.structuredContent).toMatchObject({ success: true, reboots: 1, boot_complete: true });
+    // the parser state travels as one open object, not spread into the schema
+    expect(res.structuredContent).toMatchObject({ success: true, snapshot: { reboots: 1, boot_complete: true } });
   });
   it("close drops the handle but keeps the log index (file kept)", async () => {
     const t = mk({ "console.open": OPEN, "console.close": () => ({ ok: true }) });
