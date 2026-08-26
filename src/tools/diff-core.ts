@@ -1,8 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT } from "../config.js";
-import { runCommand } from "../utils/exec.js";
-import { getSubmodulePin, findSubmodulePath } from "../utils/git.js";
+import { git, getSubmodulePin, findSubmodulePath, type GitOpts } from "../utils/git.js";
 
 export interface DiffEntry {
   status: string; // A, M, D, R
@@ -34,10 +33,11 @@ export interface DiffCoreResult {
  * Submodule paths are resolved dynamically from .gitmodules (handles both
  * `crosspad-core` and `lib/crosspad-core` layouts).
  */
-export function crosspadDiffCore(
+export async function crosspadDiffCore(
   submodule: "crosspad-core" | "crosspad-gui" | "both" = "both",
   parent: "crosspad-pc" | "platform-idf" = "crosspad-pc",
-): DiffCoreResult {
+  opts: GitOpts = {},
+): Promise<DiffCoreResult> {
   const parentRoot = parent === "platform-idf" ? CROSSPAD_IDF_ROOT : CROSSPAD_PC_ROOT;
 
   const targets = submodule === "both"
@@ -47,13 +47,13 @@ export function crosspadDiffCore(
   const submodules: SubmoduleDiff[] = [];
 
   for (const sub of targets) {
-    const relPath = findSubmodulePath(parentRoot, sub);
+    const relPath = await findSubmodulePath(parentRoot, sub, opts);
     const subPath = relPath ? path.join(parentRoot, relPath) : path.join(parentRoot, sub);
     const isDevMode = isJunction(subPath);
-    const pinnedCommit = getSubmodulePin(parentRoot, sub);
+    const pinnedCommit = await getSubmodulePin(parentRoot, sub, opts);
 
     // Get current HEAD
-    const headResult = runCommand("git rev-parse HEAD", subPath);
+    const headResult = await git("git rev-parse HEAD", subPath, opts);
     const currentCommit = headResult.success ? headResult.stdout.trim() : null;
 
     let aheadCount = 0;
@@ -63,9 +63,10 @@ export function crosspadDiffCore(
 
     if (pinnedCommit && currentCommit && pinnedCommit !== currentCommit) {
       // Count commits ahead/behind
-      const countResult = runCommand(
+      const countResult = await git(
         `git rev-list --count --left-right ${pinnedCommit}...HEAD`,
-        subPath
+        subPath,
+        opts,
       );
       if (countResult.success) {
         const parts = countResult.stdout.trim().split(/\s+/);
@@ -74,9 +75,10 @@ export function crosspadDiffCore(
       }
 
       // Get diff stat (files changed between pinned and HEAD)
-      const diffResult = runCommand(
+      const diffResult = await git(
         `git diff --name-status ${pinnedCommit}...HEAD`,
-        subPath
+        subPath,
+        opts,
       );
       if (diffResult.success) {
         changedFiles = diffResult.stdout
@@ -90,9 +92,10 @@ export function crosspadDiffCore(
       }
 
       // Get commit log between pinned and HEAD
-      const logResult = runCommand(
+      const logResult = await git(
         `git log --oneline ${pinnedCommit}..HEAD`,
-        subPath
+        subPath,
+        opts,
       );
       if (logResult.success) {
         commitLog = logResult.stdout
@@ -104,7 +107,7 @@ export function crosspadDiffCore(
     }
 
     // Uncommitted changes (working tree)
-    const statusResult = runCommand("git status --porcelain", subPath);
+    const statusResult = await git("git status --porcelain", subPath, opts);
     const uncommittedChanges = statusResult.success
       ? statusResult.stdout
           .trim()

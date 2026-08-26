@@ -1,6 +1,7 @@
 import fs from "fs";
 import { getRepos } from "../config.js";
-import { runCommand } from "../utils/exec.js";
+import { git, type GitOpts } from "../utils/git.js";
+import { mapLimit, DEFAULT_CONCURRENCY } from "../utils/async.js";
 
 export interface SymbolResult {
   symbol: string;
@@ -90,14 +91,15 @@ export function buildPattern(query: string, kind: string): string {
  * Search for symbol definitions (classes, functions, macros, enums) across CrossPad repos.
  * Only matches definition lines, not usages.
  */
-export function crosspadSearchSymbols(
+export async function crosspadSearchSymbols(
   query: string,
   kind: string = "all",
   repos: string[] = ["all"],
   maxResults: number = 50,
   contextLines: number = 0,
   includeVendored: boolean = false,
-): SymbolSearchResult {
+  opts: GitOpts = {},
+): Promise<SymbolSearchResult> {
   const results: SymbolResult[] = [];
 
   const allRepos = getRepos();
@@ -113,13 +115,26 @@ export function crosspadSearchSymbols(
   const clampedContext = Math.min(Math.max(contextLines, 0), 10);
   const useContext = clampedContext > 0;
 
-  for (const [repoName, repoPath] of targetRepos) {
-    if (!fs.existsSync(repoPath)) continue;
+  const contextFlag = useContext ? `-C ${clampedContext}` : "";
+  const grepCmd = `git grep --recurse-submodules -n ${contextFlag} -E "${escapeForShell(pattern)}" -- "*.hpp" "*.h" "*.cpp" "*.c"`;
 
-    const contextFlag = useContext ? `-C ${clampedContext}` : "";
-    const grepCmd = `git grep --recurse-submodules -n ${contextFlag} -E "${escapeForShell(pattern)}" -- "*.hpp" "*.h" "*.cpp" "*.c"`;
-    const result = runCommand(grepCmd, repoPath, 30_000);
+  // One git grep per repo, up to DEFAULT_CONCURRENCY at a time; the greps are
+  // independent, and a 6-repo search used to cost the sum of their runtimes on
+  // a blocked event loop. Parsing stays in target-repo order, so the result
+  // ordering (and the max_results truncation point) is unchanged.
+  const present = targetRepos.filter(([, repoPath]) => fs.existsSync(repoPath));
+  const grepped = await mapLimit(
+    present,
+    DEFAULT_CONCURRENCY,
+    async ([repoName, repoPath]) => ({
+      repoName,
+      repoPath,
+      result: await git(grepCmd, repoPath, { timeoutMs: opts.timeoutMs ?? 30_000, signal: opts.signal }),
+    }),
+    opts.signal,
+  );
 
+  for (const { repoName, repoPath, result } of grepped) {
     if (!result.success && result.stdout.length === 0) continue;
 
     if (useContext) {

@@ -1,7 +1,8 @@
 import fs from "fs";
 import path from "path";
 import { getRepos, resolveCrosspadCore } from "../config.js";
-import { runCommand } from "../utils/exec.js";
+import { git, type GitOpts } from "../utils/git.js";
+import { mapLimit, DEFAULT_CONCURRENCY } from "../utils/async.js";
 
 // --- crosspad_interfaces ---
 
@@ -46,7 +47,7 @@ function findInterfaces(): InterfaceInfo[] {
   return results;
 }
 
-function findImplementations(interfaceName: string): ImplementationInfo[] {
+async function findImplementations(interfaceName: string, opts: GitOpts): Promise<ImplementationInfo[]> {
   const results: ImplementationInfo[] = [];
   // Use explicit char classes — POSIX ERE in some git builds doesn't
   // honour \w/\s inside character classes. Word boundary at the end of
@@ -65,12 +66,18 @@ function findImplementations(interfaceName: string): ImplementationInfo[] {
     "platform-idf": "idf",
   };
 
-  for (const [name, repoPath] of Object.entries(repos)) {
-    const result = runCommand(
-      `git grep --recurse-submodules -n -E "${pattern}" -- "*.hpp" "*.cpp" "*.h"`,
-      repoPath
-    );
+  const grepped = await mapLimit(
+    Object.entries(repos),
+    DEFAULT_CONCURRENCY,
+    async ([name, repoPath]) => ({
+      name,
+      repoPath,
+      result: await git(`git grep --recurse-submodules -n -E "${pattern}" -- "*.hpp" "*.cpp" "*.h"`, repoPath, opts),
+    }),
+    opts.signal,
+  );
 
+  for (const { name, repoPath, result } of grepped) {
     if (!result.success && result.stdout.length === 0) continue;
 
     for (const line of result.stdout.split("\n")) {
@@ -103,7 +110,7 @@ interface CapabilityInfo {
   platforms: Record<string, string[]>;
 }
 
-function queryCapabilities(): CapabilityInfo {
+async function queryCapabilities(opts: GitOpts): Promise<CapabilityInfo> {
   const corePath = resolveCrosspadCore();
   const flags: string[] = [];
 
@@ -132,16 +139,23 @@ function queryCapabilities(): CapabilityInfo {
 
   const platforms: Record<string, string[]> = {};
 
-  for (const [name, repoPath] of Object.entries(repos)) {
-    if (!platformMap[name]) continue;
+  // Use -F (fixed strings) with multiple -e patterns to avoid regex
+  // dialect issues across git builds.
+  const capGrepped = await mapLimit(
+    Object.entries(repos).filter(([name]) => platformMap[name]),
+    DEFAULT_CONCURRENCY,
+    async ([name, repoPath]) => ({
+      name,
+      result: await git(
+        `git grep -h -F -e "addPlatformCapability" -e "setPlatformCapabilities" -- "*.cpp" "*.hpp" "*.h"`,
+        repoPath,
+        opts,
+      ),
+    }),
+    opts.signal,
+  );
 
-    // Use -F (fixed strings) with multiple -e patterns to avoid regex
-    // dialect issues across git builds.
-    const result = runCommand(
-      `git grep -h -F -e "addPlatformCapability" -e "setPlatformCapabilities" -- "*.cpp" "*.hpp" "*.h"`,
-      repoPath
-    );
-
+  for (const { name, result } of capGrepped) {
     if (!result.success && result.stdout.length === 0) continue;
 
     const caps: string[] = [];
@@ -162,9 +176,10 @@ function queryCapabilities(): CapabilityInfo {
   return { flags, platforms };
 }
 
-export function crosspadInterfaces(
-  query: string
-): Record<string, unknown> {
+export async function crosspadInterfaces(
+  query: string,
+  opts: GitOpts = {},
+): Promise<Record<string, unknown>> {
   const parts = query.trim().split(/\s+/);
   const command = parts[0]?.toLowerCase();
 
@@ -179,12 +194,12 @@ export function crosspadInterfaces(
     return {
       interface: interfaceName,
       defined_in: defined?.file ?? "not found",
-      implementations: findImplementations(interfaceName),
+      implementations: await findImplementations(interfaceName, opts),
     };
   }
 
   if (command === "capabilities") {
-    const caps = queryCapabilities();
+    const caps = await queryCapabilities(opts);
     return { flags: caps.flags, platforms: caps.platforms };
   }
 
@@ -201,9 +216,10 @@ export interface AppInfo {
   platform: string;
 }
 
-export function crosspadApps(
-  platform: "pc" | "idf" | "arduino" | "all"
-): AppInfo[] {
+export async function crosspadApps(
+  platform: "pc" | "idf" | "arduino" | "all",
+  opts: GitOpts = {},
+): Promise<AppInfo[]> {
   const results: AppInfo[] = [];
   const repos = getRepos();
 
@@ -226,14 +242,23 @@ export function crosspadApps(
     }
   }
 
-  for (const [platName, repoPath] of targets) {
-    // Search for REGISTER_APP and _register_*_app patterns.
-    // Use [A-Za-z0-9_] instead of \w for portability across git/POSIX builds.
-    const result = runCommand(
-      `git grep --recurse-submodules -n -E "REGISTER_APP\\(|void _register_[A-Za-z0-9_]+_app\\(\\)" -- "*.cpp"`,
-      repoPath
-    );
+  // Search for REGISTER_APP and _register_*_app patterns.
+  // Use [A-Za-z0-9_] instead of \w for portability across git/POSIX builds.
+  const appGrepped = await mapLimit(
+    targets,
+    DEFAULT_CONCURRENCY,
+    async ([platName, repoPath]) => ({
+      platName,
+      result: await git(
+        `git grep --recurse-submodules -n -E "REGISTER_APP\\(|void _register_[A-Za-z0-9_]+_app\\(\\)" -- "*.cpp"`,
+        repoPath,
+        opts,
+      ),
+    }),
+    opts.signal,
+  );
 
+  for (const { platName, result } of appGrepped) {
     if (!result.success && result.stdout.length === 0) continue;
 
     for (const line of result.stdout.split("\n")) {

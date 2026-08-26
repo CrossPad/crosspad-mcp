@@ -19,11 +19,11 @@ describe("repo-actions module", () => {
       }));
 
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn(() => ({ success: false, stdout: "", stderr: "not a repo", exitCode: 1, durationMs: 0 })),
+        runArgvStream: vi.fn(async () => ({ success: false, stdout: "", stderr: "not a repo", exitCode: 1, durationMs: 0 })),
       }));
 
       vi.doMock("../utils/git.js", () => ({
-        getHead: vi.fn(() => null),
+        getHead: vi.fn(async () => null),
       }));
 
       vi.doMock("fs", () => ({
@@ -37,7 +37,7 @@ describe("repo-actions module", () => {
       const { crosspadCommit } = await import("./repo-actions.js");
 
       // Try to commit to unknown repo
-      const result = crosspadCommit("nonexistent", "test message");
+      const result = await crosspadCommit("nonexistent", "test message");
       expect(result.success).toBe(false);
       expect(result.error).toContain("Unknown repo");
       expect(result.error).toContain("Available:");
@@ -55,13 +55,13 @@ describe("repo-actions module", () => {
       }));
 
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn(() => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
+        runArgvStream: vi.fn(async () => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
       }));
 
       vi.doMock("../utils/git.js", () => ({
-        getHead: vi.fn(() => "abc1234"),
-        listSubmodules: vi.fn(() => []),
-        findSubmodulePath: vi.fn(() => null),
+        getHead: vi.fn(async () => "abc1234"),
+        listSubmodules: vi.fn(async () => []),
+        findSubmodulePath: vi.fn(async () => null),
       }));
 
       vi.doMock("fs", () => ({
@@ -71,7 +71,7 @@ describe("repo-actions module", () => {
       }));
 
       const { crosspadSubmoduleUpdate } = await import("./repo-actions.js");
-      const result = crosspadSubmoduleUpdate("nonexistent-sub", "idf");
+      const result = await crosspadSubmoduleUpdate("nonexistent-sub", "idf");
       expect(result.success).toBe(false);
       expect(result.error).toContain("not found");
     });
@@ -87,25 +87,21 @@ describe("repo-actions module", () => {
         CROSSPAD_IDF_ROOT: "/home/user/GIT/platform-idf",
       }));
 
+      // crosspadCommit runs git through the local git() helper, which is
+      // runArgvStream (spawn, awaited) since v10 — so the fixture answers there.
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn(() => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
-      }));
-
-      // crosspadCommit uses spawnSync directly (via the local git() helper),
-      // not runCommand — so we must mock child_process for the status check.
-      vi.doMock("child_process", () => ({
-        spawnSync: vi.fn((cmd: string, args: string[]) => {
+        runArgvStream: vi.fn(async (cmd: string, args: string[]) => {
           if (cmd === "git" && args[0] === "status") {
-            return { stdout: "UU conflicted-file.cpp\n", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
+            return { success: true, stdout: "UU conflicted-file.cpp\n", stderr: "", exitCode: 0, durationMs: 0 };
           }
-          return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
+          return { success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
         }),
       }));
 
       vi.doMock("../utils/git.js", () => ({
-        getHead: vi.fn(() => "abc1234"),
-        listSubmodules: vi.fn(() => []),
-        findSubmodulePath: vi.fn(() => null),
+        getHead: vi.fn(async () => "abc1234"),
+        listSubmodules: vi.fn(async () => []),
+        findSubmodulePath: vi.fn(async () => null),
       }));
 
       vi.doMock("fs", () => ({
@@ -118,7 +114,7 @@ describe("repo-actions module", () => {
       }));
 
       const { crosspadCommit } = await import("./repo-actions.js");
-      const result = crosspadCommit("core", "test commit");
+      const result = await crosspadCommit("core", "test commit");
       expect(result.success).toBe(false);
       expect(result.error).toContain("Merge conflicts");
     });
@@ -133,26 +129,22 @@ describe("repo-actions module", () => {
       }));
 
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn(() => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
-      }));
-
-      vi.doMock("child_process", () => ({
-        spawnSync: vi.fn((cmd: string, args: string[]) => {
+        runArgvStream: vi.fn(async (cmd: string, args: string[]) => {
           if (cmd === "git" && args[0] === "status") {
             // working tree dirty but nothing staged
-            return { stdout: " M unstaged.cpp\n", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
+            return { success: true, stdout: " M unstaged.cpp\n", stderr: "", exitCode: 0, durationMs: 0 };
           }
           if (cmd === "git" && args[0] === "diff" && args.includes("--cached")) {
-            return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
+            return { success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
           }
-          return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
+          return { success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 };
         }),
       }));
 
       vi.doMock("../utils/git.js", () => ({
-        getHead: vi.fn(() => "abc1234"),
-        listSubmodules: vi.fn(() => []),
-        findSubmodulePath: vi.fn(() => null),
+        getHead: vi.fn(async () => "abc1234"),
+        listSubmodules: vi.fn(async () => []),
+        findSubmodulePath: vi.fn(async () => null),
       }));
 
       vi.doMock("fs", () => ({
@@ -165,7 +157,7 @@ describe("repo-actions module", () => {
       }));
 
       const { crosspadCommit } = await import("./repo-actions.js");
-      const result = crosspadCommit("core", "test commit");
+      const result = await crosspadCommit("core", "test commit");
       expect(result.success).toBe(false);
       expect(result.error).toContain("Nothing staged");
     });
@@ -186,25 +178,13 @@ describe("repo-actions module", () => {
       }));
 
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn(() => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
-      }));
-
-      vi.doMock("child_process", () => ({
-        spawnSync: vi.fn((cmd: string, args: string[]) => {
-          if (cmd === "git" && args[0] === "status") {
-            return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
-          }
-          if (cmd === "git" && args[0] === "diff" && args.includes("--cached")) {
-            return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
-          }
-          return { stdout: "", stderr: "", status: 0, signal: null, error: undefined, pid: 1, output: [] };
-        }),
+        runArgvStream: vi.fn(async () => ({ success: true, stdout: "", stderr: "", exitCode: 0, durationMs: 0 })),
       }));
 
       vi.doMock("../utils/git.js", () => ({
-        getHead: vi.fn(() => "abc1234"),
-        listSubmodules: vi.fn(() => []),
-        findSubmodulePath: vi.fn(() => null),
+        getHead: vi.fn(async () => "abc1234"),
+        listSubmodules: vi.fn(async () => []),
+        findSubmodulePath: vi.fn(async () => null),
       }));
 
       vi.doMock("fs", () => ({
@@ -217,7 +197,7 @@ describe("repo-actions module", () => {
       }));
 
       const { crosspadCommit } = await import("./repo-actions.js");
-      const result = crosspadCommit("gui", "test commit");
+      const result = await crosspadCommit("gui", "test commit");
       // The single vendored copy resolved (repo name came back canonicalized,
       // and we got past "unknown repo" into the normal staging check).
       expect(result.repo).toBe("crosspad-gui");
@@ -243,17 +223,17 @@ describe("repo-actions module", () => {
       }));
 
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn(() => ({ success: false, stdout: "", stderr: "", exitCode: 1, durationMs: 0 })),
+        runArgvStream: vi.fn(async () => ({ success: false, stdout: "", stderr: "", exitCode: 1, durationMs: 0 })),
       }));
       vi.doMock("../utils/git.js", () => ({
-        getHead: vi.fn(() => null),
-        listSubmodules: vi.fn(() => []),
-        findSubmodulePath: vi.fn(() => null),
+        getHead: vi.fn(async () => null),
+        listSubmodules: vi.fn(async () => []),
+        findSubmodulePath: vi.fn(async () => null),
       }));
       vi.doMock("fs", () => ({ default: { existsSync: () => false } }));
 
       const { crosspadCommit } = await import("./repo-actions.js");
-      const result = crosspadCommit("core", "test commit");
+      const result = await crosspadCommit("core", "test commit");
       expect(result.success).toBe(false);
       expect(result.error).toContain("vendored");
       expect(result.error).toContain("platform-idf");
@@ -272,17 +252,17 @@ describe("repo-actions module", () => {
       }));
 
       vi.doMock("../utils/exec.js", () => ({
-        runCommand: vi.fn(() => ({ success: false, stdout: "", stderr: "", exitCode: 1, durationMs: 0 })),
+        runArgvStream: vi.fn(async () => ({ success: false, stdout: "", stderr: "", exitCode: 1, durationMs: 0 })),
       }));
       vi.doMock("../utils/git.js", () => ({
-        getHead: vi.fn(() => null),
-        listSubmodules: vi.fn(() => []),
-        findSubmodulePath: vi.fn(() => null),
+        getHead: vi.fn(async () => null),
+        listSubmodules: vi.fn(async () => []),
+        findSubmodulePath: vi.fn(async () => null),
       }));
       vi.doMock("fs", () => ({ default: { existsSync: () => false } }));
 
       const { crosspadCommit } = await import("./repo-actions.js");
-      const result = crosspadCommit("gui", "test commit");
+      const result = await crosspadCommit("gui", "test commit");
       expect(result.success).toBe(false);
       expect(result.error).toContain("Unknown repo");
       expect(result.error).toContain("Available:");

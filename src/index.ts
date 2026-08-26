@@ -549,7 +549,7 @@ registerLegacy(
     outputSchema: O_BuildCheck,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse({ success: true, exe_path: _BIN_EXE, ...crosspadBuildCheck() })
+  async (_args: unknown, extra: any) => jsonResponse({ success: true, exe_path: _BIN_EXE, ...(await crosspadBuildCheck({ signal: extra?.signal })) })
 );
 
 registerLegacy(
@@ -1062,7 +1062,7 @@ registerLegacy(
     outputSchema: O_RepoStatus,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse({ success: true, ...crosspadReposStatus() })
+  async (_args: unknown, extra: any) => jsonResponse({ success: true, ...(await crosspadReposStatus({ signal: extra?.signal })) })
 );
 
 registerLegacy(
@@ -1078,8 +1078,8 @@ registerLegacy(
     outputSchema: O_RepoDiff,
     annotations: ANN_READ_ONLY,
   },
-  async ({ submodule, parent }) =>
-    jsonResponse({ success: true, ...crosspadDiffCore(submodule, parent) })
+  async ({ submodule, parent }, extra: any) =>
+    jsonResponse({ success: true, ...(await crosspadDiffCore(submodule, parent, { signal: extra?.signal })) })
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1098,8 +1098,8 @@ registerLegacy(
     outputSchema: O_SubmoduleUpdate,
     annotations: ANN_DESTRUCTIVE_OPEN,
   },
-  async ({ submodule, repo, branch }) =>
-    jsonResponse(crosspadSubmoduleUpdate(submodule, repo, branch))
+  async ({ submodule, repo, branch }, extra: any) =>
+    jsonResponse(await crosspadSubmoduleUpdate(submodule, repo, branch, { signal: extra?.signal }))
 );
 
 registerLegacy(
@@ -1115,8 +1115,8 @@ registerLegacy(
     outputSchema: O_Commit,
     annotations: ANN_DESTRUCTIVE,
   },
-  async ({ repo, message, files }) =>
-    jsonResponse(crosspadCommit(repo, message, files))
+  async ({ repo, message, files }, extra: any) =>
+    jsonResponse(await crosspadCommit(repo, message, files, { signal: extra?.signal }))
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1141,8 +1141,8 @@ registerLegacy(
     outputSchema: O_SearchSymbols,
     annotations: ANN_READ_ONLY,
   },
-  async ({ query, kind, repos, max_results, context_lines, include_vendored }) =>
-    jsonResponse({ success: true, ...crosspadSearchSymbols(query, kind, repos, max_results, context_lines, include_vendored) })
+  async ({ query, kind, repos, max_results, context_lines, include_vendored }, extra: any) =>
+    jsonResponse({ success: true, ...(await crosspadSearchSymbols(query, kind, repos, max_results, context_lines, include_vendored, { signal: extra?.signal })) })
 );
 
 registerLegacy(
@@ -1153,7 +1153,7 @@ registerLegacy(
     outputSchema: O_Architecture,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse({ success: true, ...crosspadInterfaces("list") })
+  async (_args: unknown, extra: any) => jsonResponse({ success: true, ...(await crosspadInterfaces("list", { signal: extra?.signal })) })
 );
 
 registerLegacy(
@@ -1169,7 +1169,7 @@ registerLegacy(
     annotations: ANN_READ_ONLY,
   },
   async ({ interface_name }) =>
-    jsonResponse({ success: true, ...crosspadInterfaces(`implementations ${interface_name}`) })
+    jsonResponse({ success: true, ...(await crosspadInterfaces(`implementations ${interface_name}`)) })
 );
 
 registerLegacy(
@@ -1180,7 +1180,7 @@ registerLegacy(
     outputSchema: O_Architecture,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse({ success: true, ...crosspadInterfaces("capabilities") })
+  async (_args: unknown, extra: any) => jsonResponse({ success: true, ...(await crosspadInterfaces("capabilities", { signal: extra?.signal })) })
 );
 
 registerLegacy(
@@ -1193,8 +1193,8 @@ registerLegacy(
     outputSchema: O_AppsSource,
     annotations: ANN_READ_ONLY,
   },
-  async ({ platform }) =>
-    jsonResponse({ success: true, apps: crosspadApps(platform) })
+  async ({ platform }, extra: any) =>
+    jsonResponse({ success: true, apps: await crosspadApps(platform, { signal: extra?.signal }) })
 );
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1303,6 +1303,7 @@ registerLegacy(
 import { isSimulatorRunning as _isSimRunning } from "./utils/remote-client.js";
 import { getRepos as _getRepos } from "./config.js";
 import { getHead as _getHead } from "./utils/git.js";
+import { mapLimit as _mapLimit, DEFAULT_CONCURRENCY as _DEFAULT_CONCURRENCY } from "./utils/async.js";
 
 server.resource(
   "crosspad-workspace",
@@ -1314,22 +1315,33 @@ server.resource(
   async () => {
     const repos = _getRepos();
     const repoSummary: Record<string, unknown> = {};
-    for (const [name, root] of Object.entries(repos)) {
-      const head = _getHead(root);
-      // Quick branch + dirty count via single-shot porcelain
-      const { runCommand: _runCmd } = await import("./utils/exec.js");
-      const branch = _runCmd("git rev-parse --abbrev-ref HEAD", root, 5000);
-      const dirty = _runCmd("git status --porcelain", root, 5000);
-      const dirtyCount = dirty.success
-        ? dirty.stdout.split("\n").filter((l) => l.trim().length > 0).length
-        : 0;
-      repoSummary[name] = {
-        path: root,
-        head: head ?? null,
-        branch: branch.success ? branch.stdout.trim() : null,
-        dirty_count: dirtyCount,
-      };
-    }
+    // One repo's three git reads run together, and the repos themselves run
+    // DEFAULT_CONCURRENCY at a time — none of it blocks the event loop.
+    const { git: _git } = await import("./utils/git.js");
+    const summaries = await _mapLimit(
+      Object.entries(repos),
+      _DEFAULT_CONCURRENCY,
+      async ([name, root]) => {
+        const [head, branch, dirty] = await Promise.all([
+          _getHead(root, { timeoutMs: 5000 }),
+          _git("git rev-parse --abbrev-ref HEAD", root, { timeoutMs: 5000 }),
+          _git("git status --porcelain", root, { timeoutMs: 5000 }),
+        ]);
+        const dirtyCount = dirty.success
+          ? dirty.stdout.split("\n").filter((l) => l.trim().length > 0).length
+          : 0;
+        return {
+          name,
+          value: {
+            path: root,
+            head: head ?? null,
+            branch: branch.success ? branch.stdout.trim() : null,
+            dirty_count: dirtyCount,
+          },
+        };
+      },
+    );
+    for (const { name, value } of summaries) repoSummary[name] = value;
     const simRunning = await _isSimRunning();
     const payload = {
       detected_repos: Object.keys(repos),
@@ -1484,7 +1496,7 @@ server.registerResource(
       };
     }
     const reposScope = repo === "all" ? ["all"] : [repo];
-    const result = crosspadSearchSymbols(symbol, "all", reposScope, 50, 0);
+    const result = await crosspadSearchSymbols(symbol, "all", reposScope, 50, 0);
     return {
       contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(result, null, 2) }],
     };

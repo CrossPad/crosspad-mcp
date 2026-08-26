@@ -1,8 +1,11 @@
 // src/tools/trace-doctor.ts
 import fs from "fs";
-import { runCommand } from "../utils/exec.js";
+import { runCommandStream } from "../utils/exec.js";
 import { resolveConfigValue, loadUserConfig } from "../utils/userConfig.js";
 import { STM_ELF_DEFAULT } from "../config.js";
+
+/** Capture a short command without blocking the event loop (spec §3.7). */
+const run = (cmd: string, timeoutMs: number) => runCommandStream(cmd, process.cwd(), () => {}, timeoutMs);
 
 // "error" is a synonym for "blocking" (PROTOCOL §11.7 spells the probe-presence
 // issue as severity:"error"); both stop `start`. `ok` treats them identically.
@@ -16,10 +19,12 @@ export interface DoctorIssue {
 }
 
 export interface DoctorProbe {
-  pyocdInstalled: () => boolean;
+  /** May be async — realProbe() spawns a python, which must not block. */
+  pyocdInstalled: () => boolean | Promise<boolean>;
   elfPath: () => string;
   elfExists: () => boolean;
-  stlinkProbe: () => { found: boolean; serial?: string; chipid?: string };
+  /** May be async — realProbe() spawns st-info, which must not block. */
+  stlinkProbe: () => { found: boolean; serial?: string; chipid?: string } | Promise<{ found: boolean; serial?: string; chipid?: string }>;
   udevRulesPresent: () => boolean;
   /** Which user-config keys are explicitly set (not on fallback). */
   configKeysSet: () => string[];
@@ -40,7 +45,7 @@ export interface DoctorResult {
 export async function runDoctor(p: DoctorProbe): Promise<DoctorResult> {
   const issues: DoctorIssue[] = [];
 
-  if (!p.pyocdInstalled()) {
+  if (!(await p.pyocdInstalled())) {
     issues.push({
       id: "pyocd_missing",
       severity: "blocking",
@@ -58,7 +63,7 @@ export async function runDoctor(p: DoctorProbe): Promise<DoctorResult> {
     });
   }
 
-  const probe = p.stlinkProbe();
+  const probe = await p.stlinkProbe();
   // st-info's negative is authoritative ONLY when the §11.7 probeList check
   // (`pyocd list` — the actual trace mechanism) isn't wired. stlinkProbe()
   // returns found:false when st-info is merely *not installed*, which must not
@@ -133,16 +138,16 @@ function resolvedPython(): string {
  */
 export function realProbe(): DoctorProbe {
   return {
-    pyocdInstalled: () => {
-      const r = runCommand(`${resolvedPython()} -c "import pyocd, elftools"`, process.cwd(), 10_000);
+    pyocdInstalled: async () => {
+      const r = await run(`${resolvedPython()} -c "import pyocd, elftools"`, 10_000);
       return r.success;
     },
     elfPath: resolvedElfPath,
     elfExists: () => {
       try { return fs.existsSync(resolvedElfPath()); } catch { return false; }
     },
-    stlinkProbe: () => {
-      const r = runCommand("st-info --probe", process.cwd(), 10_000);
+    stlinkProbe: async () => {
+      const r = await run("st-info --probe", 10_000);
       if (!r.success || !/Found \d+ stlink/i.test(r.stdout)) return { found: false };
       const serial = r.stdout.match(/serial:\s*([0-9A-Fa-f]+)/)?.[1];
       const chipid = r.stdout.match(/chipid:\s*(0x[0-9A-Fa-f]+)/)?.[1];
@@ -160,7 +165,7 @@ export function realProbe(): DoctorProbe {
     probeList: async () => {
       // `<python> -m pyocd list` prints one row per probe; "No available debug
       // probes" (or an empty table) when none are connected.
-      const py = runCommand(`${resolvedPython()} -m pyocd list`, process.cwd(), 8_000);
+      const py = await run(`${resolvedPython()} -m pyocd list`, 8_000);
       if (py.success) {
         const present = /\b0\d{6,}|STLink|ST-LINK|\bstlink\b/i.test(py.stdout) && !/no available debug probes/i.test(py.stdout);
         // pyocd prints a header row even with 0 probes; treat an explicit
@@ -169,7 +174,7 @@ export function realProbe(): DoctorProbe {
         return { present: present || hasRow, toolAvailable: true };
       }
       // pyocd absent/failed → try st-info.
-      const st = runCommand("st-info --probe", process.cwd(), 8_000);
+      const st = await run("st-info --probe", 8_000);
       if (st.success || st.stdout.length > 0) {
         const present = /Found [1-9]\d* stlink/i.test(st.stdout);
         // st-info ran (even "Found 0 stlink programmers" is a successful run).

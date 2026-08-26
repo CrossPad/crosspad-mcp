@@ -9,22 +9,23 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { getRepos, CROSSPAD_PC_ROOT, CROSSPAD_IDF_ROOT, findVendoredCopies, VendoredCopy } from "../config.js";
-import { runCommand } from "../utils/exec.js";
-import { spawnSync } from "child_process";
+import { runArgvStream } from "../utils/exec.js";
+
+/** Cancellation for the mutating repo operations (from the tool's extra.signal). */
+export interface RepoActionOpts {
+  signal?: AbortSignal;
+}
 
 /**
  * Run git in argv mode (no shell). Use for any git invocation that takes
- * user-controlled args (refs, paths). Returns ExecResult-shaped object so
- * call sites stay uniform.
+ * user-controlled args (refs, paths).
+ *
+ * v10: spawn, not spawnSync — a `git fetch origin` over a slow network used to
+ * freeze the whole server for its duration and could not be cancelled.
  */
-function git(args: string[], cwd: string, timeoutMs = 30_000) {
-  const r = spawnSync("git", args, { cwd, encoding: "utf-8", timeout: timeoutMs });
-  return {
-    success: r.status === 0,
-    stdout: (r.stdout ?? "").replace(/\r\n/g, "\n"),
-    stderr: (r.stderr ?? "").replace(/\r\n/g, "\n"),
-    exitCode: r.status ?? 1,
-  };
+async function git(args: string[], cwd: string, timeoutMs = 30_000, signal?: AbortSignal) {
+  const r = await runArgvStream("git", args, cwd, () => {}, timeoutMs, signal);
+  return { success: r.success, stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode };
 }
 import { getHead, listSubmodules, findSubmodulePath } from "../utils/git.js";
 
@@ -141,7 +142,7 @@ function explainUnresolvedRepo(repo: string): string {
 // SUBMODULE PATH RESOLUTION — dynamic via .gitmodules
 // ═══════════════════════════════════════════════════════════════════════
 
-function getSubmodulePath(repoRoot: string, submodule: string): string | null {
+function getSubmodulePath(repoRoot: string, submodule: string): Promise<string | null> {
   return findSubmodulePath(repoRoot, submodule);
 }
 
@@ -159,11 +160,12 @@ function getSubmodulePath(repoRoot: string, submodule: string): string | null {
  * 4. cd back to parent, git add <submodule>
  * 5. Report old→new SHA, commits pulled, files changed
  */
-export function crosspadSubmoduleUpdate(
+export async function crosspadSubmoduleUpdate(
   submodule: string,
   repo: string,
   branch: string = "main",
-): SubmoduleUpdateResult {
+  opts: RepoActionOpts = {},
+): Promise<SubmoduleUpdateResult> {
   const resolvedRepo = resolveRepo(repo);
   if (!resolvedRepo) {
     return {
@@ -179,9 +181,9 @@ export function crosspadSubmoduleUpdate(
     };
   }
 
-  const subPath = getSubmodulePath(resolvedRepo.root, submodule);
+  const subPath = await getSubmodulePath(resolvedRepo.root, submodule);
   if (!subPath) {
-    const knownSubs = Object.keys(listSubmodules(resolvedRepo.root));
+    const knownSubs = Object.keys(await listSubmodules(resolvedRepo.root));
     return {
       success: false,
       submodule,
@@ -211,10 +213,10 @@ export function crosspadSubmoduleUpdate(
   }
 
   // Get current SHA
-  const oldSha = getHead(fullSubPath);
+  const oldSha = await getHead(fullSubPath);
 
   // Fetch latest
-  const fetchResult = git(["fetch", "origin"], fullSubPath, 30_000);
+  const fetchResult = await git(["fetch", "origin"], fullSubPath, 30_000, opts.signal);
   if (!fetchResult.success) {
     return {
       success: false,
@@ -230,7 +232,7 @@ export function crosspadSubmoduleUpdate(
   }
 
   // Checkout target — argv mode keeps `branch` out of any shell.
-  const checkoutResult = git(["checkout", `origin/${branch}`], fullSubPath, 15_000);
+  const checkoutResult = await git(["checkout", `origin/${branch}`], fullSubPath, 15_000, opts.signal);
   if (!checkoutResult.success) {
     return {
       success: false,
@@ -246,7 +248,7 @@ export function crosspadSubmoduleUpdate(
   }
 
   // Get new SHA
-  const newSha = getHead(fullSubPath);
+  const newSha = await getHead(fullSubPath);
 
   // Count commits between old and new
   let commitsPulled = 0;
@@ -254,12 +256,12 @@ export function crosspadSubmoduleUpdate(
 
   if (oldSha && newSha && oldSha !== newSha) {
     const range = `${oldSha}..${newSha}`;
-    const countResult = git(["rev-list", "--count", range], fullSubPath);
+    const countResult = await git(["rev-list", "--count", range], fullSubPath, 30_000, opts.signal);
     if (countResult.success) {
       commitsPulled = parseInt(countResult.stdout.trim(), 10) || 0;
     }
 
-    const diffResult = git(["diff", "--name-only", range], fullSubPath);
+    const diffResult = await git(["diff", "--name-only", range], fullSubPath, 30_000, opts.signal);
     if (diffResult.success) {
       changedFiles = diffResult.stdout
         .trim()
@@ -269,7 +271,7 @@ export function crosspadSubmoduleUpdate(
   }
 
   // Stage the submodule update in parent repo
-  const addResult = git(["add", "--", subPath], resolvedRepo.root, 10_000);
+  const addResult = await git(["add", "--", subPath], resolvedRepo.root, 10_000, opts.signal);
 
   return {
     success: true,
@@ -296,11 +298,12 @@ export function crosspadSubmoduleUpdate(
  * - If no files specified, commits whatever is currently staged
  * - Never pushes to remote
  */
-export function crosspadCommit(
+export async function crosspadCommit(
   repo: string,
   message: string,
   files?: string[],
-): CommitResult {
+  opts: RepoActionOpts = {},
+): Promise<CommitResult> {
   const resolvedRepo = resolveRepo(repo);
   if (!resolvedRepo) {
     return {
@@ -314,7 +317,7 @@ export function crosspadCommit(
   }
 
   // Check for merge conflicts
-  const statusResult = git(["status", "--porcelain"], resolvedRepo.root);
+  const statusResult = await git(["status", "--porcelain"], resolvedRepo.root, 30_000, opts.signal);
   if (statusResult.success) {
     const conflicted = statusResult.stdout
       .split("\n")
@@ -345,10 +348,11 @@ export function crosspadCommit(
     if (files && files.length > 0) {
       const pathspecFile = path.join(scratchDir, "pathspec");
       fs.writeFileSync(pathspecFile, files.join("\n"), { encoding: "utf-8", mode: 0o600 });
-      const addResult = git(
+      const addResult = await git(
         ["add", `--pathspec-from-file=${pathspecFile}`],
         resolvedRepo.root,
         10_000,
+        opts.signal,
       );
       if (!addResult.success) {
         return {
@@ -363,7 +367,7 @@ export function crosspadCommit(
     }
 
     // Check something is staged
-    const diffResult = git(["diff", "--cached", "--name-only"], resolvedRepo.root);
+    const diffResult = await git(["diff", "--cached", "--name-only"], resolvedRepo.root, 30_000, opts.signal);
     const stagedFiles = diffResult.success
       ? diffResult.stdout.trim().split("\n").filter((l) => l.length > 0)
       : [];
@@ -383,10 +387,11 @@ export function crosspadCommit(
     // backticks) on both bash and Windows cmd.
     const msgFile = path.join(scratchDir, "commit.msg");
     fs.writeFileSync(msgFile, message, { encoding: "utf-8", mode: 0o600 });
-    const commitResult = git(
+    const commitResult = await git(
       ["commit", "-F", msgFile],
       resolvedRepo.root,
       30_000,
+      opts.signal,
     );
 
     if (!commitResult.success) {
@@ -401,7 +406,7 @@ export function crosspadCommit(
     }
 
     // Get the new commit hash
-    const hashResult = git(["rev-parse", "HEAD"], resolvedRepo.root);
+    const hashResult = await git(["rev-parse", "HEAD"], resolvedRepo.root, 30_000, opts.signal);
     const commitHash = hashResult.success ? hashResult.stdout.trim() : null;
 
     return {

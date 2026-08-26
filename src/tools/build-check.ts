@@ -1,8 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { CROSSPAD_PC_ROOT, BUILD_DIR, BIN_EXE } from "../config.js";
-import { runCommand } from "../utils/exec.js";
-import { getHead, getSubmodulePin, listSubmodules } from "../utils/git.js";
+import { git, getSubmodulePin, listSubmodules, type GitOpts } from "../utils/git.js";
 
 export interface BuildCheckResult {
   needs_reconfigure: boolean;
@@ -23,7 +22,7 @@ export interface BuildCheckResult {
  * - Did crosspad-core or crosspad-gui HEAD change vs pinned?
  * - Are there uncommitted changes in source?
  */
-export function crosspadBuildCheck(): BuildCheckResult {
+export async function crosspadBuildCheck(opts: GitOpts = {}): Promise<BuildCheckResult> {
   const reasons: string[] = [];
   let needsReconfigure = false;
   let needsRebuild = false;
@@ -48,7 +47,7 @@ export function crosspadBuildCheck(): BuildCheckResult {
 
   // Resolve submodule paths dynamically (handles both `crosspad-core` and
   // `lib/crosspad-core` layouts via .gitmodules)
-  const subs = listSubmodules(CROSSPAD_PC_ROOT);
+  const subs = await listSubmodules(CROSSPAD_PC_ROOT, opts);
   const corePath = subs["crosspad-core"]
     ? path.join(CROSSPAD_PC_ROOT, subs["crosspad-core"])
     : path.join(CROSSPAD_PC_ROOT, "crosspad-core");
@@ -107,14 +106,14 @@ export function crosspadBuildCheck(): BuildCheckResult {
   // Submodule changes (dev-mode aware)
   const submoduleChanges: Record<string, { pinned: string | null; current: string | null; changed: boolean }> = {};
   for (const sub of ["crosspad-core", "crosspad-gui"]) {
-    const pinned = getSubmodulePin(CROSSPAD_PC_ROOT, sub);
+    const pinned = await getSubmodulePin(CROSSPAD_PC_ROOT, sub, opts);
     const subRel = subs[sub] ?? sub;
     const subPath = path.join(CROSSPAD_PC_ROOT, subRel);
     let current: string | null = null;
 
     if (fs.existsSync(subPath)) {
       // In dev-mode (junction), get HEAD of the junction target
-      const result = runCommand("git rev-parse HEAD", subPath);
+      const result = await git("git rev-parse HEAD", subPath, opts);
       current = result.success ? result.stdout.trim() : null;
     }
 
@@ -128,7 +127,7 @@ export function crosspadBuildCheck(): BuildCheckResult {
 
     // Check for dirty files in submodule
     if (fs.existsSync(subPath)) {
-      const dirty = runCommand("git status --porcelain", subPath);
+      const dirty = await git("git status --porcelain", subPath, opts);
       if (dirty.success && dirty.stdout.trim().length > 0) {
         const dirtyCount = dirty.stdout.trim().split("\n").length;
         needsRebuild = true;
