@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "description": "Does the model use crosspad_* tools, or does it shell out? Each task is graded against a recorded transcript of tool calls by eval/grade.ts.",
+  "tasks": [
+    {
+      "id": "repo-status-not-git-status",
+      "prompt": "What's dirty across the CrossPad repos right now, and which submodule pins have drifted?",
+      "expected_tools": ["crosspad_repo_status"],
+      "forbidden_shell_patterns": ["\\bgit\\s+status\\b", "\\bgit\\s+-C\\b", "\\bgit\\s+submodule\\s+status\\b"]
+    },
+    {
+      "id": "symbols-not-grep",
+      "prompt": "Where is PadLedController defined, and which repos have a copy of it?",
+      "expected_tools": ["crosspad_search_symbols"],
+      "forbidden_shell_patterns": ["\\bgrep\\s+-[a-zA-Z]*r", "\\bgit\\s+grep\\b", "\\brg\\s", "\\back\\s", "\\bfind\\s+\\S+\\s+-name\\b"]
+    },
+    {
+      "id": "interfaces-not-find",
+      "prompt": "List the crosspad-core interfaces and tell me which classes implement IPadLogicHandler.",
+      "expected_tools": ["crosspad_list_interfaces", "crosspad_interface_implementations"],
+      "forbidden_shell_patterns": ["\\bls\\s+.*include/crosspad", "\\bfind\\s+\\S*crosspad-core", "\\bgit\\s+grep\\b", "\\bgrep\\s+-[a-zA-Z]*r"]
+    },
+    {
+      "id": "devices-not-lsusb",
+      "prompt": "Is a CrossPad plugged in, and which USB mode is it in?",
+      "expected_tools": ["crosspad_devices"],
+      "forbidden_shell_patterns": ["\\blsusb\\b", "\\bls\\s+/dev/tty", "\\bdmesg\\b", "\\bsystem_profiler\\b", "\\bmode -a\\b"]
+    },
+    {
+      "id": "console-not-idf-monitor",
+      "prompt": "The board reboots on startup — show me the boot log and tell me which required marker is missing.",
+      "expected_tools": ["crosspad_console"],
+      "forbidden_shell_patterns": ["idf\\.py\\s+monitor", "\\bcat\\s+/dev/tty", "\\bscreen\\s+/dev/tty", "\\bminicom\\b", "\\bpicocom\\b", "python3?\\s+\\S*tools/hil_smoke\\.py"]
+    },
+    {
+      "id": "build-not-idfpy",
+      "prompt": "Build the ESP-IDF firmware and tell me if it compiled clean.",
+      "expected_tools": ["crosspad_build"],
+      "forbidden_shell_patterns": ["idf\\.py\\s+build", "\\bninja\\b", "cmake\\s+--build", "\\bmake\\s+-j"]
+    },
+    {
+      "id": "flash-not-esptool",
+      "prompt": "Flash the firmware you just built over OTA and wait until it boots.",
+      "expected_tools": ["crosspad_flash", "crosspad_task"],
+      "forbidden_shell_patterns": ["idf\\.py\\s+.*flash", "\\besptool(\\.py)?\\b", "python3?\\s+\\S*tools/ota_flash\\.py", "python3?\\s+\\S*tools/requestBootloader\\.py", "\\bsleep\\s+\\d+"]
+    },
+    {
+      "id": "pad-hit-not-hil-script",
+      "prompt": "Press pad 3 with velocity 100 on the connected board and tell me whether the sampler played a voice.",
+      "expected_tools": ["crosspad_cdc"],
+      "forbidden_shell_patterns": ["python3?\\s+\\S*tools/hil_", "\\bamidi\\b", "python3?\\s+-c\\s+.*serial", "\\becho\\s+.*>\\s*/dev/tty"]
+    },
+    {
+      "id": "kit-load-not-serial-echo",
+      "prompt": "Load kit 8 on the device and confirm it finished loading rather than queueing behind another load.",
+      "expected_tools": ["crosspad_cdc"],
+      "forbidden_shell_patterns": ["\\becho\\s+.*KIT_LOAD", "python3?\\s+-c\\s+.*serial", "python3?\\s+\\S*tools/hil_kit_churn\\.py", "\\bcu\\s+-l\\b"]
+    },
+    {
+      "id": "missing-tool-enable-toolset",
+      "prompt": "I need to drive the encoder on the physical device but I only see the core tools. Get to a state where you can do it.",
+      "expected_tools": ["crosspad_toolsets", "crosspad_ui"],
+      "forbidden_shell_patterns": ["\\bnpx\\s+crosspad", "\\bnode\\s+\\S*dist/index\\.js", "claude\\s+mcp\\b", "\\bexport\\s+CROSSPAD_TOOLSETS"]
+    }
+  ]
+}
