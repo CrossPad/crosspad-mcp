@@ -20,15 +20,21 @@ const CDC_DANGER_VERBS = new Set(["bootloader_request", "stm_dfu"]);
 const CDC_DANGER_RAW_PREFIXES = ["BOOTLOADER_REQUEST", "STM_DFU", "OTA_BEGIN", "OTA_DELTA"];
 
 const cdcTier: TierFn = (args) => {
+  // crosspad_cdc takes a verb *family* plus an `action` (kit+status → kit_status);
+  // older call sites pass the full verb name in `verb` (and once, in `op`).
   const verb = str(args, "verb").toLowerCase();
+  const action = str(args, "action").toLowerCase();
   if (CDC_DANGER_VERBS.has(verb)) return "danger";
-  if (verb === "system" && CDC_DANGER_VERBS.has(str(args, "op").toLowerCase())) return "danger";
+  if (verb === "system" && (CDC_DANGER_VERBS.has(action) || CDC_DANGER_VERBS.has(str(args, "op").toLowerCase()))) {
+    return "danger";
+  }
   if (verb === "raw") {
     const cmd = str(args, "cmd").trim().toUpperCase();
     if (CDC_DANGER_RAW_PREFIXES.some((p) => cmd.startsWith(p))) return "danger";
     return "stimulus";
   }
-  if (CDC_READ_VERBS.has(verb)) return "read";
+  const candidates = [verb, action && `${verb}_${action}`, action];
+  if (candidates.some((c) => c !== "" && CDC_READ_VERBS.has(c))) return "read";
   return "stimulus";
 };
 
