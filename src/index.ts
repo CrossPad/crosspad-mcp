@@ -4,6 +4,22 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+// v10: response helpers, policy, toolsets and the tool registry. The 30 tools
+// below are still registered inline (moving 1 200 lines would have made this
+// release unreviewable); registerLegacy() captures them so registerAll() can
+// file each into its toolset.
+import { jsonResponse, ok, err } from "./response.js";
+import type { RegisteredTool, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { AnySchema, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { loadPolicy } from "./policy/policy.js";
+import { ToolsetManager, initialToolsets, hasReadOnlyFlag } from "./toolsets.js";
+import { registerAll, loadV10Modules } from "./registry.js";
+import type { ToolContext } from "./tool-context.js";
+import { getHilDaemon } from "./hil/daemon.js";
+import { jobs } from "./tasks.js";
+import { handles } from "./handles.js";
+
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -76,12 +92,41 @@ WHEN TO USE THESE TOOLS — in any conversation that touches a CrossPad repo, pr
 WHY: these tools resolve repos dynamically from env vars, parse build output into structured errors[], stream progress, and refuse unsafe operations. Manual shell equivalents will work but lose this scaffolding and frequently break across the 5 repos.
 
 DISCOVERY: if unsure whether a repo is detected, check the \`crosspad://workspace\` resource — it lists detected repos, current branches, dirty counts, and sim status.
+
+TOOLSETS: only the \`core\` toolset (devices, doctor, snapshot, build, flash, repo_status, toolsets, task) is visible at start. Other tools live in toolsets — device (cdc/console/ui/midi/usb_mode/audio_route), sim (run/kill/check/screenshot/input/stats/settings/test_run), code (search_symbols/list_interfaces/…), git (repo_diff/submodule_update/commit), apps (apps_*), trace (crosspad_trace), hil. If a tool you need is not listed, call crosspad_toolsets action=enable toolset=<name> and re-list tools; do NOT fall back to the shell. The server also accepts --toolsets a,b / CROSSPAD_TOOLSETS at startup and --read-only (hides every non-read tool).
+
+SAFETY: flash, bootloader/DFU requests, trace write/call are "danger" tier. In the default strict policy the tool returns resultType="confirmation_required" with a confirm_token instead of acting; re-issue the identical call with confirm_token to proceed (120 s), or the client is asked directly when it supports elicitation. A declined confirmation returns error code CANCELLED_BY_USER — do not retry it on your own.
 `.trim();
 
 export const server = new McpServer(
   { name: "crosspad", version },
   { capabilities: { logging: {}, resources: {} }, instructions: SERVER_INSTRUCTIONS }
 );
+
+// v9 tools are still registered inline below. Capturing them here lets
+// registerAll() file each one into its toolset (spec §3.1) without moving
+// 1 200 lines; the SDK's tools/list order is this file's order — stable,
+// which is what prompt caching needs.
+export const legacyTools = new Map<string, RegisteredTool>();
+function registerLegacy<
+  OutputArgs extends ZodRawShapeCompat | AnySchema,
+  InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined,
+>(
+  name: string,
+  config: {
+    title?: string;
+    description?: string;
+    inputSchema?: InputArgs;
+    outputSchema?: OutputArgs;
+    annotations?: ToolAnnotations;
+    _meta?: Record<string, unknown>;
+  },
+  cb: ToolCallback<InputArgs>,
+): RegisteredTool {
+  const tool = server.registerTool<OutputArgs, InputArgs>(name, config, cb);
+  legacyTools.set(name, tool);
+  return tool;
+}
 
 function makeStreamLogger(logger: string): OnLine {
   return (stream, line) => {
@@ -114,38 +159,6 @@ function makeProgressLogger(logger: string, extra: any): OnLine {
       })
       .catch(() => {});
   };
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// RESPONSE HELPERS — uniform { success, ...data, error? } envelope
-// MCP spec: tool-level errors must set `isError: true` on the result so the
-// client/LLM can distinguish them from successful tool calls.
-// ═══════════════════════════════════════════════════════════════════════
-
-function jsonResponse(data: object) {
-  // Emit structuredContent in addition to text content.
-  // - Clients with outputSchema validate structuredContent.
-  // - Clients without it ignore the field per spec.
-  // - LLM still sees the same JSON in `content` for backwards compat.
-  const dataAsRecord = data as Record<string, unknown>;
-  const result: {
-    content: Array<{ type: "text"; text: string }>;
-    structuredContent: Record<string, unknown>;
-    isError?: boolean;
-  } = {
-    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
-    structuredContent: dataAsRecord,
-  };
-  if (dataAsRecord.success === false) result.isError = true;
-  return result;
-}
-
-function ok(data: Record<string, unknown> = {}) {
-  return jsonResponse({ success: true, ...data });
-}
-
-function err(message: string, extra: Record<string, unknown> = {}) {
-  return jsonResponse({ success: false, error: message, ...extra });
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -475,7 +488,7 @@ const O_AppAction = {
 const BuildPlatform = z.enum(["pc", "idf", "stm"]).describe("Target platform: 'pc' = host simulator, 'idf' = ESP32-S3 firmware, 'stm' = STM32G0 firmware (CrossPad r20).");
 const PlatformPcOnly = z.enum(["pc"]).default("pc").describe("Platform — currently only 'pc' is supported here.");
 
-server.registerTool(
+registerLegacy(
   "crosspad_build",
   {
     description:
@@ -522,7 +535,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_run",
   {
     description: "[PC] Launch the built simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if one is already responding on the TCP control port (use force=true to override). Fails if binary not built — call crosspad_build first. Currently PC-only (IDF firmware doesn't run on the host).",
@@ -552,7 +565,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_kill",
   {
     description: "[PC sim] Stop the running PC simulator. Identifies the process by /proc/<pid>/exe match against the built binary (Linux) or pgrep -x basename (macOS/Windows), sends SIGTERM, waits up to 3s, then SIGKILL stragglers. Returns killed PIDs and whether anything still answers on the TCP control port. Currently PC-only.",
@@ -565,7 +578,7 @@ server.registerTool(
   async () => jsonResponse(await crosspadKill())
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_check",
   {
     description: "[PC] Health check for a build — detects stale exe, new sources missing from build system, dirty submodules. Use before crosspad_build to decide if rebuild needed. Currently PC-only.",
@@ -582,7 +595,7 @@ server.registerTool(
 // FLASH — unified UART/OTA into one tool with `transport` axis
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_flash",
   {
     description: "[ESP HW | STM HW] Flash firmware to a connected CrossPad device.\n" +
@@ -630,7 +643,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_log",
   {
     description:
@@ -669,7 +682,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_devices",
   {
     description: "[ESP HW] List all connected USB serial devices. Identifies CrossPad devices separately and tags each with `kind`: 'esp-native' (rev <2.0, ESP32-S3 native USB, VID 0x303a/PID 0x3456) or 'stm-bridge' (rev 2.0, STM32 composite CDC+MIDI bridge, VID 0x0483/PID 0x5740 — STM programs the ESP over LPUART2).",
@@ -696,7 +709,7 @@ const TraceAction = z.enum([
   "write", "call",
 ]);
 
-server.registerTool(
+registerLegacy(
   "crosspad_trace",
   {
     description:
@@ -940,7 +953,7 @@ server.registerTool(
 // TEST
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_test_run",
   {
     description: "[PC] Build and run the Catch2 test suite for crosspad-pc. PREFER THIS over invoking the test binary directly — configures cmake with BUILD_TESTING=ON, parses Catch2 output into passed/failed counts and errors, supports filter and list_only.",
@@ -963,7 +976,7 @@ server.registerTool(
 // SIM — screenshot
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_screenshot",
   {
     description:
@@ -1015,7 +1028,7 @@ server.registerTool(
 // SIM — input events
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_input",
   {
     description:
@@ -1086,7 +1099,7 @@ server.registerTool(
 // SIM — MIDI
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_midi",
   {
     description:
@@ -1144,7 +1157,7 @@ server.registerTool(
 // ESP HW — audio routing (SysEx 0x1D)
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_audio_route",
   {
     description:
@@ -1186,7 +1199,7 @@ server.registerTool(
 // SIM — runtime state
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_stats",
   {
     description: "[PC sim] Read runtime statistics from the running PC simulator: pad state, capabilities, heap, registered apps, active pad logic.",
@@ -1197,7 +1210,7 @@ server.registerTool(
   async () => jsonResponse((await crosspadStats()))
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_settings_get",
   {
     description: "[PC sim] Read settings from the running simulator.",
@@ -1212,7 +1225,7 @@ server.registerTool(
   async ({ category }) => jsonResponse((await crosspadSettingsGet(category)))
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_settings_set",
   {
     description: "[PC sim] Write a single setting on the running simulator.",
@@ -1232,7 +1245,7 @@ server.registerTool(
 // REPO — read-only
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_repo_status",
   {
     description: "Git status across ALL detected CrossPad repos in one call: branch, HEAD, dirty files, submodule sync state. PREFER THIS over running `git status` per repo — handles the 5-repo monorepo layout in one shot.",
@@ -1243,7 +1256,7 @@ server.registerTool(
   async () => jsonResponse({ success: true, ...crosspadReposStatus() })
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_repo_diff",
   {
     description: "Show submodule drift in a parent repo (crosspad-pc or platform-idf): commits ahead/behind pinned, changed files, uncommitted work. Use to inspect dev-mode work before pinning.",
@@ -1264,7 +1277,7 @@ server.registerTool(
 // REPO — mutations
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_submodule_update",
   {
     description: "Update a submodule in a parent repo to the latest commit on a tracking branch (git fetch + checkout origin/<branch> + stage). Destructive: discards local commits in the submodule that aren't on the remote branch.",
@@ -1280,7 +1293,7 @@ server.registerTool(
     jsonResponse(crosspadSubmoduleUpdate(submodule, repo, branch))
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_commit",
   {
     description: "Commit staged changes in a specific CrossPad repo. PREFER THIS over raw `git commit` — handles repo aliases (idf/pc/arduino/core/gui), refuses on merge conflicts, uses 0600 tempfiles for messages (no shell-quoting issues with quotes/newlines/backticks), and never pushes. Stages files[] first if supplied.",
@@ -1301,7 +1314,7 @@ server.registerTool(
 // CODE — search and analysis
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_search_symbols",
   {
     description: "Search for symbol DEFINITIONS (classes, functions, macros, enums, typedefs) across CrossPad repos via git grep. PREFER THIS over raw `grep -r` or `git grep` — it filters to definitions only (skips call sites/declarations), classifies kind, and aggregates across all repos automatically. Substring match: 'Foo' matches FooBar, MyFoo. Vendored/generated trees (lvgl, managed_components, thorvg, TFT_eSPI, STM Drivers/Middlewares/CMSIS, build, …) are skipped by default — pass include_vendored=true to scan them.",
@@ -1323,7 +1336,7 @@ server.registerTool(
     jsonResponse({ success: true, ...crosspadSearchSymbols(query, kind, repos, max_results, context_lines, include_vendored) })
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_list_interfaces",
   {
     description: "List all crosspad-core interfaces (I*-prefixed classes in crosspad-core/include/crosspad/).",
@@ -1334,7 +1347,7 @@ server.registerTool(
   async () => jsonResponse({ success: true, ...crosspadInterfaces("list") })
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_interface_implementations",
   {
     description: "Find all classes implementing a given interface across CrossPad repos. Returns className, file path, platform. Use crosspad_list_interfaces first if you don't know exact names.",
@@ -1350,7 +1363,7 @@ server.registerTool(
     jsonResponse({ success: true, ...crosspadInterfaces(`implementations ${interface_name}`) })
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_capabilities",
   {
     description: "List platform capability flags (Capability enum) and which capabilities each platform sets.",
@@ -1361,7 +1374,7 @@ server.registerTool(
   async () => jsonResponse({ success: true, ...crosspadInterfaces("capabilities") })
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_list_apps_source",
   {
     description: "List apps registered via REGISTER_APP() macro by scanning source files. Different from crosspad_apps_list (which reads the package registry).",
@@ -1379,7 +1392,7 @@ server.registerTool(
 // APPS — package manager (crosspad-apps registry)
 // ═══════════════════════════════════════════════════════════════════════
 
-server.registerTool(
+registerLegacy(
   "crosspad_apps_list",
   {
     description: "List apps from the crosspad-apps registry, aggregating installation status across all detected platform repos. Reads JSON; no Python required. Different from crosspad_list_apps_source (which scans REGISTER_APP() in source code).",
@@ -1394,7 +1407,7 @@ server.registerTool(
     jsonResponse(crosspadAppList(show_all))
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_apps_install",
   {
     description: "Install an app from the crosspad-apps registry as a git submodule. Requires gh CLI authenticated. Delegates to <repo>/{tools|scripts}/app_manager.py.",
@@ -1413,7 +1426,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_apps_remove",
   {
     description: "Remove an installed app submodule from a platform repo. Delegates to app_manager.py.",
@@ -1430,7 +1443,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_apps_update",
   {
     description:
@@ -1457,7 +1470,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+registerLegacy(
   "crosspad_apps_sync",
   {
     description: "Sync a platform's apps.json manifest with existing submodules (rebuild manifest from disk state).",
@@ -1667,6 +1680,26 @@ server.registerResource(
       contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(result, null, 2) }],
     };
   }
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// v10 WIRING — policy, toolsets, registry
+//
+// Everything above registered eagerly at import time; this block decides what
+// the client actually sees. `loadV10Registrars()` picks up the v10 tool modules
+// that exist in this tree — one that has not been written yet is skipped rather
+// than taking the server down with it.
+// ═══════════════════════════════════════════════════════════════════════
+
+const startupArgv = process.argv.slice(2);
+export const policy = loadPolicy({ env: process.env, readOnlyFlag: hasReadOnlyFlag(startupArgv) });
+export const toolContext: ToolContext = { daemon: getHilDaemon, policy, jobs, handles };
+export const toolsetManager = new ToolsetManager(server, policy);
+registerAll(server, toolContext, toolsetManager, legacyTools, await loadV10Modules());
+for (const ts of initialToolsets(startupArgv, process.env)) toolsetManager.enable(ts);
+console.error(
+  `crosspad-mcp v${version}: policy=${policy.mode} toolsets=${toolsetManager.enabled().join(",")}` +
+    (toolsetManager.hiddenTools().length ? ` hidden=${toolsetManager.hiddenTools().length}` : ""),
 );
 
 // ═══════════════════════════════════════════════════════════════════════

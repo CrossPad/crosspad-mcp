@@ -2,7 +2,17 @@
 // Client→Server protocol calls (structured output validation included).
 // Catches output-schema/result-shape drift that pure unit tests miss.
 
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { vi } from "vitest";
+
+// v10: index.ts reads policy + toolsets at import time. Pin both so this suite
+// sees every tool regardless of the developer's own ~/.config policy file.
+vi.hoisted(() => {
+  process.env.CROSSPAD_MCP_POLICY_FILE = "/nonexistent/crosspad-mcp/policy.json";
+  process.env.CROSSPAD_TOOLSETS = "all";
+  delete process.env.CROSSPAD_MCP_POLICY;
+});
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 
 // Mock the build implementations BEFORE importing index.ts so the registered
 // handlers route through these stubs. Mock factories run hoisted by vitest.
