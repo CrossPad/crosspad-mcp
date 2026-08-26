@@ -48,6 +48,7 @@ export const V10_MODULES: ModuleSpec[] = [
   { name: "crosspad_devices", toolset: "core", module: "./tools/devices.js", export: "registerDevicesTool" },
   { name: "crosspad_doctor", toolset: "core", module: "./tools/doctor.js", export: "registerDoctorTool" },
   { name: "crosspad_snapshot", toolset: "core", module: "./tools/snapshot.js", export: "registerSnapshotTool" },
+  { name: "crosspad_flash", toolset: "core", module: "./tools/flash.js", export: "registerFlashTool" },
   { name: "crosspad_cdc", toolset: "device", module: "./tools/cdc.js", export: "registerCdcTool" },
   { name: "crosspad_console", toolset: "device", module: "./tools/console.js", export: "registerConsoleTool" },
   { name: "crosspad_ui", toolset: "device", module: "./tools/ui.js", export: "registerUiTool" },

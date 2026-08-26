@@ -29,9 +29,7 @@ import { crosspadBuildCheck } from "./tools/build-check.js";
 import { BIN_EXE as _BIN_EXE } from "./config.js";
 import { crosspadLog } from "./tools/log.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
-import { crosspadIdfFlash, crosspadIdfOta } from "./tools/idf-flash.js";
 import { crosspadStmBuild } from "./tools/stm-build.js";
-import { crosspadStmFlash } from "./tools/stm-flash.js";
 import { crosspadIdfMonitor } from "./tools/idf-monitor.js";
 import { listDevices } from "./utils/device.js";
 import { crosspadTest } from "./tools/test.js";
@@ -265,19 +263,6 @@ const O_BuildCheck = {
   reasons: z.array(z.string()),
   exe_exists: z.boolean(),
   exe_path: z.string(),
-  ...ErrorField,
-};
-
-const O_Flash = {
-  success: z.boolean(),
-  method: z.enum(["uart", "ota", "swd", "dfu"]),
-  // ESP transports report the serial port; STM methods report the flasher
-  // binary + firmware path instead. Both kept optional so each path validates.
-  port: z.string().optional(),
-  programmer: z.string().optional(),
-  firmware_path: z.string().optional(),
-  duration_seconds: z.number(),
-  output_tail: z.array(z.string()),
   ...ErrorField,
 };
 
@@ -565,58 +550,6 @@ registerLegacy(
     annotations: ANN_READ_ONLY,
   },
   async () => jsonResponse({ success: true, exe_path: _BIN_EXE, ...crosspadBuildCheck() })
-);
-
-// ═══════════════════════════════════════════════════════════════════════
-// FLASH — unified UART/OTA into one tool with `transport` axis
-// ═══════════════════════════════════════════════════════════════════════
-
-registerLegacy(
-  "crosspad_flash",
-  {
-    description: "[ESP HW | STM HW] Flash firmware to a connected CrossPad device.\n" +
-      "target='esp' (default) → ESP32-S3 firmware (requires prior crosspad_build platform=idf):\n" +
-      "  • transport='uart' uses idf.py flash (device must be in bootloader mode).\n" +
-      "  • transport='ota' uses platform-idf/tools/ota_flash.py over USB CDC (no bootloader mode required).\n" +
-      "  Works on both CrossPad generations: rev <2.0 (ESP native USB) and rev 2.0 (port is the STM32 CDC bridge — STM emulates the esptool DTR/RTS auto-reset and forwards the flash to the ESP over LPUART2; rev-2.0 STM must be in passthrough mode, i.e. NOT booted with pad-4 held).\n" +
-      "target='stm' → STM32G0 firmware via STM32_Programmer_CLI (requires prior crosspad_build platform=stm):\n" +
-      "  • method='swd' flashes over ST-Link (SWD).\n" +
-      "  • method='dfu' flashes the USB DFU bootloader (board in ST system memory — hold pad 1 at boot or trigger boot_request_dfu).\n" +
-      "  Flasher resolved from config (stm_programmer_cli) → $STM32_PROG → PATH.",
-    inputSchema: {
-      target: z.enum(["esp", "stm"]).default("esp").describe("'esp' = ESP32-S3 (transport uart/ota); 'stm' = STM32G0 firmware via STM32_Programmer_CLI (method swd/dfu)."),
-      transport: z.enum(["uart", "ota"]).optional().describe("ESP only. 'uart' = bootloader-mode flash via idf.py; 'ota' = USB-CDC OTA flash via ota_flash.py."),
-      method: z.enum(["swd", "dfu"]).optional().describe("STM only. 'swd' = ST-Link/SWD; 'dfu' = USB DFU system bootloader."),
-      port: Port.optional(),
-      build_type: z.enum(["Debug", "Release", "RelWithDebInfo"]).optional()
-        .describe("STM only. Selects the build/<preset> dir for the default firmware binary. Defaults to Debug."),
-      firmware_path: z.string().optional()
-        .describe("Custom firmware binary path. ESP: OTA only, defaults to <idf-root>/build/CrossPad.bin. STM: defaults to <stm-root>/build/<preset>/CrossPad_STM32_r20.bin."),
-    },
-    outputSchema: O_Flash,
-    annotations: ANN_DESTRUCTIVE,
-  },
-  async ({ target, transport, method, port, build_type, firmware_path }, extra: any) => {
-    if (target === "stm") {
-      if (!method) return err("target='stm' requires 'method' (swd or dfu).");
-      if (transport) return err("Field 'transport' is ESP-only. For STM use 'method' (swd|dfu).");
-      if (port) return err("Field 'port' is ESP-only — STM flash addresses the ST-Link/DFU device, not a serial port.");
-      const onLine = makeProgressLogger(`flash-stm-${method}`, extra);
-      return jsonResponse(await crosspadStmFlash(method, build_type ?? "Debug", firmware_path, onLine, extra.signal));
-    }
-    // esp
-    if (method) return err("Field 'method' is STM-only. For ESP use 'transport' (uart|ota).");
-    if (build_type) return err("Field 'build_type' is STM-only (ESP build type comes from sdkconfig).");
-    if (!transport) return err("target='esp' requires 'transport' (uart or ota).");
-    if (transport === "uart") {
-      if (firmware_path) return err("Field 'firmware_path' is OTA-only — UART flash always uses the active build dir.");
-      const onLine = makeProgressLogger("flash-uart", extra);
-      return jsonResponse(await crosspadIdfFlash(port, onLine, extra.signal));
-    }
-    // ota
-    const onLine = makeProgressLogger("flash-ota", extra);
-    return jsonResponse(await crosspadIdfOta(port, firmware_path, onLine, extra.signal));
-  }
 );
 
 registerLegacy(

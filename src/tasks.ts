@@ -43,6 +43,59 @@ interface Job {
 export const RETENTION_MS = 3_600_000;
 export const POLL_INTERVAL_MS = 500;
 
+/**
+ * Poll one daemon-side task ("task_N" from ota.flash / scenario.run) to its
+ * terminal state, forwarding progress. Abort forwards `task.cancel` once and
+ * keeps polling so the daemon's own `cancelled` state is the one observed.
+ * Factored out of JobRegistry.mirror() so flash can compose it with a boot
+ * wait inside a single job — there is exactly one poll loop in this code base.
+ */
+export function pumpDaemonTask(
+  daemon: DaemonLike,
+  daemonTask: string,
+  signal: AbortSignal,
+  progress: ProgressFn,
+  pollMs: number = POLL_INTERVAL_MS,
+): Promise<unknown> {
+  return new Promise<unknown>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelSent = false;
+    const poll = async (): Promise<void> => {
+      let st;
+      try {
+        st = TaskStatusSchema.parse(await daemon.request("task.status", { task: daemonTask }));
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      if (typeof st.progress === "number") {
+        progress(st.progress, typeof st.total === "number" ? st.total : undefined, st.message ?? "");
+      }
+      if (st.status === "completed") { resolve(st.result); return; }
+      if (st.status === "failed") {
+        reject(new HilError(
+          st.error?.code ?? "TASK_FAILED",
+          st.error?.message ?? `daemon task ${daemonTask} failed`,
+          st.error?.hint ?? undefined,
+        ));
+        return;
+      }
+      if (st.status === "cancelled") { reject(new HilError("CANCELLED", `daemon task ${daemonTask} cancelled`)); return; }
+      timer = setTimeout(() => { void poll(); }, pollMs);
+    };
+    signal.addEventListener("abort", () => {
+      if (cancelSent) return;
+      cancelSent = true;
+      daemon.request("task.cancel", { task: daemonTask }).catch(() => {});
+      if (timer === null) return;
+      clearTimeout(timer);
+      timer = null;
+      void poll();
+    }, { once: true });
+    void poll();
+  });
+}
+
 export class JobRegistry {
   private jobs = new Map<string, Job>();
   private seq = 1;
@@ -100,39 +153,7 @@ export class JobRegistry {
 
   /** Mirror a daemon task ("task_N" from scenario.run / ota.flash) as a local job. */
   mirror(daemon: DaemonLike, daemonTask: string, kind: string, pollIntervalMs: number = POLL_INTERVAL_MS): string {
-    const id = this.create(kind, (signal, progress) => new Promise<unknown>((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const poll = async (): Promise<void> => {
-        let st;
-        try {
-          const raw = await daemon.request("task.status", { task: daemonTask });
-          st = TaskStatusSchema.parse(raw);
-        } catch (e) {
-          reject(e);
-          return;
-        }
-        if (typeof st.progress === "number") {
-          progress(st.progress, typeof st.total === "number" ? st.total : undefined, st.message ?? "");
-        }
-        if (st.status === "completed") { resolve(st.result); return; }
-        if (st.status === "failed") {
-          reject(new HilError(st.error?.code ?? "TASK_FAILED", st.error?.message ?? `daemon task ${daemonTask} failed`, st.error?.hint ?? undefined));
-          return;
-        }
-        if (st.status === "cancelled") { reject(new HilError("CANCELLED", `daemon task ${daemonTask} cancelled`)); return; }
-        timer = setTimeout(() => { void poll(); }, pollIntervalMs);
-      };
-      signal.addEventListener("abort", () => {
-        // Keep polling after forwarding the cancel so the final daemon state
-        // (cancelled) is observed; the registry marks us cancelled either way.
-        daemon.request("task.cancel", { task: daemonTask }).catch(() => {});
-        if (timer === null) return;
-        clearTimeout(timer);
-        timer = null;
-        void poll();
-      }, { once: true });
-      void poll();
-    }));
+    const id = this.create(kind, (signal, progress) => pumpDaemonTask(daemon, daemonTask, signal, progress, pollIntervalMs));
     const job = this.jobs.get(id)!;
     job.status.daemonTask = daemonTask;
     return id;
