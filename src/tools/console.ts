@@ -79,7 +79,7 @@ export const O_Console = {
   device: z.string().optional(),
   handle: z.string().optional(),
   port: z.string().optional(),
-  log_path: z.string().optional(),
+  log_path: z.string().nullish(),
   log_uri: z.string().optional(),
   lines: ReadResultSchema.shape.lines.optional(),
   next_seq: z.number().int().optional(),
@@ -93,6 +93,14 @@ export const O_Console = {
   ts: z.number().optional(),
   error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
   details: z.record(z.string(), z.unknown()).optional(),
+  // The snapshot action returns the parser's whole state (fatals, reboots,
+  // markers_seen, heap, kit_requests, cdc_drops, ...). Pinning those field by
+  // field would break the tool every time the console parser learns something
+  // new, so the snapshot travels as one open object.
+  snapshot: z.record(z.string(), z.unknown()).optional(),
+  fatals: z.array(z.unknown()).optional(),
+  reboots: z.number().int().optional(),
+  cdc_drops: z.number().int().optional(),
 };
 
 /** Append the console-log resource_link to a tool result. */
@@ -125,6 +133,12 @@ async function resolveDeviceId(ctx: ToolContext, arg: string | undefined, port: 
     }
   } catch { /* fall through */ }
   return arg ?? port;
+}
+
+/** Where a console log goes when the caller did not choose: hil_logs/console_<device>_<ts>.log */
+export function defaultConsoleLogPath(device: string, now: number = Date.now()): string {
+  const stamp = new Date(now).toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "_");
+  return `hil_logs/console_${device}_${stamp}.log`;
 }
 
 export function registerConsoleTool(server: McpServer, ctx: ToolContext): RegisteredTool {
@@ -174,7 +188,10 @@ export function registerConsoleTool(server: McpServer, ctx: ToolContext): Regist
           const opArgs: Record<string, unknown> = {};
           if (args.device !== undefined) opArgs.device = args.device;
           if (args.reset !== undefined) opArgs.reset = args.reset;
-          if (args.log_to !== undefined) opArgs.log_to = args.log_to;
+          // The tool promises a resource_link to the log, so a log must exist:
+          // name one ourselves when the caller did not (the daemon logs only
+          // where it is told to).
+          opArgs.log_to = args.log_to ?? defaultConsoleLogPath(args.device ?? "device");
           const r = await daemon.request<{ handle: string; port: string; log_path: string }>("console.open", opArgs, { signal, timeoutMs: 20_000 });
           const device = await resolveDeviceId(ctx, args.device, r.port, signal);
           ctx.handles.register(r.handle, { kind: "console", device });
@@ -226,7 +243,7 @@ export function registerConsoleTool(server: McpServer, ctx: ToolContext): Regist
 
         if (args.action === "snapshot") {
           const r = await daemon.request<Record<string, unknown>>("console.snapshot", { handle: args.handle }, { signal, timeoutMs: 10_000 });
-          return withLogLink(jsonResponse({ success: true, action: "snapshot", device, handle: args.handle, ...r, log_uri: consoleLogUri(device), ts: Date.now() }), device);
+          return withLogLink(jsonResponse({ success: true, action: "snapshot", device, handle: args.handle, snapshot: r as Record<string, unknown>, log_uri: consoleLogUri(device), ts: Date.now() }), device);
         }
 
         // close
