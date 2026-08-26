@@ -413,7 +413,7 @@ clangd-backed `crosspad_symbol`, `docs_search`, `architecture` merge, eval expan
 ## 11. Follow-ups outside this spec (each its own decision)
 
 **Simulator (`crosspad-pc`)**: `enc_group`/`ui_state`, `app_list/start/stop`, `kit_list/load/status`, `led_state` (physical colours), `pad_pressure`, `midi_cc/program_change` through the real inbound path, length-prefixed JSON framing and a real parser, `--remote-port`, headless mode, fix the `lcd` crop.
-**Firmware (`platform-idf`)**: `LCD_DUMP` over CDC (RLE framebuffer, ~50 KB) so the device gets a screenshot; SysEx verb for audio presets; `hil_control.h` doc block regenerated from code; a generator for `knowledge/cdc.yaml` and boot markers.
+**Firmware (`platform-idf`)**: `LCD_DUMP` over CDC (RLE framebuffer, ~50 KB) so the device gets a screenshot; **touch injection `TOUCH_DOWN x y` / `TOUCH_MOVE x y` / `TOUCH_UP`** (held state, not an atomic tap — a slider with `LV_OBJ_FLAG_ADV_HITTEST` only moves on a drag past `scroll_limit`, and PRESSED-vs-CLICKED regressions in the quick-settings drawer are only testable with a held point; inject through the BSP touch `read_cb` via `lv_async_call_locked`, like `async_enc_rotate`) — today every touch-field change needs a human finger on the board; SysEx verb for audio presets; `hil_control.h` doc block regenerated from code; a generator for `knowledge/cdc.yaml` and boot markers.
 **Docs (`crosspad-docs`)**: HIL page regenerated from the catalog; MCP page from `tools/list`.
 
 ---
