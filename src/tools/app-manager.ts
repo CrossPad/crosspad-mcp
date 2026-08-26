@@ -68,13 +68,15 @@ export interface AppActionResult {
   app_name?: string;
   output: string;
   error?: string;
+  /** What the caller must do next for the change to take effect. */
+  next?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 // PLATFORM REGISTRY — maps repo names to platform labels and paths
 // ═══════════════════════════════════════════════════════════════════════
 
-interface PlatformInfo {
+export interface PlatformInfo {
   label: string;
   root: string;
   scriptDir: string; // relative path to app_manager.py's directory
@@ -380,6 +382,27 @@ async function runPythonAction(
     };
   }
 
+  // The app manager's own safety net (track policy, "never run over local
+  // work", backups) lives behind `idf.py app-*`; calling AppManager directly
+  // walks past it. Rather than silently doing that, check the same state first
+  // and refuse when the app has work that an install/update would destroy.
+  if (MUTATING_ACTIONS.has(action) && appName) {
+    const guard = await appGuard(info, appName, signal);
+    if (guard && !guard.safe) {
+      return {
+        success: false,
+        action,
+        platform: info.label,
+        app_name: appName,
+        output: guard.detail,
+        error:
+          `${appName} has local work that ${action} would run over (${guard.reason}). ` +
+          `Commit or stash it, or use \`idf.py app-${action} --app ${appName} --force\`, ` +
+          `which snapshots to .crosspad/backups/ before proceeding.`,
+      };
+    }
+  }
+
   // argv mode — script body passed as a single arg to `python3 -c`.
   const script = buildPythonScript(info.root, info.scriptDir, method, args);
   const sink: OnLine = onLine ?? (() => {});
@@ -394,7 +417,50 @@ async function runPythonAction(
     app_name: appName,
     output: result.stdout,
     error: result.success ? undefined : result.stderr || result.stdout,
+    // CMake globs the app directories at configure time, so a plain build will
+    // not see an app that just appeared or vanished. Saying so is the difference
+    // between "it does not show up" and a five-minute detour.
+    ...(result.success && MUTATING_ACTIONS.has(action)
+      ? { next: "idf.py fullclean && idf.py build — required after adding or removing an app directory" }
+      : {}),
   };
+}
+
+/** install/remove/update rewrite the submodule; list/sync/status do not. */
+const MUTATING_ACTIONS = new Set(["install", "remove", "update"]);
+
+export interface AppGuardVerdict {
+  safe: boolean;
+  reason: string;
+  detail: string;
+}
+
+/**
+ * Is this app safe to overwrite? Dirty tree, unpushed commits or a detached
+ * branch all mean "no". Returns null when the app is not a checkout yet
+ * (a fresh install has nothing to lose).
+ */
+export async function appGuard(
+  info: PlatformInfo,
+  appName: string,
+  signal?: AbortSignal,
+): Promise<AppGuardVerdict | null> {
+  const dir = path.join(info.root, "components", `crosspad-${appName}`);
+  if (!fs.existsSync(path.join(dir, ".git"))) return null;
+
+  const status = await runArgvStream("git", ["status", "--porcelain"], dir, () => {}, 20_000, signal);
+  const dirty = status.stdout.trim();
+  if (dirty) {
+    return { safe: false, reason: "uncommitted changes", detail: dirty.split("\n").slice(0, 20).join("\n") };
+  }
+  const ahead = await runArgvStream(
+    "git", ["log", "--oneline", "@{upstream}..HEAD"], dir, () => {}, 20_000, signal,
+  );
+  // No upstream at all is not "ahead"; git reports that on stderr.
+  if (ahead.success && ahead.stdout.trim()) {
+    return { safe: false, reason: "commits not pushed", detail: ahead.stdout.trim() };
+  }
+  return { safe: true, reason: "clean", detail: "" };
 }
 
 export async function crosspadAppInstall(
