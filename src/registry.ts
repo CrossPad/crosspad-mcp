@@ -16,6 +16,7 @@ import { registerTaskTool } from "./tools/task.js";
 import { registerKnowledgeResources } from "./resources/knowledge.js";
 import { registerPrompts } from "./prompts.js";
 import { registerIntrospectionResources } from "./resources/introspect.js";
+import { registerSkillResources } from "./resources/skills.js";
 
 /** A v10 tool module's registration entry point, plus where the tool belongs. */
 export interface ToolRegistrar {
@@ -173,6 +174,9 @@ export function registerAll(
   // Parsed from the crosspad-core headers, so they cannot drift from the
   // firmware; each read is mtime-checked rather than cached for the process.
   registerIntrospectionResources(server, ctx);
+  // The skill pages carry the hardware traps; serving them means a client
+  // that never installs the plugin still gets them.
+  registerSkillResources(server, ctx);
 
   // ── prompts (user-selectable workflows; no tool-schema cost either) ──
   registerPrompts(server);
