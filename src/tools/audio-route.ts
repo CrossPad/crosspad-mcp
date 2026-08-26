@@ -20,7 +20,7 @@ import { listHilDevices, pickDevice, type DaemonRequester } from "../hil/select.
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { requireConfirmation } from "../policy/confirm.js";
+import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, type ToolResult } from "../tool-result.js";
 
 export type { DaemonRequester };
@@ -183,6 +183,7 @@ export const AudioRouteInput = z.object({
 export type AudioRouteArgs = z.infer<typeof AudioRouteInput>;
 
 export const O_AudioRoute = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   sent: z.array(z.string()).optional(),
   state: z.object({

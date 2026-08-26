@@ -1,3 +1,4 @@
+import { z } from "zod";
 // Confirmation that does not depend on the client (spec §4.2).
 //  1. Client declares `elicitation` → elicitInput form, decline → CANCELLED_BY_USER.
 //  2. Otherwise → {resultType:"confirmation_required", confirmation:{token,…}},
@@ -55,6 +56,16 @@ export function verifyToken(token: string, tool: string, args: Record<string, un
   return expected.length === given.length && timingSafeEqual(expected, given);
 }
 
+/** Output-schema fields a confirmation gate adds to any tool's result. */
+export const CONFIRMATION_OUTPUT = {
+  resultType: z.string().optional(),
+  confirmation: z
+    .object({ token: z.string(), expires_in_s: z.number(), summary: z.string() })
+    .optional(),
+  tool: z.string().optional(),
+  hint: z.string().optional(),
+};
+
 export type ConfirmationOutcome =
   | { status: "approved" }
   | { status: "declined" }
@@ -62,12 +73,21 @@ export type ConfirmationOutcome =
 
 function tokenResult(tool: string, args: Record<string, unknown>, summary: string): CallToolResult {
   const token = mintToken(tool, args);
-  return jsonResponse({
+  const payload = {
+    // Every tool's outputSchema requires `success`, and nothing was performed.
+    success: false,
     resultType: "confirmation_required",
     confirmation: { token, expires_in_s: CONFIRM_TTL_S, summary },
     tool,
     hint: `Nothing was performed. Re-issue the identical ${tool} call with confirm_token="${token}" within ${CONFIRM_TTL_S} s to proceed.`,
-  });
+  };
+  // Deliberately NOT isError: a confirmation gate is a question, not a failure,
+  // and a model that reads it as a failure will report the flash as broken
+  // instead of asking for approval.
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+    structuredContent: payload,
+  };
 }
 
 function clientHasElicitation(server: McpServer): boolean {

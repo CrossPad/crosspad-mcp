@@ -17,7 +17,7 @@ import { pumpDaemonTask, type ProgressFn } from "../tasks.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { requireConfirmation } from "../policy/confirm.js";
+import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
 import { CROSSPAD_IDF_ROOT, CROSSPAD_STM_ROOT, stmArtifact, type StmPreset } from "../config.js";
 import { crosspadIdfFlash } from "./idf-flash.js";
@@ -373,6 +373,7 @@ export const FlashInput = z.object({
 export type FlashArgs = z.infer<typeof FlashInput>;
 
 export const O_Flash = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   preflight: z.record(z.string(), z.unknown()).optional(),
   task: z.string().optional(),

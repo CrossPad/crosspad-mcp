@@ -11,7 +11,7 @@ import { SnapshotSchema } from "../hil/schemas.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { requireConfirmation } from "../policy/confirm.js";
+import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
 import { takeDeviceSnapshot } from "./snapshot.js";
 
@@ -51,6 +51,7 @@ export const UiInput = z.discriminatedUnion("action", [
 export type UiArgs = z.infer<typeof UiInput>;
 
 export const O_Ui = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   action: z.string().optional(),
   device: z.string().optional(),

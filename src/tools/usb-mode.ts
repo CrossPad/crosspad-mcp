@@ -12,7 +12,7 @@ import { listHilDevices, pickDevice } from "../hil/select.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { requireConfirmation } from "../policy/confirm.js";
+import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
 
 export const TOOL_NAME = "crosspad_usb_mode";
@@ -28,6 +28,7 @@ export const UsbModeInput = z.object({
 export type UsbModeArgs = z.infer<typeof UsbModeInput>;
 
 export const O_UsbMode = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   action: z.enum(["get", "set"]).optional(),
   device: z.string().optional(),

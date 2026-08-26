@@ -9,7 +9,7 @@ import { ReplySchema } from "../hil/schemas.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { requireConfirmation } from "../policy/confirm.js";
+import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
 
 export const TOOL_NAME = "crosspad_cdc";
@@ -101,6 +101,7 @@ export const CdcInput = z.discriminatedUnion("verb", [
 export type CdcArgs = z.infer<typeof CdcInput>;
 
 export const O_Cdc = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   device: z.string().optional(),
   verb: z.string().optional(),

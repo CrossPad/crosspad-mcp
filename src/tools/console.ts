@@ -11,7 +11,7 @@ import { consoleLogs } from "../hil/console-logs.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
-import { requireConfirmation } from "../policy/confirm.js";
+import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
 
 export const TOOL_NAME = "crosspad_console";
@@ -74,6 +74,7 @@ export const ConsoleInput = z.discriminatedUnion("action", [
 export type ConsoleArgs = z.infer<typeof ConsoleInput>;
 
 export const O_Console = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   action: z.string().optional(),
   device: z.string().optional(),

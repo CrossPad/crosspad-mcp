@@ -11,7 +11,7 @@ import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server
 import type { ToolContext } from "../tool-context.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { decide } from "../policy/policy.js";
-import { requireConfirmation } from "../policy/confirm.js";
+import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
 import { HilError } from "../hil/daemon.js";
 
@@ -224,6 +224,7 @@ export const MidiInput = z.discriminatedUnion("target", [
 export type MidiArgs = z.infer<typeof MidiInput>;
 
 export const O_Midi = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   target: z.enum(["device", "sim"]).optional(),
   action: z.string().optional(),
