@@ -382,10 +382,11 @@ async function runPythonAction(
     };
   }
 
-  // The app manager's own safety net (track policy, "never run over local
-  // work", backups) lives behind `idf.py app-*`; calling AppManager directly
-  // walks past it. Rather than silently doing that, check the same state first
-  // and refuse when the app has work that an install/update would destroy.
+  // AppManager's own guard refuses an app that is dirty, ahead of origin or on
+  // a fork — but only for the operations it considers destructive, and it is
+  // reached through several layers of registry and manifest work first. Check
+  // the same state up front so a call that would destroy local work is refused
+  // before anything is fetched, and with a reason the caller can read.
   if (MUTATING_ACTIONS.has(action) && appName) {
     const guard = await appGuard(info, appName, signal);
     if (guard && !guard.safe) {

@@ -26,12 +26,12 @@ export const TOOLSETS: Record<string, string[]> = {
     "crosspad_settings_get", "crosspad_settings_set", "crosspad_test_run",
   ],
   code: [
-    "crosspad_docs_search",
+    "crosspad_docs_search", "crosspad_architecture",
     "crosspad_search_symbols", "crosspad_list_interfaces", "crosspad_interface_implementations",
     "crosspad_capabilities", "crosspad_list_apps_source",
   ],
   git: ["crosspad_repo_diff", "crosspad_submodule_update", "crosspad_commit"],
-  apps: ["crosspad_apps_list", "crosspad_apps_install", "crosspad_apps_remove", "crosspad_apps_update", "crosspad_apps_sync"],
+  apps: ["crosspad_apps", "crosspad_apps_list", "crosspad_apps_install", "crosspad_apps_remove", "crosspad_apps_update", "crosspad_apps_sync"],
   trace: ["crosspad_trace"],
 };
 

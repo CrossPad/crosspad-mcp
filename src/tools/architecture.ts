@@ -1,8 +1,13 @@
 import fs from "fs";
 import path from "path";
+import { z } from "zod";
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getRepos, resolveCrosspadCore } from "../config.js";
 import { git, type GitOpts } from "../utils/git.js";
 import { mapLimit, DEFAULT_CONCURRENCY } from "../utils/async.js";
+import type { ToolContext } from "../tool-context.js";
+import { annotationsFor, tierOf } from "../policy/tiers.js";
+import { errorResult, jsonResponse, type ToolResult } from "../tool-result.js";
 
 // --- crosspad_interfaces ---
 
@@ -206,6 +211,119 @@ export async function crosspadInterfaces(
   return {
     error: `Unknown query: "${query}". Use "list", "implementations <InterfaceName>", or "capabilities".`,
   };
+}
+
+// --- crosspad_architecture (v10 front door) ---
+//
+// One tool where v9 had three. `crosspad_list_interfaces`,
+// `crosspad_interface_implementations` and `crosspad_capabilities` answered
+// three questions about the same thing — the crosspad-core abstraction layer —
+// and cost three tool schemas of context to do it. This is a new front door on
+// the same `crosspadInterfaces()` implementation, not a second one: the v9
+// names stay registered so existing call sites keep working.
+
+export const ARCHITECTURE_TOOL = "crosspad_architecture";
+
+/** Interface names are `I` + PascalCase in crosspad-core; anything else is a typo. */
+const InterfaceName = z
+  .string()
+  .min(1)
+  .regex(/^I[A-Z][A-Za-z0-9_]*$/, "Interface name must start with 'I' followed by an uppercase letter (e.g. 'IDisplay').")
+  .describe("Interface name — MUST start with 'I' and use the exact crosspad-core casing (e.g. 'IDisplay', 'IPadLogicHandler'). Not 'Display', not 'iDisplay'.");
+
+// Advertised shape (the SDK cannot publish a JSON schema for a top-level
+// union); ArchitectureInput below is what actually validates.
+export const ArchitectureInputShape = {
+  action: z
+    .enum(["interfaces", "implementations", "capabilities"])
+    .describe("interfaces = list crosspad-core interfaces; implementations = find classes implementing one; capabilities = platform capability flags"),
+  interface_name: InterfaceName.optional().describe("Required by action=implementations; ignored otherwise"),
+};
+
+export const ArchitectureInput = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("interfaces") }),
+  z.object({ action: z.literal("implementations"), interface_name: InterfaceName }),
+  z.object({ action: z.literal("capabilities") }),
+]);
+export type ArchitectureArgs = z.infer<typeof ArchitectureInput>;
+
+export const O_Architecture = {
+  success: z.boolean(),
+  action: z.string().optional(),
+  // The per-action payload lives here rather than being spread across this
+  // schema: three actions with three different shapes cannot all be declared
+  // in one closed record without the outputSchema rejecting whichever ran.
+  result: z.record(z.string(), z.unknown()).optional(),
+  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+};
+
+export type ArchitectureOutcome =
+  | { ok: true; result: Record<string, unknown> }
+  | { ok: false; message: string };
+
+/**
+ * Dispatch an action onto the v9 implementation. Takes a loose `action` on
+ * purpose: a client that predates the enum can reach this without the zod
+ * layer, and an unknown action must come back as an error rather than as
+ * `undefined`.
+ */
+export async function runArchitecture(
+  args: { action: string; interface_name?: string },
+  opts: GitOpts = {},
+): Promise<ArchitectureOutcome> {
+  switch (args.action) {
+    case "interfaces":
+      return { ok: true, result: await crosspadInterfaces("list", opts) };
+    case "implementations": {
+      if (!args.interface_name) {
+        return { ok: false, message: "action=implementations needs interface_name (e.g. 'IPadLogicHandler')" };
+      }
+      return { ok: true, result: await crosspadInterfaces(`implementations ${args.interface_name}`, opts) };
+    }
+    case "capabilities":
+      return { ok: true, result: await crosspadInterfaces("capabilities", opts) };
+    default:
+      return {
+        ok: false,
+        message: `unknown action "${args.action}"; expected one of: interfaces, implementations, capabilities`,
+      };
+  }
+}
+
+export function registerArchitectureTool(server: McpServer, _ctx: ToolContext): RegisteredTool {
+  return server.registerTool(
+    ARCHITECTURE_TOOL,
+    {
+      title: "Inspect the CrossPad abstraction layer",
+      description:
+        "The crosspad-core abstraction layer, three ways. action=interfaces lists the I*-prefixed interfaces in crosspad-core/include/crosspad/. action=implementations finds every class implementing one, across all repos, with the platform it belongs to (run action=interfaces first if you do not know the exact name). action=capabilities lists the Capability enum flags and which ones each platform sets. Replaces crosspad_list_interfaces / crosspad_interface_implementations / crosspad_capabilities, which still work. For symbols that are not interfaces, use crosspad_search_symbols.",
+      inputSchema: ArchitectureInputShape,
+      outputSchema: O_Architecture,
+      annotations: annotationsFor(tierOf(ARCHITECTURE_TOOL, {})),
+    },
+    async (rawArgs, extra): Promise<ToolResult> => {
+      const parsed = ArchitectureInput.safeParse(rawArgs);
+      if (!parsed.success) {
+        return jsonResponse({
+          success: false,
+          error: {
+            code: "INVALID_ARGS",
+            message: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; "),
+            hint: "action is one of interfaces | implementations | capabilities; implementations also needs interface_name.",
+          },
+        });
+      }
+      try {
+        const outcome = await runArchitecture(parsed.data, { signal: extra?.signal });
+        if (!outcome.ok) {
+          return jsonResponse({ success: false, action: parsed.data.action, error: { code: "INVALID_ARGS", message: outcome.message } });
+        }
+        return jsonResponse({ success: true, action: parsed.data.action, result: outcome.result });
+      } catch (e) {
+        return errorResult(e);
+      }
+    },
+  );
 }
 
 // --- crosspad_apps ---

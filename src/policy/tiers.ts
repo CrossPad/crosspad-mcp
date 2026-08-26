@@ -56,6 +56,9 @@ const taskTier: TierFn = (args) => (str(args, "action") === "cancel" ? "stimulus
 const audioRouteTier: TierFn = (args) => (str(args, "action") === "query" ? "read" : "stimulus");
 // action='get' is a devices.list read — it must stay reachable under --read-only.
 const usbModeTier: TierFn = (args) => (str(args, "action") === "get" ? "read" : "stimulus");
+// Listing the registry only reads JSON off disk; the other four rewrite a
+// submodule, so they keep the tier the five v9 tools carried.
+const appsTier: TierFn = (args) => (str(args, "action") === "list" ? "read" : "mutate-host");
 
 export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   // core
@@ -98,6 +101,7 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   crosspad_log: "read",
   // code
   crosspad_search_symbols: "read",
+  crosspad_architecture: "read",
   crosspad_list_interfaces: "read",
   crosspad_interface_implementations: "read",
   crosspad_capabilities: "read",
@@ -112,6 +116,7 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   crosspad_apps_remove: "mutate-host",
   crosspad_apps_update: "mutate-host",
   crosspad_apps_sync: "mutate-host",
+  crosspad_apps: appsTier,
   // trace
   crosspad_trace: traceTier,
 };

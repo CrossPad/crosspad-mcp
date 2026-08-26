@@ -7,7 +7,7 @@
 
 MCP (Model Context Protocol) server that gives an LLM full control over the [CrossPad](https://github.com/CrossPad) development workflow — build, flash and test firmware (ESP32-S3 + STM32), drive the PC simulator, trace live variables over SWD, route audio on the physical device, manage app packages, and search code across every repo of the ecosystem. All from natural language.
 
-**44 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 2 bundled Claude Code skills · stdio & HTTP transports**
+**46 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 2 bundled Claude Code skills · stdio & HTTP transports**
 
 ## Install
 
@@ -104,9 +104,9 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 | `device` | `crosspad_cdc`, `crosspad_console`, `crosspad_ui`, `crosspad_midi`, `crosspad_usb_mode`, `crosspad_audio_route`, `crosspad_diagnose_crash` | no |
 | `hil` | `crosspad_hil_run`, `crosspad_capture`, `crosspad_analyze`, `crosspad_stimulus`, `crosspad_ble` | no |
 | `sim` | `crosspad_run`, `crosspad_kill`, `crosspad_check`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats`, `crosspad_settings_get`, `crosspad_settings_set`, `crosspad_test_run`, `crosspad_log` | no |
-| `code` | `crosspad_docs_search`, `crosspad_search_symbols`, `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities`, `crosspad_list_apps_source` | no |
+| `code` | `crosspad_docs_search`, `crosspad_architecture`, `crosspad_search_symbols`, `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities`, `crosspad_list_apps_source` | no |
 | `git` | `crosspad_repo_diff`, `crosspad_submodule_update`, `crosspad_commit` | no |
-| `apps` | `crosspad_apps_list`, `crosspad_apps_install`, `crosspad_apps_remove`, `crosspad_apps_update`, `crosspad_apps_sync` | no |
+| `apps` | `crosspad_apps`, `crosspad_apps_list`, `crosspad_apps_install`, `crosspad_apps_remove`, `crosspad_apps_update`, `crosspad_apps_sync` | no |
 | `trace` | `crosspad_trace` | no |
 
 Enable one at runtime with `crosspad_toolsets action=enable toolset=device` (the tool list changes and the client is notified). At startup: `--toolsets device,code` (or `CROSSPAD_TOOLSETS=device,code`, keyword `all`). `--read-only` (or `CROSSPAD_MCP_POLICY=readonly`) removes every non-`read` tool from the list regardless of toolset flags — read-only always wins.
@@ -261,6 +261,7 @@ action=stop
 | Tool | Purpose |
 |------|---------|
 | `crosspad_docs_search` | Search the ecosystem's prose (crosspad-docs, BSP guides, skill pages) and return the matching sections, not whole pages |
+| `crosspad_architecture` | The crosspad-core abstraction layer: `action=interfaces` \| `implementations` \| `capabilities` |
 | `crosspad_search_symbols` | Find class/function/macro/enum/typedef definitions |
 | `crosspad_list_interfaces` | List crosspad-core interfaces |
 | `crosspad_interface_implementations` | Find implementations of a given interface |
@@ -271,6 +272,7 @@ action=stop
 
 | Tool | Purpose |
 |------|---------|
+| `crosspad_apps` | All five below behind one `action` (`list`/`install`/`remove`/`update`/`sync`); `platform` defaults to `idf`. Refuses install/remove/update over an app checkout with uncommitted or unpushed work |
 | `crosspad_apps_list` | Apps from registry + where installed (no Python needed) |
 | `crosspad_apps_install` | Install app as submodule (`platform`, `app_name`, `ref`, `force`) |
 | `crosspad_apps_remove` | Remove installed app submodule |
@@ -304,8 +306,8 @@ action=stop
 | raw SysEx via `amidi` inside `crosspad_audio_route` | daemon `midi.sysex` / `midi.query_route`, tool schema unchanged | shipped |
 | `crosspad_flash` (fire and forget) | `crosspad_flash` with an always-returned preflight, a job handle and `wait_boot` | shipped |
 | — | `crosspad_cdc`, `crosspad_ui`, `crosspad_snapshot`, `crosspad_doctor`, `crosspad_usb_mode`, `crosspad_task`, `crosspad_toolsets` | new |
-| `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities` | `crosspad_architecture` with an `action` field | P1 — v9 names still registered (toolset `code`) |
-| `crosspad_apps_list/install/remove/update/sync` | `crosspad_apps` with an `action` field | P1 — v9 names still registered (toolset `apps`) |
+| `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities` | `crosspad_architecture` with an `action` field | shipped — the three v9 names stay registered (toolset `code`) |
+| `crosspad_apps_list/install/remove/update/sync` | `crosspad_apps` with an `action` field | shipped — the five v9 names stay registered (toolset `apps`) |
 
 Startup surface: `tools/list` returns the `core` toolset only. Enable the rest with `crosspad_toolsets`, `--toolsets a,b` or `CROSSPAD_TOOLSETS`; hide every writing tool with `--read-only`. Requires `crosspad-hil` ≥ 1.0.0 (`package.json` → `hilVersion`); `crosspad_doctor` tells you when it is missing or too old.
 

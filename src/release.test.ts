@@ -45,7 +45,9 @@ describe("README documents what the server actually does", () => {
     expect(readme).toContain("`crosspad_log` with `target: idf`");
     expect(readme).toContain("`crosspad_architecture`");
     expect(readme).toContain("`crosspad_apps`");
-    expect(readme).toContain("P1 — v9 names still registered");
+    // The merges have landed, so every row is "shipped" — what still has to be
+    // true is that the v9 names they replaced are documented as still callable.
+    expect(readme).toContain("the five v9 names stay registered (toolset `apps`)");
   });
 
   it("documents every toolset name", () => {
