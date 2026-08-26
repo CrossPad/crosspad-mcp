@@ -64,12 +64,11 @@ describe("crosspad_midi target=device", () => {
   it("rejects a frame that is not F0 … F7 before touching the daemon", async () => {
     const d = fakeDaemon({});
     registerMidiTool(fs.server, ctxFor(d));
-    const r = await fs.tools.get(TOOL_NAME)!.cb(
-      { target: "device", action: "sysex", frame: "90 40 7F" },
-      fakeExtra(),
-    );
-    expect(r.isError).toBe(true);
-    expect(String((r.structuredContent.error as { message?: string })?.message)).toMatch(/F0/);
+    // Rejected by the declared schema, before the handler runs — the SDK
+    // validates input first, so the daemon cannot be reached either way.
+    await expect(
+      fs.tools.get(TOOL_NAME)!.cb({ target: "device", action: "sysex", frame: "90 40 7F" }, fakeExtra()),
+    ).rejects.toThrow(/F0/);
     expect(d.calls).toHaveLength(0);
   });
 

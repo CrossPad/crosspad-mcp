@@ -103,10 +103,11 @@ describe("crosspad_architecture tool", () => {
     expect(res.structuredContent.interfaces).toBeUndefined();
   });
 
-  it("an action outside the enum is INVALID_ARGS, not a throw", async () => {
-    const res = await mk().call({ action: "nope" });
-    expect(res.isError).toBe(true);
-    expect((res.structuredContent.error as { code: string }).code).toBe("INVALID_ARGS");
+  it("an action outside the enum never reaches the handler", async () => {
+    // The SDK validates input against the declared schema before the handler
+    // runs, so this is rejected at the protocol edge — asserting the handler's
+    // own INVALID_ARGS branch here would be asserting an unreachable path.
+    await expect(mk().call({ action: "nope" })).rejects.toThrow();
   });
 
   it("implementations without interface_name is INVALID_ARGS", async () => {

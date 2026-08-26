@@ -12,6 +12,7 @@ import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sd
 import type { ToolContext } from "../tool-context.js";
 import { jsonResponse, errorResult, type ToolResult } from "../tool-result.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
+import { assertAllowedPath } from "../utils/paths.js";
 
 const CAPTURE = "crosspad_capture";
 const ANALYZE = "crosspad_analyze";
@@ -122,6 +123,9 @@ export function registerCaptureTool(server: McpServer, ctx: ToolContext): Regist
 
       try {
         if (args.action === "start") {
+          // Spec §4.3: the WAV is written wherever this says, so it has to land
+          // somewhere this server is allowed to write.
+          assertAllowedPath("out", args.out);
           const opArgs: Record<string, unknown> = {
             preset: args.preset,
             resume_audio_tasks: args.resume_audio_tasks,
@@ -136,7 +140,22 @@ export function registerCaptureTool(server: McpServer, ctx: ToolContext): Regist
             signal,
             timeoutMs: 90_000,
           });
-          const handle = String(r.handle);
+          // String(undefined) is the string "undefined", which registers fine
+          // and hands the model a handle that can never stop the recording.
+          if (typeof r.handle !== "string" || r.handle.length === 0) {
+            return jsonResponse({
+              success: false,
+              action: "start",
+              result: r,
+              error: {
+                code: "BAD_DAEMON_REPLY",
+                message: "capture.start returned no handle — the recording may be running with nothing to stop it.",
+                hint: "Check the daemon version, then crosspad_usb_mode to put the board back in the default profile.",
+              },
+              ts: Date.now(),
+            });
+          }
+          const handle = r.handle;
           ctx.handles.register(handle, { kind: "capture", device: args.device });
           return jsonResponse({ success: true, action: "start", handle, ...pick(r), result: r, ts: Date.now() });
         }
@@ -192,6 +211,8 @@ export function registerAnalyzeTool(server: McpServer, ctx: ToolContext): Regist
       extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
     ): Promise<ToolResult> => {
       try {
+        // Spec §4.3: `wav` names a file this host reads and reports on.
+        assertAllowedPath("wav", args.wav);
         const r = await ctx.daemon().request<Record<string, unknown>>(
           "analyze.wav",
           {

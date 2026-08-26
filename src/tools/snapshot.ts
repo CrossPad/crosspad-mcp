@@ -146,12 +146,17 @@ export const SnapshotInputShape = {
 
 export const SnapshotInput = z.object(SnapshotInputShape);
 
-export const O_Snapshot = {
+// The daemon's reply is spread into this envelope whole, and §3.3 says
+// snapshot.take will grow top-level keys. Extending SnapshotSchema keeps its
+// catchall, so a key we have never heard of is published as
+// `additionalProperties` and passes the client's output validation. Spreading
+// `.partial().shape` instead re-wrapped the keys in a fresh closed object, and
+// the first new daemon key would have failed every call at the client.
+export const O_Snapshot = SnapshotSchema.partial().extend({
   success: z.boolean(),
-  ...SnapshotSchema.partial().shape,
   error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
   details: z.record(z.string(), z.unknown()).optional(),
-};
+});
 
 function codedError(e: unknown): ToolResult {
   const code = (e as { code?: string }).code;

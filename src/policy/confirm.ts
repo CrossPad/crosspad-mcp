@@ -3,9 +3,10 @@ import { z } from "zod";
 //  1. Client declares `elicitation` → elicitInput form, decline → CANCELLED_BY_USER.
 //  2. Otherwise → {resultType:"confirmation_required", confirmation:{token,…}},
 //     nothing performed; the model re-issues the identical call with confirm_token.
-// The token is an HMAC-SHA256 over (tool, canonical args, issuedAt) with a
-// per-process random secret, so any argument change or a server restart
-// invalidates it.
+// The token is an HMAC-SHA256 over (tool, canonical args, device, issuedAt,
+// nonce) with a per-process random secret, so any argument change, a different
+// board, or a server restart invalidates it. It is also good for exactly one
+// call: see `consumeToken`.
 import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
@@ -32,28 +33,86 @@ function canonicalArgs(args: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-function mac(tool: string, args: Record<string, unknown>, issuedAt: number): string {
+/**
+ * `device` is the device the call was *resolved* to, not the `device` argument
+ * — omitting the argument is the normal case with one board attached, and
+ * without this a "yes" given for board A would still be valid once board B is
+ * what the implicit selection lands on (spec §4.2).
+ */
+function mac(
+  tool: string,
+  args: Record<string, unknown>,
+  device: string | null,
+  issuedAt: number,
+  nonce: string,
+): string {
   return createHmac("sha256", SECRET)
-    .update(tool + "\n" + canonicalJson(canonicalArgs(args)) + "\n" + String(issuedAt))
+    .update([tool, canonicalJson(canonicalArgs(args)), device ?? "", String(issuedAt), nonce].join("\n"))
     .digest("hex");
 }
 
-export function mintToken(tool: string, args: Record<string, unknown>, now?: number): string {
+const TOKEN_RE = /^cfm_(\d{1,16})_([0-9a-f]{16})_([0-9a-f]{64})$/;
+
+export function mintToken(
+  tool: string,
+  args: Record<string, unknown>,
+  device: string | null = null,
+  now?: number,
+): string {
   const issuedAt = Math.floor(now ?? Date.now());
-  return `cfm_${issuedAt}_${mac(tool, args, issuedAt)}`;
+  // The nonce makes two approvals of the identical call distinct tokens, which
+  // the single-use registry below needs to tell one from the other.
+  const nonce = randomBytes(8).toString("hex");
+  return `cfm_${issuedAt}_${nonce}_${mac(tool, args, device, issuedAt, nonce)}`;
 }
 
-export function verifyToken(token: string, tool: string, args: Record<string, unknown>, now?: number): boolean {
+export function verifyToken(
+  token: string,
+  tool: string,
+  args: Record<string, unknown>,
+  device: string | null = null,
+  now?: number,
+): boolean {
   if (typeof token !== "string") return false;
-  const m = /^cfm_(\d{1,16})_([0-9a-f]{64})$/.exec(token);
+  const m = TOKEN_RE.exec(token);
   if (!m) return false;
   const issuedAt = Number(m[1]);
   if (!Number.isFinite(issuedAt)) return false;
   const t = now ?? Date.now();
   if (t < issuedAt || t - issuedAt > CONFIRM_TTL_S * 1000) return false;
-  const expected = Buffer.from(mac(tool, args, issuedAt), "hex");
-  const given = Buffer.from(m[2], "hex");
+  const expected = Buffer.from(mac(tool, args, device, issuedAt, m[2]), "hex");
+  const given = Buffer.from(m[3], "hex");
   return expected.length === given.length && timingSafeEqual(expected, given);
+}
+
+// One human approval is one call. Without a spent-token registry the model can
+// replay the same "yes" for the whole TTL — flashing twice, or re-issuing
+// BOOTLOADER_REQUEST — off a single confirmation nobody gave twice.
+const spent = new Map<string, number>();
+
+export type TokenCheck = "ok" | "invalid" | "replayed";
+
+/** Verify and spend in one step. `replayed` means the token was already used. */
+export function consumeToken(
+  token: string,
+  tool: string,
+  args: Record<string, unknown>,
+  device: string | null = null,
+  now?: number,
+): TokenCheck {
+  const t = now ?? Date.now();
+  if (!verifyToken(token, tool, args, device, t)) return "invalid";
+  // A token past its TTL can never verify again, so forgetting it is safe and
+  // keeps the registry bounded by the confirmation rate, not by uptime.
+  for (const [old, issuedAt] of spent) if (t - issuedAt > CONFIRM_TTL_S * 1000) spent.delete(old);
+  if (spent.has(token)) return "replayed";
+  spent.set(token, Number(TOKEN_RE.exec(token)![1]));
+  return "ok";
+}
+
+/** @internal vitest only — the registry outlives a single test otherwise. */
+export function resetSpentTokens(): void {
+  spent.clear();
 }
 
 /** Output-schema fields a confirmation gate adds to any tool's result. */
@@ -71,15 +130,25 @@ export type ConfirmationOutcome =
   | { status: "declined" }
   | { status: "token"; result: CallToolResult };
 
-function tokenResult(tool: string, args: Record<string, unknown>, summary: string): CallToolResult {
-  const token = mintToken(tool, args);
+function tokenResult(
+  tool: string,
+  args: Record<string, unknown>,
+  device: string | null,
+  summary: string,
+  replayed = false,
+): CallToolResult {
+  const token = mintToken(tool, args, device);
   const payload = {
     // Every tool's outputSchema requires `success`, and nothing was performed.
     success: false,
     resultType: "confirmation_required",
     confirmation: { token, expires_in_s: CONFIRM_TTL_S, summary },
     tool,
-    hint: `Nothing was performed. Re-issue the identical ${tool} call with confirm_token="${token}" within ${CONFIRM_TTL_S} s to proceed.`,
+    hint:
+      (replayed
+        ? "The confirm_token you presented was already spent — a confirmation approves exactly one call. "
+        : "") +
+      `Nothing was performed. Re-issue the identical ${tool} call with confirm_token="${token}" within ${CONFIRM_TTL_S} s to proceed.`,
   };
   // Deliberately NOT isError: a confirmation gate is a question, not a failure,
   // and a model that reads it as a failure will report the flash as broken
@@ -105,10 +174,16 @@ export async function requireConfirmation(
   tool: string,
   args: Record<string, unknown>,
   summary: string,
+  device: string | null = null,
 ): Promise<ConfirmationOutcome> {
   void extra;
   const presented = args?.[TOKEN_ARG];
-  if (typeof presented === "string" && verifyToken(presented, tool, args)) return { status: "approved" };
+  let replayed = false;
+  if (typeof presented === "string") {
+    const check = consumeToken(presented, tool, args, device);
+    if (check === "ok") return { status: "approved" };
+    replayed = check === "replayed";
+  }
 
   if (clientHasElicitation(server)) {
     try {
@@ -130,10 +205,10 @@ export async function requireConfirmation(
     } catch {
       // Client advertised elicitation but could not serve it — fall back to the
       // token path rather than blocking the operation forever.
-      return { status: "token", result: tokenResult(tool, args, summary) };
+      return { status: "token", result: tokenResult(tool, args, device, summary, replayed) };
     }
   }
-  return { status: "token", result: tokenResult(tool, args, summary) };
+  return { status: "token", result: tokenResult(tool, args, device, summary, replayed) };
 }
 
 export function confirmationDeclined(tool: string): CallToolResult {
@@ -165,11 +240,12 @@ export async function enforce(
   tool: string,
   args: Record<string, unknown>,
   summary: string,
+  device: string | null = null,
 ): Promise<CallToolResult | null> {
   const decision = decide(policy, tool, canonicalArgs(args));
   if (decision === "allow") return null;
   if (decision === "hidden") return policyDenied(tool, policy.mode);
-  const outcome = await requireConfirmation(server, extra, tool, args, summary);
+  const outcome = await requireConfirmation(server, extra, tool, args, summary, device);
   if (outcome.status === "approved") return null;
   if (outcome.status === "declined") return confirmationDeclined(tool);
   return outcome.result;

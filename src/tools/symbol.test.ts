@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -312,6 +312,66 @@ describe("crosspad_symbol environment errors", () => {
       await call({ symbol: "NoSuchThing" }, { replies: { "workspace/symbol": [] }, indexing: true }),
     )) as Record<string, any>;
     expect(s.error.hint).toContain("index");
+  });
+});
+
+describe("crosspad_symbol cancellation", () => {
+  const HIT = [{ name: "handlePadPress", kind: 6, containerName: "PadManager", location: { uri: SRC_URI, range: range(2, 18) } }];
+
+  it("hands the caller's signal to the clangd lookup and to every request", async () => {
+    // A cold platform-idf index is minutes of clangd time. If the signal stops
+    // at this function, "cancel" means nothing at all downstream.
+    const ac = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    const client = {
+      root: ROOT,
+      alive: true,
+      warmed: true,
+      indexing: false,
+      openFile: () => {},
+      workspaceSymbol: async (_q: string, sig?: AbortSignal) => { seen.push(sig); return HIT; },
+      request: async (_m: string, _p: unknown, _t?: number, sig?: AbortSignal) => { seen.push(sig); return []; },
+    } as unknown as ClangdClient;
+    let connectSignal: AbortSignal | undefined;
+    await crosspadSymbol(
+      { action: "references", symbol: "handlePadPress" },
+      async (_db, sig) => { connectSignal = sig; return client; },
+      () => DB,
+      ac.signal,
+    );
+    expect(connectSignal).toBe(ac.signal);
+    expect(seen).toEqual([ac.signal, ac.signal]);
+  });
+
+  it("the registered callback forwards extra.signal", async () => {
+    // The registration used to be `async (args) => crosspadSymbol(args)`, which
+    // silently threw `extra` — and with it the only handle a client has on a
+    // call that runs for minutes.
+    vi.resetModules();
+    let seen: AbortSignal | undefined = undefined;
+    vi.doMock("../utils/clangd.js", async (orig) => {
+      const real = await orig<typeof import("../utils/clangd.js")>();
+      return {
+        ...real,
+        findCompileDb: () => DB,
+        getClangdClient: async (_db: unknown, _opts: unknown, sig?: AbortSignal) => {
+          seen = sig;
+          throw new real.ClangdError("CLANGD_MISSING", "no clangd in this test");
+        },
+      };
+    });
+    try {
+      const { registerSymbolTool: register } = await import("./symbol.js");
+      const { fakeServer: fs2, fakeExtra } = await import("../testing/fake-server.js");
+      const h = fs2();
+      register(h.server, {} as ToolContext);
+      const ac = new AbortController();
+      await h.tools.get("crosspad_symbol")!.cb({ symbol: "PadManager" }, { ...fakeExtra(), signal: ac.signal });
+      expect(seen).toBe(ac.signal);
+    } finally {
+      vi.doUnmock("../utils/clangd.js");
+      vi.resetModules();
+    }
   });
 });
 

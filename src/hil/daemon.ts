@@ -153,7 +153,10 @@ export class HilDaemon {
         resolve: (v) => resolve(v as T),
         reject,
         timer: setTimeout(() => {
-          this.pending.delete(id);
+          // settle(), not delete(): the abort listener is registered below and
+          // only settle() takes it off again. A long-lived signal — one task
+          // driving many ops — otherwise collects a dead closure per timeout.
+          this.settle(id);
           reject(new HilError(TIMEOUT, `${op} timed out after ${timeoutMs} ms`, "the daemon is alive but the op did not answer; check `doctor` and port locks", { op, timeout_ms: timeoutMs }));
         }, timeoutMs),
         signal: opts.signal,

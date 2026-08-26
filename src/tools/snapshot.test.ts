@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { z } from "zod";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv-provider.js";
+import { normalizeObjectSchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import { fakeDaemon } from "../testing/fake-daemon.js";
 import { fakeServer, fakeExtra } from "../testing/fake-server.js";
 import { HandleRegistry } from "../handles.js";
@@ -10,7 +13,7 @@ vi.mock("../utils/remote-client.js", () => ({
   sendRemoteCommand: vi.fn(),
 }));
 import { isSimulatorRunning, sendRemoteCommand } from "../utils/remote-client.js";
-import { registerSnapshotTool, simStatsToSnapshot, SnapshotStore, snapshots } from "./snapshot.js";
+import { registerSnapshotTool, simStatsToSnapshot, SnapshotStore, snapshots, O_Snapshot } from "./snapshot.js";
 
 const snapA = { snapshot_id: "snap_1", device: "dev_3f2a", usb_mode: "default", apps: { running: null, available: ["Sampler"] }, ui: null, kit: { current: 1, name: "A", loading: false, pending: -1 }, leds: null, pads: null, mem: null, ble: null, console: null, ts: 1, changed: [] };
 const snapB = { ...snapA, snapshot_id: "snap_2", kit: { current: 2, name: "B", loading: false, pending: -1 }, changed: ["kit"] };
@@ -110,5 +113,28 @@ describe("crosspad_snapshot sim", () => {
     const res = await t.call({ target: "sim" });
     expect(res.isError).toBe(true);
     expect((res.structuredContent.error as any).code).toBe("SIM_NOT_RUNNING");
+  });
+});
+
+// The unit tests above hand the fake daemon exactly the keys the schema
+// declares, so they could never see this: the schema published to the client
+// and the reply that is spread into it have to agree about unknown keys.
+// Asserted on the schema itself rather than through a tool call, because the
+// wire contract is what the client validates against.
+describe("crosspad_snapshot output schema", () => {
+  const published = () => z.toJSONSchema(normalizeObjectSchema(O_Snapshot)!) as Record<string, unknown>;
+
+  it("stays open, because snapshot.take is specified to grow top-level keys", () => {
+    expect(published().additionalProperties).not.toBe(false);
+  });
+
+  it("accepts a reply carrying a key the daemon grew after this build", async () => {
+    const grown = { success: true, ...snapA, snapshot_id: "snap_grown", audio: { xrun: 0 } };
+    // The envelope keeps the unknown key …
+    expect((O_Snapshot.parse(grown) as Record<string, unknown>).audio).toEqual({ xrun: 0 });
+    // … and the client — which validates the published JSON Schema with Ajv,
+    // not the Zod type — accepts it too.
+    const validate = await new AjvJsonSchemaValidator().getValidator(published());
+    expect((await validate(grown)).valid).toBe(true);
   });
 });

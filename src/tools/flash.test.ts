@@ -207,4 +207,71 @@ describe("crosspad_flash", () => {
     expect(sc.preflight).toMatchObject({ target: "stm", transport: "swd", device: null, ok: true });
     expect(d.calls).toHaveLength(0);
   });
+
+  // ── S5: paths ────────────────────────────────────────────────────────
+  it("refuses a firmware outside the allowed roots, before it looks at a device", async () => {
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb(
+      { target: "esp", transport: "ota", firmware_path: "/etc/shadow" },
+      fakeExtra(),
+    );
+    const sc = r.structuredContent as Record<string, any>;
+    expect(sc.error.code).toBe("PATH_NOT_ALLOWED");
+    expect(sc.error.hint).toContain("CROSSPAD_MCP_ALLOWED_PATHS");
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("refuses a build_dir and a delta_base outside the allowed roots", async () => {
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    for (const args of [
+      { target: "esp", transport: "ota", build_dir: "/etc" },
+      { target: "esp", transport: "ota", delta_base: "/etc/hosts" },
+    ]) {
+      const r = await fs.tools.get(TOOL_NAME)!.cb(args, fakeExtra());
+      expect((r.structuredContent as Record<string, any>).error.code).toBe("PATH_NOT_ALLOWED");
+    }
+  });
+
+  // ── S4: one approval, one flash ──────────────────────────────────────
+  it("spends the confirmation: the same token cannot flash twice", async () => {
+    const d = fakeDaemon({
+      "devices.list": () => ({ devices: [DEV] }),
+      "ota.flash": () => ({ task: "task_9" }),
+      "task.status": () => ({ task: "task_9", status: "completed", result: { bytes: 10, seconds: 1, kbps: 10, version: "v20", mode: "full" } }),
+    });
+    registerFlashTool(fs.server, ctxFor(d));
+    const call = (extra: Record<string, unknown> = {}) =>
+      fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", ...extra }, fakeExtra());
+
+    const token = ((await call()).structuredContent as Record<string, any>).confirmation.token as string;
+    expect(((await call({ confirm_token: token, wait_seconds: 5 })).structuredContent as Record<string, any>).success).toBe(true);
+
+    const replay = (await call({ confirm_token: token, wait_seconds: 5 })).structuredContent as Record<string, any>;
+    expect(replay.resultType).toBe("confirmation_required");
+    expect(replay.hint).toContain("already spent");
+    expect(d.calls.filter((c) => c.op === "ota.flash")).toHaveLength(1);
+  });
+
+  it("a token approved for one board does not flash the board that replaced it", async () => {
+    const other = { ...DEV, id: "dev_b7c1", serial: "CCDD" };
+    let devices = [DEV];
+    const d = fakeDaemon({
+      "devices.list": () => ({ devices }),
+      "ota.flash": () => ({ task: "task_9" }),
+      "task.status": () => ({ task: "task_9", status: "completed", result: {} }),
+    });
+    registerFlashTool(fs.server, ctxFor(d));
+    const call = (extra: Record<string, unknown> = {}) =>
+      fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", ...extra }, fakeExtra());
+
+    const token = ((await call()).structuredContent as Record<string, any>).confirmation.token as string;
+    // Same arguments, same implicit "the only CrossPad" — different board.
+    devices = [other];
+    const sc = (await call({ confirm_token: token, wait_seconds: 5 })).structuredContent as Record<string, any>;
+    expect(sc.resultType).toBe("confirmation_required");
+    expect(sc.preflight.device).toBe("dev_b7c1");
+    expect(d.calls.filter((c) => c.op === "ota.flash")).toHaveLength(0);
+  });
 });

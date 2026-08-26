@@ -159,6 +159,7 @@ export function rankCandidates(symbols: LspSymbolInformation[], query: string): 
 export async function resolveTarget(
   client: ClangdClient,
   args: { symbol?: string; file?: string; line?: number; character?: number },
+  signal?: AbortSignal,
 ): Promise<{ target: Target; candidates: SymbolLocation[] }> {
   const cache: LineCache = new Map();
 
@@ -178,7 +179,7 @@ export async function resolveTarget(
 
   // workspaceSymbol() waits out the background index; an empty answer here has
   // already been given every chance to become a non-empty one.
-  const hits = rankCandidates(await client.workspaceSymbol<LspSymbolInformation>(name), name);
+  const hits = rankCandidates(await client.workspaceSymbol<LspSymbolInformation>(name, signal), name);
   if (hits.length === 0) {
     throw new ClangdError(
       "NOT_FOUND",
@@ -282,36 +283,37 @@ export async function runAction(
   action: SymbolAction,
   target: Target,
   limit: number,
+  signal?: AbortSignal,
 ): Promise<ActionPayload> {
   const cache: LineCache = new Map();
   const doc = { textDocument: { uri: fileUri(target.file) }, position: target.position };
 
   switch (action) {
     case "definition": {
-      const r = asArray<LspLocation>(await client.request("textDocument/definition", doc));
+      const r = asArray<LspLocation>(await client.request("textDocument/definition", doc, undefined, signal));
       return { locations: r.slice(0, limit).map((l) => toLocation(l, cache)) };
     }
     case "references": {
       const r = asArray<LspLocation>(
         // The declaration is what the caller already has; the point of asking
         // is the other N places.
-        await client.request("textDocument/references", { ...doc, context: { includeDeclaration: false } }),
+        await client.request("textDocument/references", { ...doc, context: { includeDeclaration: false } }, undefined, signal),
       );
       return { locations: r.slice(0, limit).map((l) => toLocation(l, cache)) };
     }
     case "implementations": {
-      const r = asArray<LspLocation>(await client.request("textDocument/implementation", doc));
+      const r = asArray<LspLocation>(await client.request("textDocument/implementation", doc, undefined, signal));
       return { locations: r.slice(0, limit).map((l) => toLocation(l, cache)) };
     }
     case "hover": {
-      const r = (await client.request("textDocument/hover", doc)) as { contents?: unknown } | null;
+      const r = (await client.request("textDocument/hover", doc, undefined, signal)) as { contents?: unknown } | null;
       const hover = parseHover(r?.contents);
       return hover ? { hover } : {};
     }
     case "call_hierarchy": {
-      const items = asArray<LspCallHierarchyItem>(await client.request("textDocument/prepareCallHierarchy", doc));
+      const items = asArray<LspCallHierarchyItem>(await client.request("textDocument/prepareCallHierarchy", doc, undefined, signal));
       if (items.length === 0) return { calls: [] };
-      const incoming = asArray<LspIncomingCall>(await client.request("callHierarchy/incomingCalls", { item: items[0] }));
+      const incoming = asArray<LspIncomingCall>(await client.request("callHierarchy/incomingCalls", { item: items[0] }, undefined, signal));
       return {
         calls: incoming.slice(0, limit).map((c) => ({
           caller: c.from.name,
@@ -324,7 +326,7 @@ export async function runAction(
       };
     }
     case "document_symbols": {
-      const r = await client.request<unknown>("textDocument/documentSymbol", { textDocument: { uri: fileUri(target.file) } });
+      const r = await client.request<unknown>("textDocument/documentSymbol", { textDocument: { uri: fileUri(target.file) } }, undefined, signal);
       const arr = asArray<LspDocumentSymbol & { location?: LspLocation }>(r);
       // clangd answers with DocumentSymbol; older servers answer with the flat
       // SymbolInformation form, which has `location` instead of `range`.
@@ -413,11 +415,17 @@ export interface SymbolArgs {
   limit?: number;
 }
 
-/** The whole call, with the clangd lookup injectable so tests need no clangd. */
+/** The whole call, with the clangd lookup injectable so tests need no clangd.
+ *
+ *  `signal` is the client's cancellation, and it has to reach clangd: a cold
+ *  platform-idf tree is a two-minute handshake plus a poll loop of further
+ *  two-minute requests, and a cancel that only unwinds this function would
+ *  leave every one of them running. */
 export async function crosspadSymbol(
   args: SymbolArgs,
-  connect: (db: CompileDb) => Promise<ClangdClient> = (db) => getClangdClient(db),
+  connect: (db: CompileDb, signal?: AbortSignal) => Promise<ClangdClient> = (db, signal) => getClangdClient(db, {}, signal),
   locate: (p?: ProjectId) => CompileDb | null = findCompileDb,
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   const action = args.action ?? "definition";
   const limit = args.limit ?? 30;
@@ -425,7 +433,7 @@ export async function crosspadSymbol(
     const db = locate(args.project);
     if (!db) throw noCompileDbError(args.project);
 
-    const client = await connect(db);
+    const client = await connect(db, signal);
 
     // An outline is a whole-file question, so it needs no position — but it
     // does need a file, and asking for one without it is the easy mistake.
@@ -443,10 +451,10 @@ export async function crosspadSymbol(
       client.openFile(abs);
       target = { file: abs, position: { line: 0, character: 0 } };
     } else {
-      ({ target, candidates } = await resolveTarget(client, args));
+      ({ target, candidates } = await resolveTarget(client, args, signal));
     }
 
-    const payload = await runAction(client, action, target, limit);
+    const payload = await runAction(client, action, target, limit, signal);
     const found = payload.locations ?? payload.calls ?? payload.symbols;
 
     return jsonResponse({
@@ -496,6 +504,9 @@ export function registerSymbolTool(server: McpServer, _ctx: ToolContext): Regist
       outputSchema,
       annotations: annotationsFor(tierOf(TOOL, {})),
     },
-    async (args: SymbolArgs): Promise<ToolResult> => crosspadSymbol(args),
+    // `extra` carries the client's AbortSignal; dropping it is what made this
+    // tool uncancellable for the minutes a cold index takes.
+    async (args: SymbolArgs, extra?: { signal?: AbortSignal }): Promise<ToolResult> =>
+      crosspadSymbol(args, undefined, undefined, extra?.signal),
   );
 }

@@ -25,6 +25,7 @@ export const NO_COMPILE_COMMANDS = "NO_COMPILE_COMMANDS";
 export const CLANGD_TIMEOUT = "CLANGD_TIMEOUT";
 export const CLANGD_DIED = "CLANGD_DIED";
 export const LSP_ERROR = "LSP_ERROR";
+export const CLANGD_CANCELLED = "CANCELLED";
 
 /** Same `{code, message, hint, details}` shape the daemon errors carry, so the
  *  tool layer can render both through one envelope. */
@@ -250,6 +251,8 @@ interface Pending {
   reject: (e: ClangdError) => void;
   timer: ReturnType<typeof setTimeout>;
   method: string;
+  onAbort?: () => void;
+  abortSignal?: AbortSignal;
 }
 
 export interface Position {
@@ -361,17 +364,25 @@ export class ClangdClient {
    * after that a timeout means clangd is stuck, so the process is killed and
    * the next call gets a fresh one — a hung language server must never become
    * a hung MCP server.
+   *
+   * `abortSignal` is the client's cancellation. Its budget is minutes on a cold
+   * tree, so "the caller gave up" has to be a thing this can hear: without it
+   * a cancelled `crosspad_symbol` keeps the MCP server waiting out the full
+   * warm-up for an answer nobody will read.
    */
-  request<T = unknown>(method: string, params: unknown, timeoutMs?: number): Promise<T> {
+  request<T = unknown>(method: string, params: unknown, timeoutMs?: number, abortSignal?: AbortSignal): Promise<T> {
     const proc = this.proc;
     if (!proc || !proc.stdin) {
       return Promise.reject(new ClangdError(CLANGD_DIED, "clangd is not running", this.lastStderr()));
+    }
+    if (abortSignal?.aborted) {
+      return Promise.reject(new ClangdError(CLANGD_CANCELLED, `clangd ${method} cancelled before send`, undefined, { method }));
     }
     const budget = timeoutMs ?? (this.warm ? this.opts.requestTimeoutMs ?? REQUEST_TIMEOUT_MS : this.opts.firstRequestTimeoutMs ?? FIRST_REQUEST_TIMEOUT_MS);
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
+        this.settle(id);
         const cold = !this.warm;
         this.kill();
         reject(
@@ -385,7 +396,21 @@ export class ClangdClient {
           ),
         );
       }, budget);
-      this.pending.set(id, { resolve: (v) => resolve(v as T), reject, timer, method });
+      const entry: Pending = { resolve: (v) => resolve(v as T), reject, timer, method };
+      if (abortSignal) {
+        entry.abortSignal = abortSignal;
+        entry.onAbort = () => {
+          const p = this.settle(id);
+          if (!p) return;
+          // Tell clangd to drop the work too. A cancelled request it never
+          // heard about keeps a core busy indexing for an answer that has
+          // nowhere to go.
+          this.notify("$/cancelRequest", { id });
+          p.reject(new ClangdError(CLANGD_CANCELLED, `clangd ${method} cancelled`, undefined, { method }));
+        };
+        abortSignal.addEventListener("abort", entry.onAbort, { once: true });
+      }
+      this.pending.set(id, entry);
       try {
         proc.stdin!.write(frame({ jsonrpc: "2.0", id, method, params }));
       } catch (e) {
@@ -449,19 +474,19 @@ export class ClangdClient {
    * the seed open above, then a poll while indexing is in flight. Once nothing
    * is indexing and the grace period has passed, an empty answer is the truth.
    */
-  async workspaceSymbol<T = unknown>(query: string): Promise<T[]> {
+  async workspaceSymbol<T = unknown>(query: string, abortSignal?: AbortSignal): Promise<T[]> {
     this.warmup();
     const deadline = Date.now() + (this.opts.indexWaitMs ?? INDEX_WAIT_MS);
     const grace = this.opts.indexGraceMs ?? INDEX_GRACE_MS;
     const poll = this.opts.indexPollMs ?? INDEX_POLL_MS;
     const start = Date.now();
     for (;;) {
-      const hits = (await this.request<T[] | null>("workspace/symbol", { query })) ?? [];
+      const hits = (await this.request<T[] | null>("workspace/symbol", { query }, undefined, abortSignal)) ?? [];
       if (hits.length > 0) return hits;
       const elapsed = Date.now() - start;
       if (Date.now() >= deadline) return [];
       if (!this.indexing && !this.sawIndex && elapsed >= grace) return [];
-      await new Promise((r) => setTimeout(r, poll));
+      await sleep(poll, abortSignal);
     }
   }
 
@@ -501,6 +526,7 @@ export class ClangdClient {
     if (!p) return undefined;
     this.pending.delete(id);
     clearTimeout(p.timer);
+    if (p.abortSignal && p.onAbort) p.abortSignal.removeEventListener("abort", p.onAbort);
     return p;
   }
 
@@ -609,6 +635,17 @@ export class ClangdClient {
   }
 }
 
+/** setTimeout that gives up early when the caller is cancelled. */
+function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  if (!abortSignal) return new Promise((r) => setTimeout(r, ms));
+  if (abortSignal.aborted) return Promise.reject(new ClangdError(CLANGD_CANCELLED, "cancelled"));
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { abortSignal.removeEventListener("abort", onAbort); resolve(); }, ms);
+    const onAbort = (): void => { clearTimeout(timer); reject(new ClangdError(CLANGD_CANCELLED, "cancelled")); };
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /** kill() on an already-dead child throws on some platforms; never fatal. */
 function signal(p: ChildLike, sig: NodeJS.Signals): void {
   try {
@@ -649,7 +686,11 @@ const clients = new Map<string, ClangdClient>();
  * server per index root: clangd's index is per-workspace, and a second process
  * over the same tree would rebuild the whole thing for nothing.
  */
-export async function getClangdClient(db: CompileDb, opts: Partial<ClangdOpts> = {}): Promise<ClangdClient> {
+export async function getClangdClient(
+  db: CompileDb,
+  opts: Partial<ClangdOpts> = {},
+  abortSignal?: AbortSignal,
+): Promise<ClangdClient> {
   const key = db.dir;
   const existing = clients.get(key);
   if (existing && existing.alive) return existing;
@@ -664,24 +705,82 @@ export async function getClangdClient(db: CompileDb, opts: Partial<ClangdOpts> =
   }
   const client = new ClangdClient({ ...opts, binary, db });
   clients.set(key, client);
-  try {
-    await client.start();
-  } catch (e) {
-    clients.delete(key);
+  const started = client.start().catch((e: unknown) => {
+    // The handshake failing does not mean nothing was spawned: clangd is up by
+    // then and background-indexing ~1950 translation units. Dropping the map
+    // entry alone would throw away the only handle that can stop it.
+    client.kill();
+    if (clients.get(key) === client) clients.delete(key);
     throw e;
-  }
+  });
+  await untilAborted(started, abortSignal, "clangd startup");
   return client;
 }
 
-/** Stop every running server — called on MCP server shutdown and by tests. */
+/**
+ * Await `p`, but stop waiting once the caller cancels. The startup itself is
+ * deliberately left running: the index it is building is exactly what the next
+ * call wants, and killing a shared server on one caller's cancel would punish
+ * every other one.
+ */
+async function untilAborted<T>(p: Promise<T>, abortSignal: AbortSignal | undefined, what: string): Promise<T> {
+  if (!abortSignal) return p;
+  if (abortSignal.aborted) {
+    p.catch(() => undefined);
+    throw new ClangdError(CLANGD_CANCELLED, `${what} cancelled`);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new ClangdError(CLANGD_CANCELLED, `${what} cancelled`));
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+    p.then(resolve, reject).finally(() => abortSignal.removeEventListener("abort", onAbort));
+  });
+}
+
+/** Stop every running server, gracefully. Idempotent. */
 export async function stopAllClangd(): Promise<void> {
   const all = [...clients.values()];
   clients.clear();
   await Promise.all(all.map((c) => c.stop().catch(() => undefined)));
 }
 
-/** @internal test-only */
-export function _resetClangdForTest(): void {
+/** SIGKILL every running server. The graceful path is `stopAllClangd()`; this
+ *  is the one that works from an `exit` handler, where there is no turn of the
+ *  event loop left in which to await anything. */
+export function killAllClangd(): void {
   for (const c of clients.values()) c.kill();
   clients.clear();
+}
+
+/**
+ * Make the process clean up after itself. Nothing else owns these children:
+ * clangd is spawned detached from any tool call that outlives it, and an MCP
+ * server that just stops reading stdin would otherwise leave a language server
+ * indexing a 1950-file tree with no parent left to ask it to stop.
+ *
+ * `beforeExit` gets the graceful `shutdown`/`exit` handshake; `exit` is the
+ * backstop that can only kill. Signals are deliberately not hooked here —
+ * adding a SIGINT listener suppresses Node's default termination, which is a
+ * bigger behaviour change than this is allowed to make.
+ *
+ * Returns a remover, so a test can install it without leaking listeners.
+ */
+export function installClangdShutdownHook(target: NodeJS.Process = process): () => void {
+  const graceful = (): void => { void stopAllClangd(); };
+  const hard = (): void => { killAllClangd(); };
+  target.on("beforeExit", graceful);
+  target.on("exit", hard);
+  return () => {
+    target.off("beforeExit", graceful);
+    target.off("exit", hard);
+  };
+}
+
+/** @internal test-only */
+export function _resetClangdForTest(): void {
+  killAllClangd();
+}
+
+/** @internal test-only — how many servers the module is holding. */
+export function _clangdClientCount(): number {
+  return clients.size;
 }

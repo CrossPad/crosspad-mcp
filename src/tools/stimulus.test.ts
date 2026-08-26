@@ -121,10 +121,10 @@ describe("crosspad_analyze", () => {
     const t = mk(registerAnalyzeTool as Register, "crosspad_analyze", {
       "analyze.wav": () => ({ expected: 3, matched: 3, missed: [], latency_ms: { p50: 12 } }),
     });
-    const res = await t.call({ kind: "onset", wav: "/tmp/a.wav", expected: [0, 250, 500] });
+    const res = await t.call({ kind: "onset", wav: "hil_logs/a.wav", expected: [0, 250, 500] });
     expect(t.daemon.calls[0]).toMatchObject({
       op: "analyze.wav",
-      args: { kind: "onset", wav: "/tmp/a.wav", expected: [0, 250, 500] },
+      args: { kind: "onset", wav: "hil_logs/a.wav", expected: [0, 250, 500] },
     });
     expect((res.structuredContent.verdict as { matched: number }).matched).toBe(3);
   });
@@ -141,7 +141,7 @@ describe("crosspad_diagnose_crash", () => {
         context: "/tmp/context.log",
       }),
     });
-    const res = await t.call({ log_file: "/tmp/panic.log" });
+    const res = await t.call({ log_file: "hil_logs/panic.log" });
     expect(res.structuredContent.success).toBe(true);
     expect((res.structuredContent.backtrace as { file: string }[])[0].file).toBe("main/gui/gui.cpp");
     const link = (res.content as { type: string; uri?: string }[]).find((c) => c.type === "resource_link");
@@ -154,7 +154,7 @@ describe("crosspad_diagnose_crash", () => {
         throw Object.assign(new Error("xtensa-esp32s3-elf-addr2line not found"), { code: "ENV" });
       },
     });
-    const res = await t.call({ log_file: "/tmp/panic.log" });
+    const res = await t.call({ log_file: "hil_logs/panic.log" });
     expect(res.structuredContent.success).toBe(false);
   });
 });
@@ -177,5 +177,33 @@ describe("crosspad_ble", () => {
     });
     const res = await t.call({ action: "scan" });
     expect(res.structuredContent.success).toBe(false);
+  });
+});
+
+// A daemon that answers without a handle is exactly the case a fake with the
+// declared keys cannot produce — and `String(r.handle)` turned it into the
+// usable-looking string "undefined", handed to the model as something to stop
+// the run with.
+describe("a start reply with no handle", () => {
+  it("crosspad_stimulus fails loudly instead of registering \"undefined\"", async () => {
+    const t = mk(registerStimulusTool as Register, "crosspad_stimulus", {
+      "stim.start": () => ({ plan: { hits: 3 } }),
+    });
+    const res = await t.call({ action: "start", pads: [0, 4], rate_hz: 8, seconds: 2 });
+    expect(res.structuredContent.success).toBe(false);
+    expect((res.structuredContent.error as { code: string }).code).toBe("BAD_DAEMON_REPLY");
+    expect(t.ctx.handles.get("undefined")).toBeUndefined();
+    expect(t.ctx.handles.list()).toEqual([]);
+  });
+
+  it("crosspad_capture fails loudly instead of registering \"undefined\"", async () => {
+    const t = mk(registerCaptureTool as Register, "crosspad_capture", {
+      "capture.start": () => ({ preset: "headphone", running: true }),
+    });
+    const res = await t.call({ action: "start", seconds: 5 });
+    expect(res.structuredContent.success).toBe(false);
+    expect((res.structuredContent.error as { code: string }).code).toBe("BAD_DAEMON_REPLY");
+    expect(t.ctx.handles.get("undefined")).toBeUndefined();
+    expect(t.ctx.handles.list()).toEqual([]);
   });
 });

@@ -146,6 +146,18 @@ describe("HilDaemon request/response correlation", () => {
     await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
   });
 
+  it("takes its abort listener back off the signal when it times out", async () => {
+    // One task's signal drives many ops. A timeout that only deletes the
+    // pending entry leaves its listener on that signal for the task's lifetime.
+    const h = makeDaemon();
+    await started(h);
+    const ac = new AbortController();
+    const off = vi.spyOn(ac.signal, "removeEventListener");
+    const p = h.d.request("console.expect", { handle: "con_1", patterns: ["x"] }, { timeoutMs: 20, signal: ac.signal });
+    await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
+    expect(off).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
   it("rejects with CANCELLED when the AbortSignal fires", async () => {
     const h = makeDaemon();
     await started(h);

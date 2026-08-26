@@ -508,6 +508,37 @@ function normalizeLineEndings(s: string): string {
   return s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
+/** How many timestamped logs a detached launch leaves behind before the oldest
+ *  are removed. One per launch, and nothing else ever deletes them. */
+export const KEEP_LAUNCH_LOGS = 20;
+
+/**
+ * Delete all but the newest `keep` logs that share `sibling`'s naming scheme.
+ *
+ * Scoped to the sibling's own prefix on purpose: `hil_logs/` is shared with
+ * console, diagnose and capture files, and a directory-wide sweep would eat
+ * someone else's evidence.
+ */
+export function pruneLaunchLogs(sibling: string, keep: number = KEEP_LAUNCH_LOGS): void {
+  const dir = path.dirname(sibling);
+  const base = path.basename(sibling);
+  // "sim_20260826_173254.log" → prefix "sim", i.e. everything before the stamp.
+  const prefix = base.replace(/\.[^.]*$/, "").replace(/[_-]?\d[\d_.-]*$/, "");
+  if (prefix.length === 0) return;
+  const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[_-]?\\d`);
+  try {
+    const mine = fs
+      .readdirSync(dir)
+      .filter((f) => re.test(f))
+      .sort();
+    for (const f of mine.slice(0, Math.max(0, mine.length - keep))) {
+      try { fs.unlinkSync(path.join(dir, f)); } catch { /* someone else got there first */ }
+    }
+  } catch {
+    /* no directory yet, or not readable — nothing to prune */
+  }
+}
+
 /**
  * Spawn a detached process (for crosspad_run).
  *
@@ -525,16 +556,30 @@ export function spawnDetached(
   if (logPath) {
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     fd = fs.openSync(logPath, "a");
+    // After creating it, so `keep` counts this launch's log too.
+    pruneLaunchLogs(logPath);
   }
   const opts: SpawnOptions = {
     cwd,
     detached: true,
     stdio: fd === undefined ? "ignore" : ["ignore", fd, fd],
   };
-  const child = spawn(exe, args, opts);
-  child.unref();
-  // The child holds its own duplicate of the descriptor; ours would otherwise
-  // keep the file open for the lifetime of the server.
-  if (fd !== undefined) fs.closeSync(fd);
-  return child.pid ?? null;
+  try {
+    const child = spawn(exe, args, opts);
+    // A binary that cannot be executed at all — ENOENT, EACCES — is reported by
+    // an 'error' event, and an 'error' event with no listener is not an error
+    // value, it is a throw out of the event loop that takes the whole MCP
+    // server down. The caller already learns of the failure from a null pid.
+    child.on("error", (e: Error) => {
+      if (logPath === undefined) return;
+      try { fs.appendFileSync(logPath, `spawn failed: ${e.message}\n`); } catch { /* best effort */ }
+    });
+    child.unref();
+    return child.pid ?? null;
+  } finally {
+    // The child holds its own duplicate of the descriptor; ours would otherwise
+    // keep the file open for the lifetime of the server — and on a spawn that
+    // throws before that, for ever.
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }

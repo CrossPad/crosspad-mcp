@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
+import { installClangdShutdownHook } from "./utils/clangd.js";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "http";
+import { randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import { z } from "zod";
 
 // v10: response helpers, policy, toolsets and the tool registry. The 30 tools
@@ -12,7 +15,8 @@ import { jsonResponse, ok, err } from "./response.js";
 import type { RegisteredTool, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AnySchema, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
-import { loadPolicy } from "./policy/policy.js";
+import { decide, loadPolicy } from "./policy/policy.js";
+import { CONFIRMATION_OUTPUT, requireConfirmation } from "./policy/confirm.js";
 import { ToolsetManager, initialToolsets, hasReadOnlyFlag } from "./toolsets.js";
 import { registerAll, loadV10Modules } from "./registry.js";
 import type { ToolContext } from "./tool-context.js";
@@ -317,6 +321,9 @@ const O_Devices = {
 };
 
 const O_Trace = {
+  // `write` and `call` are danger tier, so this tool can answer with a
+  // confirmation instead of a result (spec §4.2).
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   action: z.string().optional(),
   ok: z.boolean().optional(),
@@ -653,6 +660,52 @@ const TraceAction = z.enum([
   "write", "call",
 ]);
 
+/**
+ * The ST-Link this tool talks through — the "device" a confirmation is bound
+ * to, so a token approved against one probe cannot be spent on another.
+ */
+function traceProbe(): string | null {
+  const serial = resolveConfigValue("probe_serial", "CROSSPAD_PROBE_SERIAL", process.env.CROSSPAD_PROBE_SERIAL, "");
+  return serial.length > 0 ? serial : null;
+}
+
+/** What the human approving a `write`/`call` needs to read to judge it. */
+function summarizeTrace(a: Record<string, unknown>): string {
+  const action = String(a.action);
+  if (action === "write") {
+    return `Poke the STM32 through SWD: ${(a.writes as string[] | undefined)?.join(", ") ?? "(none)"}. ` +
+      "These are raw memory writes to live SRAM or peripheral registers on a running board.";
+  }
+  if (action === "call") {
+    return `HALT the STM32 core and call ${String(a.func)}(${((a.args as number[] | undefined) ?? []).join(", ")}) in firmware, ` +
+      "then resume. Anything the function touches happens for real, and the halt itself stops pad scanning and charging.";
+  }
+  return `crosspad_trace ${action}`;
+}
+
+/**
+ * Same shape as crosspad_flash's gate (src/tools/flash.ts): policy first, then
+ * a confirmation for the danger actions. Written out here rather than reusing
+ * `enforce()` because O_Trace's `error` is the v9 string, not the {code,message}
+ * object that enforce()'s refusals carry.
+ */
+async function gateTrace(rawArgs: Record<string, unknown>, extra: any): Promise<CallToolResult | null> {
+  const action = String(rawArgs.action);
+  const decision = decide(policy, "crosspad_trace", rawArgs);
+  if (decision === "allow") return null;
+  if (decision === "hidden") {
+    return err(`crosspad_trace ${action} is not permitted under policy mode "${policy.mode}".`, { action });
+  }
+  const c = await requireConfirmation(
+    server, extra, "crosspad_trace", rawArgs, summarizeTrace(rawArgs), traceProbe(),
+  );
+  if (c.status === "approved") return null;
+  if (c.status === "declined") {
+    return err(`crosspad_trace ${action} was declined by the user — do not retry without asking again.`, { action });
+  }
+  return c.result;
+}
+
 registerLegacy(
   "crosspad_trace",
   {
@@ -693,11 +746,20 @@ registerLegacy(
       confirm: z.boolean().optional().describe("call: must be true — acknowledges the core is halted for the call."),
       ret_type: z.enum(["u32","i32","u16","i16","u8","i8","f32"]).optional().describe("call: decode r0 as this type (default u32; raw r0 always returned)."),
       timeout: z.number().min(0.1).max(30).optional().describe("call: max seconds to wait for the function to return (default 2)."),
+      confirm_token: z.string().optional().describe("write/call: token from a previous confirmation_required result. Re-issue the identical call with it to proceed. Each token is good for exactly one call."),
     },
     outputSchema: O_Trace,
-    annotations: ANN_SIDE_EFFECT,
+    // Annotations describe the whole tool, and this one contains `write`
+    // (arbitrary SRAM/peripheral registers on a live board) and `call` (halts
+    // the core to invoke firmware). A client that gates on annotations has to
+    // see that, even though most actions here only read.
+    annotations: ANN_DESTRUCTIVE_OPEN,
   },
-  async ({ action, signals, rate_hz, swo, query, key, value, window_from, window_to, max_points, format, writes, func, args, confirm, ret_type, timeout }, extra: any) => {
+  async (rawTraceArgs: any, extra: any) => {
+    const blocked = await gateTrace(rawTraceArgs as Record<string, unknown>, extra);
+    if (blocked) return blocked;
+    const { action, signals, rate_hz, swo, query, key, value, window_from, window_to, max_points, format, writes, func, args, confirm, ret_type, timeout } =
+      rawTraceArgs as { action: z.infer<typeof TraceAction> } & Record<string, any>;
     switch (action) {
       case "doctor": {
         const r = await runDoctor(realProbe());
@@ -1059,21 +1121,41 @@ registerLegacy(
   async () => jsonResponse((await crosspadStats()))
 );
 
-registerLegacy(
+// The categories come from CrosspadSettings itself rather than being typed out
+// here — but through an mtime-invalidated cache, so the answer *changes while
+// the process runs*: a checkout that is not there at startup turns the 4-group
+// fallback into the 13 real ones the moment it appears. Freezing that list into
+// an enum at registration made the published schema reject categories the
+// handler happily accepts, and it rejected them at the protocol edge, where the
+// handler's "Known: …" message is never reached. So the handler stays the one
+// authority on what is valid, the schema accepts a string, and the description
+// carries the live list — re-published (which is a tools/list_changed) the first
+// time a call notices it has drifted.
+function settingsCategoryParams(cats: string[]) {
+  return {
+    category: z.string()
+      .default("all")
+      .describe(`Settings category, one per group CrosspadSettings declares — currently ${cats.join(", ")}. Use 'all' to fetch everything.`),
+  };
+}
+let publishedSettingsCategories = settingsCategories();
+
+const settingsGetTool = registerLegacy(
   "crosspad_settings_get",
   {
     description: "[PC sim] Read settings from the running simulator.",
-    inputSchema: {
-      // Derived from CrosspadSettings itself rather than typed out here, so a
-      // group added to the firmware does not need this file edited.
-      category: z.enum(settingsCategories() as [string, ...string[]])
-        .default("all")
-        .describe("Settings category, one per group CrosspadSettings declares. Use 'all' to fetch everything."),
-    },
+    inputSchema: settingsCategoryParams(publishedSettingsCategories),
     outputSchema: O_SettingsGet,
     annotations: ANN_READ_ONLY,
   },
-  async ({ category }) => jsonResponse((await crosspadSettingsGet(category)))
+  async ({ category }) => {
+    const live = settingsCategories();
+    if (live.join(" ") !== publishedSettingsCategories.join(" ")) {
+      publishedSettingsCategories = live;
+      settingsGetTool.update({ paramsSchema: settingsCategoryParams(live) });
+    }
+    return jsonResponse(await crosspadSettingsGet(category));
+  }
 );
 
 registerLegacy(
@@ -1570,7 +1652,86 @@ console.error(
 // HTTP transport is opt-in via CLI flag for remote dev boxes / browsers.
 // Stateful sessions: each initialize gets a session ID; subsequent requests
 // must echo it. Single shared transport multiplexes sessions internally.
+//
+// Everything below is spec §3.6/§4.3: loopback bind, a bearer token, and the
+// transport's Host allowlist. This server hands out crosspad_flash,
+// BOOTLOADER_REQUEST and crosspad_commit — on 0.0.0.0 with no token that is
+// everyone on the same wifi holding the board's firmware and the git tree.
 // ═══════════════════════════════════════════════════════════════════════
+
+/** Never 0.0.0.0. There is no configuration knob for this on purpose. */
+export const HTTP_BIND_HOST = "127.0.0.1";
+
+/** Host headers the transport accepts — the loopback names of our own port. */
+export function httpAllowedHosts(port: number): string[] {
+  return [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
+}
+
+/**
+ * The bearer token for `--http`. Taken from CROSSPAD_MCP_TOKEN; generated and
+ * printed on stderr when absent, because a server that silently ran without one
+ * is exactly the state this is here to prevent.
+ */
+export function resolveHttpToken(env: NodeJS.ProcessEnv = process.env): { token: string; generated: boolean } {
+  const fromEnv = (env.CROSSPAD_MCP_TOKEN ?? "").trim();
+  if (fromEnv.length > 0) return { token: fromEnv, generated: false };
+  return { token: randomBytes(24).toString("hex"), generated: true };
+}
+
+export function bearerMatches(header: string | string[] | undefined, token: string): boolean {
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (typeof raw !== "string") return false;
+  const m = /^Bearer +(.+)$/i.exec(raw.trim());
+  if (!m) return false;
+  const given = Buffer.from(m[1], "utf8");
+  const expected = Buffer.from(token, "utf8");
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
+/**
+ * The /mcp listener. No CORS headers anywhere: a browser page on another origin
+ * must not be able to reach this, and silence is how that is said.
+ */
+export function createMcpHttpServer(
+  token: string,
+  handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
+): HttpServer {
+  return createHttpServer((req, res) => {
+    const pathname = (req.url ?? "/").split("?")[0];
+    if (pathname !== "/mcp") {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not Found — MCP endpoint is at /mcp");
+      return;
+    }
+    if (!bearerMatches(req.headers.authorization, token)) {
+      res.writeHead(401, { "Content-Type": "application/json", "WWW-Authenticate": 'Bearer realm="crosspad-mcp"' });
+      res.end(JSON.stringify({
+        error: "unauthorized",
+        message: "Send 'Authorization: Bearer <CROSSPAD_MCP_TOKEN>'. The server prints the token on stderr when it generates one.",
+      }));
+      return;
+    }
+    handle(req, res).catch((e) => {
+      console.error("MCP HTTP request failed:", e);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("Internal error");
+      }
+    });
+  });
+}
+
+export function startHttpServer(
+  port: number,
+  token: string,
+  handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
+): Promise<HttpServer> {
+  const httpServer = createMcpHttpServer(token, handle);
+  return new Promise((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.listen(port, HTTP_BIND_HOST, () => resolve(httpServer));
+  });
+}
 
 function parseHttpPort(argv: string[]): number | null {
   for (let i = 0; i < argv.length; i++) {
@@ -1590,6 +1751,10 @@ function parseHttpPort(argv: string[]): number | null {
 }
 
 async function main() {
+  // A clangd started for crosspad_symbol is background-indexing ~1950
+  // translation units; it must not outlive the server that spawned it.
+  installClangdShutdownHook();
+
   const httpPort = parseHttpPort(process.argv.slice(2));
   if (httpPort !== null) {
     if (Number.isNaN(httpPort)) {
@@ -1597,33 +1762,25 @@ async function main() {
       process.exit(1);
     }
     const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
-    const { createServer } = await import("http");
-    const { randomUUID } = await import("crypto");
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
+      // A page on some other origin can resolve a name to 127.0.0.1 and POST
+      // here; the Host header is what tells that apart from a real local call.
+      enableDnsRebindingProtection: true,
+      allowedHosts: httpAllowedHosts(httpPort),
     });
     await server.connect(transport);
 
-    const httpServer = createServer((req, res) => {
-      const pathname = (req.url ?? "/").split("?")[0];
-      if (pathname !== "/mcp") {
-        res.writeHead(404, { "Content-Type": "text/plain" });
-        res.end("Not Found — MCP endpoint is at /mcp");
-        return;
-      }
-      transport.handleRequest(req, res).catch((e) => {
-        console.error("MCP HTTP request failed:", e);
-        if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "text/plain" });
-          res.end("Internal error");
-        }
-      });
-    });
-
-    httpServer.listen(httpPort, () => {
-      console.error(`crosspad-mcp HTTP transport listening on http://localhost:${httpPort}/mcp`);
-    });
+    const { token, generated } = resolveHttpToken();
+    await startHttpServer(httpPort, token, (req, res) => transport.handleRequest(req, res));
+    console.error(`crosspad-mcp HTTP transport listening on http://${HTTP_BIND_HOST}:${httpPort}/mcp (loopback only, bearer token required)`);
+    if (generated) {
+      console.error(
+        `crosspad-mcp: CROSSPAD_MCP_TOKEN was not set — generated one for this run.\n` +
+        `  Authorization: Bearer ${token}`,
+      );
+    }
     return;
   }
 

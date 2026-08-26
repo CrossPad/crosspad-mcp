@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { JobRegistry, jobs, type DaemonLike } from "./tasks.js";
+import { JobRegistry, jobs, POLL_INTERVAL_MS, type DaemonLike } from "./tasks.js";
 import { HilError } from "./hil/daemon.js";
 
 function deferred<T>() {
@@ -168,13 +168,22 @@ describe("JobRegistry.mirror — daemon-side tasks", () => {
     expect(r.status(id).status).toBe("cancelled");
   });
 
-  it("a daemon that dies mid-poll fails the mirrored job with DAEMON_DIED", async () => {
+  it("a daemon that stays dead fails the mirrored job with DAEMON_DIED, once the retries are spent", async () => {
+    const calls: string[] = [];
     const daemon: DaemonLike = {
-      async request<T>(): Promise<T> { throw new HilError("DAEMON_DIED", "daemon exited with code 1", "Traceback"); },
+      async request<T>(op: string): Promise<T> {
+        calls.push(op);
+        throw new HilError("DAEMON_DIED", "daemon exited with code 1", "Traceback");
+      },
     };
     const r = new JobRegistry();
     const id = r.mirror(daemon, "task_9", "hil_run");
     await vi.advanceTimersByTimeAsync(1);
+    expect(r.status(id).status, "one dead poll is not proof the task is gone").toBe("working");
+    await vi.advanceTimersByTimeAsync(4 * POLL_INTERVAL_MS);
     expect(r.status(id)).toMatchObject({ status: "failed", error: { code: "DAEMON_DIED" } });
+    // Giving up locally has to cancel the daemon side, or the scenario keeps
+    // running with nothing left that can stop it.
+    expect(calls).toContain("task.cancel");
   });
 });

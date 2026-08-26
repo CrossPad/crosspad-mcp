@@ -16,6 +16,7 @@ import { z } from "zod";
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
+import { requireConfirmation, CONFIRMATION_OUTPUT } from "../policy/confirm.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
 import type { OnLine } from "../utils/exec.js";
@@ -50,6 +51,8 @@ const Platform = z.enum(["idf", "pc", "arduino"]).default("idf")
 export const AppsInputShape = {
   action: z.enum(["list", "install", "remove", "update", "sync"])
     .describe("list reads the registry (no Python needed); install/remove/update/sync mutate a checkout"),
+  confirm_token: z.string().optional()
+    .describe("Echo the token from a confirmation_required reply to proceed"),
   platform: Platform,
   show_all: z.boolean().optional().describe("list: include apps incompatible with every detected platform"),
   app_name: AppName.optional().describe("install/remove/update: app ID from the registry, e.g. 'sampler'"),
@@ -58,11 +61,14 @@ export const AppsInputShape = {
   update_all: z.boolean().optional().describe("update: update every installed app instead of one named app"),
 };
 
+const ConfirmToken = z.string().optional();
+
 export const AppsInput = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("list"),
     platform: Platform.optional(),
     show_all: z.boolean().optional(),
+    confirm_token: ConfirmToken,
   }),
   z.object({
     action: z.literal("install"),
@@ -70,21 +76,25 @@ export const AppsInput = z.discriminatedUnion("action", [
     app_name: AppName,
     ref: GitRef.optional(),
     force: z.boolean().optional(),
+    confirm_token: ConfirmToken,
   }),
   z.object({
     action: z.literal("remove"),
     platform: Platform,
     app_name: AppName,
+    confirm_token: ConfirmToken,
   }),
   z.object({
     action: z.literal("update"),
     platform: Platform,
     app_name: AppName.optional(),
     update_all: z.boolean().optional(),
+    confirm_token: ConfirmToken,
   }),
   z.object({
     action: z.literal("sync"),
     platform: Platform,
+    confirm_token: ConfirmToken,
   }),
 ]);
 export type AppsArgs = z.infer<typeof AppsInput>;
@@ -94,6 +104,7 @@ export type AppsArgs = z.infer<typeof AppsInput>;
 // field is a validation failure at the client, and the sub-result is not this
 // tool's to freeze.
 export const O_Apps = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
   action: z.string().optional(),
   platform: z.string().optional(),
@@ -175,6 +186,27 @@ async function refuseIfLocalWork(
   };
 }
 
+/**
+ * Which apps `update_all` would actually rewrite on this platform. The manifest
+ * reader lives inside app-manager, so the registry listing is the only view of
+ * it this tool has; when that listing is unavailable there is no way to know
+ * what is about to be overwritten, and answering "nothing" is how update_all
+ * came to be unguarded in the first place.
+ */
+function installedAppNames(deps: AppsDeps, platform: string): { apps: string[] } | { error: Payload } {
+  const listed = deps.list(true);
+  if (!listed.success) {
+    return {
+      error: fail(
+        "update", platform, "GUARD_UNAVAILABLE",
+        "Cannot tell which apps update_all would rewrite: the crosspad-apps registry could not be loaded.",
+        "Ensure the 'gh' CLI is authenticated, or update one app at a time with `app_name` — that path checks git directly and needs no registry.",
+      ),
+    };
+  }
+  return { apps: listed.apps.filter((a) => a.installed_in.some((i) => i.platform === platform)).map((a) => a.id) };
+}
+
 /** An AppActionResult flattened into this tool's envelope. */
 function fromAction(r: AppActionResult): Payload {
   const payload: Payload = {
@@ -237,6 +269,17 @@ export async function runApps(
       if (args.app_name && updateAll) {
         return fail("update", platform, "INVALID_ARGS", "`app_name` and `update_all: true` are mutually exclusive — pick one.");
       }
+      if (updateAll) {
+        // The guard above only runs for a named app, which left the one variant
+        // that rewrites *every* submodule as the only unguarded path — the exact
+        // opposite of what the tool description promises.
+        const listed = installedAppNames(deps, platform);
+        if ("error" in listed) return listed.error;
+        for (const name of listed.apps) {
+          const refusal = await refuseIfLocalWork(deps, "update", platform, name, signal);
+          if (refusal) return refusal;
+        }
+      }
       return fromAction(await deps.update(platform, args.app_name, updateAll, onLine, signal));
     }
     case "sync":
@@ -245,6 +288,21 @@ export async function runApps(
       const unknown = (args as { action?: unknown }).action;
       return fail(String(unknown ?? ""), platform, "UNKNOWN_ACTION", `Unknown action "${String(unknown)}"; expected list, install, remove, update or sync.`);
     }
+  }
+}
+
+/** What a confirmation prompt says this call would do. */
+function summarizeApps(args: AppsArgs): string {
+  const platform = (args as { platform?: string }).platform ?? "idf";
+  const app = (args as { app_name?: string }).app_name;
+  switch (args.action) {
+    case "list": return "Read the crosspad-apps registry.";
+    case "sync": return `Rebuild ${platform}'s app manifest from what is on disk.`;
+    case "update":
+      return (args as { update_all?: boolean }).update_all
+        ? `Update every app installed on ${platform} — this rewrites each submodule.`
+        : `Update the ${app} submodule on ${platform}.`;
+    default: return `${args.action} the ${app} submodule on ${platform}.`;
   }
 }
 
@@ -268,10 +326,15 @@ export function registerAppsTool(server: McpServer, ctx: ToolContext): Registere
         "action=list reads app-registry.json + apps.json across every detected repo and needs no Python; " +
         "action=install {app_name, ref?, force?}, action=remove {app_name}, action=update {app_name | update_all}, " +
         "action=sync rebuild the manifest from disk — all four delegate to <repo>/{tools|scripts}/app_manager.py and need the 'gh' CLI authenticated. " +
-        "`platform` selects the repo (idf default, pc, arduino). install/remove/update refuse to run over an app checkout with uncommitted or unpushed work. " +
-        "Different from crosspad_list_apps_source, which scans REGISTER_APP() in source code.",
+        "`platform` selects the repo (idf default, pc, arduino). install/remove/update refuse to run over an app checkout with uncommitted or unpushed work — update_all included, which checks every installed app before it starts. " +
+        "Different from crosspad_list_apps_source, which scans REGISTER_APP() in source code. " +
+        "SAFETY: annotations are static per tool, so this one is advertised at its worst case. Only install/remove/update/sync rewrite a checkout; action=list just reads app-registry.json and apps.json and changes nothing.",
       inputSchema: AppsInputShape,
       outputSchema: O_Apps,
+      // Deliberately the worst action this tool has, not a representative one:
+      // the tier is per-call, one annotation has to cover every call, and an
+      // under-stated hint is the dangerous direction to be wrong in. The
+      // description says which action is actually read-only.
       annotations: annotationsFor(tierOf(TOOL_NAME, { action: "install" })),
     },
     async (rawArgs, extra): Promise<ToolResult> => {
@@ -290,6 +353,23 @@ export function registerAppsTool(server: McpServer, ctx: ToolContext): Registere
       const decision = decide(ctx.policy, TOOL_NAME, argsRec);
       if (decision === "hidden") {
         return jsonResponse(fail(args.action, undefined, "HIDDEN", `${TOOL_NAME} ${args.action} is hidden by policy`));
+      }
+      // The engine's third answer. Falling through on it meant a rule that put
+      // `confirm` on this tool installed or removed a submodule anyway.
+      if (decision === "confirm") {
+        const outcome = await requireConfirmation(server, extra, TOOL_NAME, argsRec, summarizeApps(args));
+        if (outcome.status === "token") {
+          return jsonResponse(outcome.result.structuredContent as Record<string, unknown>);
+        }
+        if (outcome.status === "declined") {
+          return jsonResponse(fail(
+            args.action,
+            (args as { platform?: string }).platform,
+            "CANCELLED_BY_USER",
+            `${TOOL_NAME} was declined by the user.`,
+            "Do not retry automatically; ask before issuing this call again.",
+          ));
+        }
       }
       try {
         return jsonResponse(await runApps(args, defaultDeps, streamLogger(server), extra.signal));

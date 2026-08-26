@@ -10,6 +10,7 @@ import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sd
 import type { ToolContext } from "../tool-context.js";
 import { jsonResponse, errorResult, type ToolResult } from "../tool-result.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
+import { assertAllowedPath } from "../utils/paths.js";
 
 const STIM = "crosspad_stimulus";
 const BLE = "crosspad_ble";
@@ -115,7 +116,22 @@ export function registerStimulusTool(server: McpServer, ctx: ToolContext): Regis
             signal: extra.signal,
             timeoutMs: 60_000,
           });
-          const handle = String(r.handle);
+          // String(undefined) is the string "undefined", which registers fine
+          // and hands the model a handle that can never stop the pads.
+          if (typeof r.handle !== "string" || r.handle.length === 0) {
+            return jsonResponse({
+              success: false,
+              action: "start",
+              plan: r,
+              error: {
+                code: "BAD_DAEMON_REPLY",
+                message: "stim.start returned no handle — the pads may be firing with nothing to stop them.",
+                hint: "Check the daemon version; crosspad_cdc can quiet the board in the meantime.",
+              },
+              ts: Date.now(),
+            });
+          }
+          const handle = r.handle;
           ctx.handles.register(handle, { kind: "stimulus", device: args.device });
           return jsonResponse({
             success: true,
@@ -229,6 +245,10 @@ export function registerDiagnoseCrashTool(server: McpServer, ctx: ToolContext): 
       extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
     ): Promise<ToolResult> => {
       try {
+        // Spec §4.3: both are read off this host, and `log_file` is echoed back
+        // as a resource_link — an unconfined one turns this into a file reader.
+        assertAllowedPath("log_file", args.log_file);
+        assertAllowedPath("elf", args.elf);
         const opArgs: Record<string, unknown> = {};
         for (const k of ["device", "console_handle", "log_file", "elf", "seconds", "decode", "context_lines"] as const) {
           if (args[k] !== undefined) opArgs[k] = args[k];

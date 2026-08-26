@@ -1,22 +1,22 @@
 import { describe, it, expect } from "vitest";
 import { TOOL_TIERS, tierOf, annotationsFor } from "./tiers.js";
+import { TOOLSETS, LEGACY_TOOLSET_OF } from "../toolsets.js";
 
-const ALL_V10_TOOLS = [
-  "crosspad_devices", "crosspad_doctor", "crosspad_snapshot", "crosspad_build", "crosspad_flash",
-  "crosspad_repo_status", "crosspad_toolsets", "crosspad_task",
-  "crosspad_cdc", "crosspad_console", "crosspad_ui", "crosspad_midi", "crosspad_usb_mode", "crosspad_audio_route",
-  "crosspad_run", "crosspad_kill", "crosspad_check", "crosspad_screenshot", "crosspad_input", "crosspad_stats",
-  "crosspad_settings_get", "crosspad_settings_set", "crosspad_test_run",
-  "crosspad_search_symbols", "crosspad_list_interfaces", "crosspad_interface_implementations",
-  "crosspad_capabilities", "crosspad_list_apps_source",
-  "crosspad_repo_diff", "crosspad_submodule_update", "crosspad_commit",
-  "crosspad_apps_list", "crosspad_apps_install", "crosspad_apps_remove", "crosspad_apps_update", "crosspad_apps_sync",
-  "crosspad_trace",
-];
+// Derived from the registration tables rather than retyped. A hand-kept literal
+// silently stopped naming ten tools, and this is the invariant that least
+// tolerates that: an undeclared tool falls through to `danger`, and `danger` is
+// removed outright under --read-only, so forgetting one makes it vanish.
+const ALL_V10_TOOLS = [...new Set([...Object.values(TOOLSETS).flat(), ...Object.keys(LEGACY_TOOLSET_OF)])];
 
 describe("TOOL_TIERS", () => {
-  it("covers every v10 tool", () => {
+  it("covers every tool the server registers", () => {
     for (const t of ALL_V10_TOOLS) expect(TOOL_TIERS[t], t).toBeDefined();
+  });
+  it("declares nothing that is not registered — a stale entry hides a rename", () => {
+    for (const t of Object.keys(TOOL_TIERS)) expect(ALL_V10_TOOLS, t).toContain(t);
+  });
+  it("no registered tool relies on the unknown-tool default", () => {
+    for (const t of ALL_V10_TOOLS) expect(tierOf(t, {}), t).not.toBe(undefined);
   });
   it("unknown tools default to danger", () => {
     expect(tierOf("crosspad_does_not_exist", {})).toBe("danger");

@@ -19,6 +19,7 @@ import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
 import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, toolError, type ToolResult } from "../tool-result.js";
+import { assertAllowedPath } from "../utils/paths.js";
 import { CROSSPAD_IDF_ROOT, CROSSPAD_STM_ROOT, stmArtifact, type StmPreset } from "../config.js";
 import { crosspadIdfFlash } from "./idf-flash.js";
 import { crosspadStmFlash } from "./stm-flash.js";
@@ -447,6 +448,14 @@ export function registerFlashTool(server: McpServer, ctx: ToolContext): Register
           if (args.transport === "uart" && args.delta_base) throw new HilError("BAD_ARGS", "'delta_base' is OTA-only");
         }
 
+        // ── path allowlist (spec §4.3) ────────────────────────────────
+        // Before the preflight, because a path this server may not read is not
+        // a question about the device. build_dir is here too: it is where the
+        // default binary is taken from, so it names a firmware just as directly.
+        assertAllowedPath("firmware_path", args.firmware_path);
+        assertAllowedPath("build_dir", args.build_dir);
+        assertAllowedPath("delta_base", args.delta_base);
+
         // ── preflight (always computed, always returned) ──────────────
         let preflight: FlashPreflight;
         let device: Device | null = null;
@@ -498,7 +507,12 @@ export function registerFlashTool(server: McpServer, ctx: ToolContext): Register
         // sent back for a second confirmation.
         const confirmArgs: Record<string, unknown> = { ...argsRec };
         delete confirmArgs.wait_seconds;
-        const c = await requireConfirmation(server, extra, TOOL_NAME, confirmArgs, summarizeFlash(args, preflight));
+        // Bound to the board the preflight actually resolved, not to the
+        // `device` argument — with one board attached that argument is
+        // normally absent, and an approval must not survive swapping the cable.
+        const c = await requireConfirmation(
+          server, extra, TOOL_NAME, confirmArgs, summarizeFlash(args, preflight), preflight.device,
+        );
         if (c.status === "token") {
           return jsonResponse({ ...(c.result.structuredContent as Record<string, unknown>), preflight });
         }

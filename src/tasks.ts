@@ -4,7 +4,7 @@
 // otherwise — identical handle, identical states (spec §3.5). Results are
 // retained 1 h after the terminal state. Daemon-side tasks are mirrored by a
 // local job that polls `task.status` every 500 ms and forwards `task.cancel`.
-import { HilError } from "./hil/daemon.js";
+import { HilError, DAEMON_DIED, TIMEOUT } from "./hil/daemon.js";
 import { TaskStatusSchema } from "./hil/schemas.js";
 
 export type JobState = "working" | "completed" | "failed" | "cancelled";
@@ -42,6 +42,27 @@ interface Job {
 
 export const RETENTION_MS = 3_600_000;
 export const POLL_INTERVAL_MS = 500;
+/** Consecutive failed `task.status` polls tolerated before the mirror gives up. */
+export const POLL_RETRIES = 3;
+/** How long a mirrored task may run before the mirror stops watching it.
+ *  Longer than the longest scenario anyone runs (`stability --duration-hours 8`)
+ *  by a wide margin — this is the backstop for a daemon task that will never
+ *  reach a terminal state, not a policy on how long work may take. */
+export const DAEMON_TASK_DEADLINE_MS = 24 * 3_600_000;
+
+export interface PumpOpts {
+  /** Give up (and cancel the daemon side) after this long. */
+  deadlineMs?: number;
+  /** Consecutive transient poll failures tolerated. */
+  retries?: number;
+}
+
+/** A poll that failed because the daemon was busy or restarting says nothing
+ *  about the task it was asked about. Anything else — an unknown handle, a
+ *  reply that does not parse — is about the task, and is not worth retrying. */
+function isTransientPollFailure(e: unknown): boolean {
+  return e instanceof HilError && (e.code === TIMEOUT || e.code === DAEMON_DIED);
+}
 
 /**
  * Poll one daemon-side task ("task_N" from ota.flash / scenario.run) to its
@@ -56,16 +77,37 @@ export function pumpDaemonTask(
   signal: AbortSignal,
   progress: ProgressFn,
   pollMs: number = POLL_INTERVAL_MS,
+  opts: PumpOpts = {},
 ): Promise<unknown> {
+  const retries = opts.retries ?? POLL_RETRIES;
+  const deadline = Date.now() + (opts.deadlineMs ?? DAEMON_TASK_DEADLINE_MS);
   return new Promise<unknown>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelSent = false;
+    let failures = 0;
+    const forwardCancel = (): void => {
+      if (cancelSent) return;
+      cancelSent = true;
+      daemon.request("task.cancel", { task: daemonTask }).catch(() => {});
+    };
+    // Whenever this side stops watching, the daemon side has to be told. The
+    // local job goes terminal the moment this promise rejects, JobRegistry
+    // .cancel() answers false from then on, and an 8-hour `stability` run would
+    // otherwise keep driving the board with no handle left that could stop it.
+    const giveUp = (e: unknown): void => { forwardCancel(); reject(e); };
     const poll = async (): Promise<void> => {
       let st;
       try {
         st = TaskStatusSchema.parse(await daemon.request("task.status", { task: daemonTask }));
+        failures = 0;
       } catch (e) {
-        reject(e);
+        // A 30 s TIMEOUT on `task.status` under a pad storm means the daemon
+        // was busy, not that the task is gone. Only a run of them is evidence.
+        if (isTransientPollFailure(e) && ++failures <= retries) {
+          timer = setTimeout(() => { void poll(); }, pollMs);
+          return;
+        }
+        giveUp(e);
         return;
       }
       if (typeof st.progress === "number") {
@@ -81,12 +123,19 @@ export function pumpDaemonTask(
         return;
       }
       if (st.status === "cancelled") { reject(new HilError("CANCELLED", `daemon task ${daemonTask} cancelled`)); return; }
+      if (Date.now() >= deadline) {
+        giveUp(new HilError(
+          TIMEOUT,
+          `daemon task ${daemonTask} is still working after ${Math.round((Date.now() - (deadline - (opts.deadlineMs ?? DAEMON_TASK_DEADLINE_MS))) / 1000)} s`,
+          "the daemon side has been cancelled; check `crosspad_doctor` and the daemon log",
+          { task: daemonTask },
+        ));
+        return;
+      }
       timer = setTimeout(() => { void poll(); }, pollMs);
     };
     signal.addEventListener("abort", () => {
-      if (cancelSent) return;
-      cancelSent = true;
-      daemon.request("task.cancel", { task: daemonTask }).catch(() => {});
+      forwardCancel();
       if (timer === null) return;
       clearTimeout(timer);
       timer = null;
@@ -152,8 +201,8 @@ export class JobRegistry {
   }
 
   /** Mirror a daemon task ("task_N" from scenario.run / ota.flash) as a local job. */
-  mirror(daemon: DaemonLike, daemonTask: string, kind: string, pollIntervalMs: number = POLL_INTERVAL_MS): string {
-    const id = this.create(kind, (signal, progress) => pumpDaemonTask(daemon, daemonTask, signal, progress, pollIntervalMs));
+  mirror(daemon: DaemonLike, daemonTask: string, kind: string, pollIntervalMs: number = POLL_INTERVAL_MS, opts: PumpOpts = {}): string {
+    const id = this.create(kind, (signal, progress) => pumpDaemonTask(daemon, daemonTask, signal, progress, pollIntervalMs, opts));
     const job = this.jobs.get(id)!;
     job.status.daemonTask = daemonTask;
     return id;

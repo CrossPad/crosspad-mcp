@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import { fileURLToPath } from "url";
 
 vi.mock("../utils/remote-client.js", () => ({
   isSimulatorRunning: vi.fn(async () => true),
@@ -7,6 +11,25 @@ vi.mock("../utils/remote-client.js", () => ({
 
 import { sendRemoteCommand } from "../utils/remote-client.js";
 import { crosspadSettingsGet, crosspadSettingsSet, settingsCategories } from "./settings.js";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+/** A checkout whose CrosspadSettings.hpp is the miniature one in __fixtures__. */
+const FIXTURE_IDF_ROOT = path.join(HERE, "__fixtures__", "settings-idf");
+
+/** settingsCategories() as it comes out for a given platform-idf checkout. */
+async function categoriesFor(idfRoot: string): Promise<string[]> {
+  vi.resetModules();
+  vi.doMock("../config.js", async (orig) => ({
+    ...(await orig<typeof import("../config.js")>()),
+    CROSSPAD_IDF_ROOT: idfRoot,
+  }));
+  try {
+    return (await import("./settings.js")).settingsCategories();
+  } finally {
+    vi.doUnmock("../config.js");
+    vi.resetModules();
+  }
+}
 
 const send = vi.mocked(sendRemoteCommand);
 
@@ -32,6 +55,37 @@ describe("settingsCategories", () => {
     const a = settingsCategories();
     expect(new Set(a).size).toBe(a.length);
     expect(settingsCategories()).toEqual(a);
+  });
+
+  it("derives the whole list from the header it parses", async () => {
+    // The point of the v10 fix was that this list stops being hardcoded. A test
+    // that only checks membership cannot see the difference: replacing the
+    // parse with `["all", ...FALLBACK_GROUPS, ...FLAT_CATEGORIES]` keeps every
+    // membership assertion green. Pinning the derived list against a fixture
+    // header is what actually holds the parse in place.
+    expect(await categoriesFor(FIXTURE_IDF_ROOT)).toEqual([
+      "all", "audio", "display", "keypad", "masterfx", "stm", "system", "vibration", "wireless",
+    ]);
+  });
+
+  it("falls back to the known groups when there is no checkout to parse", async () => {
+    const nowhere = path.join(os.tmpdir(), "crosspad-no-such-checkout");
+    expect(await categoriesFor(nowhere)).toEqual([
+      "all", "audio", "display", "keypad", "system", "vibration", "wireless",
+    ]);
+  });
+
+  it("reads more groups off the real checkout than the fallback lists", () => {
+    // The fallback is four groups plus two flat ones; the firmware header has
+    // grown well past that. If this ever equals the fallback, the parse died.
+    const header = path.join(
+      process.env.CROSSPAD_IDF_ROOT ?? path.join(os.homedir(), "GIT", "platform-idf"),
+      "components/crosspad-core/include/crosspad/settings/CrosspadSettings.hpp",
+    );
+    if (!fs.existsSync(header)) return; // no platform-idf checkout here
+    const cats = settingsCategories();
+    expect(cats.length).toBeGreaterThan(7);
+    expect(cats).toContain("stm");
   });
 });
 

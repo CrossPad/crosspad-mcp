@@ -16,6 +16,10 @@ import {
   languageIdOf,
   uriToPath,
   _resetClangdForTest,
+  _clangdClientCount,
+  stopAllClangd,
+  killAllClangd,
+  installClangdShutdownHook,
   type ChildLike,
   type CompileDb,
 } from "./clangd.js";
@@ -72,6 +76,16 @@ class FakeClangd extends EventEmitter implements ChildLike {
   async waitMessages(n: number): Promise<Array<Record<string, unknown>>> {
     for (let i = 0; i < 400 && this.messages.length < n; i++) await new Promise((r) => setTimeout(r, 1));
     return this.messages;
+  }
+
+  /** Answer `shutdown` the way a live clangd does, so stop() need not wait out
+   *  its 2 s budget. */
+  async answerShutdown(): Promise<void> {
+    for (let i = 0; i < 400; i++) {
+      const m = this.messages.find((x) => x.method === "shutdown");
+      if (m) { this.reply(m.id as number, null); return; }
+      await new Promise((r) => setTimeout(r, 1));
+    }
   }
 
   /** Answer the pending `initialize` so start() resolves. */
@@ -275,6 +289,45 @@ describe("getClangdClient", () => {
     }
   });
 
+  it("kills the clangd it spawned when the handshake fails", async () => {
+    // Without this the map entry is dropped and the process is not: a clangd
+    // that is already background-indexing ~1950 translation units, with the
+    // only handle to it thrown away.
+    const children: FakeClangd[] = [];
+    const spawnFn = (): FakeClangd => {
+      const c = new FakeClangd();
+      children.push(c);
+      // Answer `initialize` with an LSP error, so start() rejects.
+      void c.waitMessages(1).then(([init]) =>
+        c.send({ jsonrpc: "2.0", id: init.id, error: { code: -32603, message: "bad compile db" } }),
+      );
+      return c;
+    };
+    await expect(getClangdClient(DB, { binary: "/usr/bin/clangd", spawnFn })).rejects.toBeInstanceOf(ClangdError);
+    expect(children).toHaveLength(1);
+    expect(children[0].killed).toContain("SIGKILL");
+    expect(_clangdClientCount()).toBe(0);
+  });
+
+  it("stops waiting on a startup the caller cancelled", async () => {
+    // The handshake is minutes on a cold tree. The caller must be able to walk
+    // away from it; the server itself keeps warming, because the index it is
+    // building is what the next call wants.
+    const children: FakeClangd[] = [];
+    const spawnFn = (): FakeClangd => {
+      const c = new FakeClangd();
+      children.push(c);
+      return c; // never answers `initialize`
+    };
+    const ac = new AbortController();
+    const p = getClangdClient(DB, { binary: "/usr/bin/clangd", spawnFn }, ac.signal);
+    const rejected = expect(p).rejects.toMatchObject({ code: "CANCELLED" });
+    await children[0].waitMessages(1);
+    ac.abort();
+    await rejected;
+    expect(children[0].killed).toHaveLength(0);
+  });
+
   it("reuses one server per index root", async () => {
     const children: FakeClangd[] = [];
     const spawnFn = () => {
@@ -380,5 +433,108 @@ describe("small helpers", () => {
   it("converts file uris back to paths and leaves others alone", () => {
     expect(uriToPath("file:///repo/main.cpp")).toBe("/repo/main.cpp");
     expect(uriToPath("not-a-uri")).toBe("not-a-uri");
+  });
+});
+
+// ── Cancellation ─────────────────────────────────────────────────────────────
+
+describe("ClangdClient cancellation", () => {
+  it("rejects a request when the caller's signal aborts, and tells clangd to drop it", async () => {
+    const h = makeClient();
+    const child = await started(h);
+    const ac = new AbortController();
+    const p = h.client.request("textDocument/references", {}, 60_000, ac.signal);
+    const rejected = expect(p).rejects.toMatchObject({ code: "CANCELLED" });
+    const before = child.messages.length;
+    ac.abort();
+    await rejected;
+    const cancel = child.messages.slice(before).find((m) => m.method === "$/cancelRequest");
+    expect(cancel, "no $/cancelRequest reached clangd").toBeDefined();
+  });
+
+  it("refuses to send at all when the signal is already aborted", async () => {
+    const h = makeClient();
+    const child = await started(h);
+    const sent = child.messages.length;
+    await expect(h.client.request("textDocument/hover", {}, 60_000, AbortSignal.abort())).rejects.toMatchObject({
+      code: "CANCELLED",
+    });
+    expect(child.messages).toHaveLength(sent);
+  });
+
+  it("drops the abort listener once the request has answered", async () => {
+    // The listener outliving the request is how a long-lived signal accumulates
+    // one dead closure per call.
+    const h = makeClient();
+    const child = await started(h);
+    const ac = new AbortController();
+    const off = vi.spyOn(ac.signal, "removeEventListener");
+    const p = h.client.request("textDocument/hover", {}, 60_000, ac.signal);
+    const [, , req] = await child.waitMessages(3);
+    child.reply(req.id as number, { contents: "x" });
+    await p;
+    expect(off).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("gives up the index-wait poll as soon as the caller cancels", async () => {
+    const h = makeClient({ indexWaitMs: 60_000, indexPollMs: 50, indexGraceMs: 60_000 });
+    const child = await started(h);
+    const ac = new AbortController();
+    const p = h.client.workspaceSymbol("PadManager", ac.signal);
+    const rejected = expect(p).rejects.toMatchObject({ code: "CANCELLED" });
+    // Let the first workspace/symbol answer empty so the loop enters its sleep.
+    const msgs = await child.waitMessages(3);
+    const q = msgs.find((m) => m.method === "workspace/symbol")!;
+    child.reply(q.id as number, []);
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort();
+    await rejected;
+  });
+});
+
+// ── Shutdown ─────────────────────────────────────────────────────────────────
+
+describe("clangd shutdown", () => {
+  const spawnHandshaking = (children: FakeClangd[]) => (): FakeClangd => {
+    const c = new FakeClangd();
+    children.push(c);
+    void c.completeHandshake();
+    return c;
+  };
+
+  it("stopAllClangd stops every server and empties the registry", async () => {
+    const children: FakeClangd[] = [];
+    await getClangdClient(DB, { binary: "/usr/bin/clangd", spawnFn: spawnHandshaking(children) });
+    expect(_clangdClientCount()).toBe(1);
+    const answered = children[0].answerShutdown();
+    await stopAllClangd();
+    await answered;
+    expect(_clangdClientCount()).toBe(0);
+    const shutdown = children[0].messages.find((m) => m.method === "shutdown");
+    expect(shutdown, "no LSP shutdown was sent").toBeDefined();
+    // Let the client see the process go, so its SIGTERM/SIGKILL ladder does not
+    // outlive the test.
+    children[0].emit("exit", 0);
+  });
+
+  it("killAllClangd is the synchronous backstop", async () => {
+    const children: FakeClangd[] = [];
+    await getClangdClient(DB, { binary: "/usr/bin/clangd", spawnFn: spawnHandshaking(children) });
+    killAllClangd();
+    expect(children[0].killed).toContain("SIGKILL");
+    expect(_clangdClientCount()).toBe(0);
+  });
+
+  it("the shutdown hook is what makes either of those run — nothing else calls them", async () => {
+    const children: FakeClangd[] = [];
+    await getClangdClient(DB, { binary: "/usr/bin/clangd", spawnFn: spawnHandshaking(children) });
+    const target = new EventEmitter() as unknown as NodeJS.Process;
+    const remove = installClangdShutdownHook(target);
+    target.emit("exit", 0);
+    expect(children[0].killed).toContain("SIGKILL");
+    expect(_clangdClientCount()).toBe(0);
+    remove();
+    expect(target.listenerCount("exit")).toBe(0);
+    expect(target.listenerCount("beforeExit")).toBe(0);
   });
 });

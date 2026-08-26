@@ -87,7 +87,11 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { crosspadBuild, crosspadKill, crosspadRun } from "./tools/build.js";
 import { crosspadIdfBuild } from "./tools/idf-build.js";
 import { crosspadBuildCheck } from "./tools/build-check.js";
-import { server, setTraceBrowserOpener } from "./index.js";
+import type { AddressInfo } from "net";
+import {
+  server, setTraceBrowserOpener,
+  bearerMatches, resolveHttpToken, httpAllowedHosts, startHttpServer,
+} from "./index.js";
 import { _setConfigPathForTest } from "./utils/userConfig.js";
 
 const mockedPcBuild = vi.mocked(crosspadBuild);
@@ -242,6 +246,95 @@ describe("crosspad_trace via MCP API", () => {
       device_state: "idle",
       sample_count: 0,
     });
+  });
+});
+
+describe("crosspad_trace danger actions are confirmed (S2)", () => {
+  it("write returns a confirmation and pokes nothing", async () => {
+    const r = await client.callTool({
+      name: "crosspad_trace",
+      arguments: { action: "write", writes: ["@0x50000414:u16=0xFFFF"] },
+    });
+    const sc = r.structuredContent as any;
+    expect(sc.success).toBe(false);
+    expect(sc.resultType).toBe("confirmation_required");
+    expect(sc.confirmation.summary).toContain("0x50000414");
+    expect(sc.confirmation.token).toMatch(/^cfm_/);
+  });
+
+  it("call is confirmed even with confirm:true — that flag acknowledges the halt, it is not an approval", async () => {
+    const r = await client.callTool({
+      name: "crosspad_trace",
+      arguments: { action: "call", func: "HAL_NVIC_SystemReset", confirm: true },
+    });
+    const sc = r.structuredContent as any;
+    expect(sc.resultType).toBe("confirmation_required");
+    expect(sc.confirmation.summary).toContain("HAL_NVIC_SystemReset");
+  });
+
+  it("a read action still runs without a token", async () => {
+    const r = await client.callTool({ name: "crosspad_trace", arguments: { action: "status" } });
+    expect((r.structuredContent as any).success).toBe(true);
+  });
+
+  it("advertises itself as destructive — it contains write and call", async () => {
+    const { tools } = await client.listTools();
+    const t = tools.find((x) => x.name === "crosspad_trace")!;
+    expect(t.annotations?.destructiveHint).toBe(true);
+    expect(t.annotations?.readOnlyHint).toBe(false);
+  });
+});
+
+describe("--http is loopback + bearer only (S1, spec §3.6/§4.3)", () => {
+  it("takes CROSSPAD_MCP_TOKEN, and generates one when it is absent", () => {
+    expect(resolveHttpToken({ CROSSPAD_MCP_TOKEN: "abc" })).toEqual({ token: "abc", generated: false });
+    const generated = resolveHttpToken({});
+    expect(generated.generated).toBe(true);
+    expect(generated.token).toMatch(/^[0-9a-f]{48}$/);
+  });
+
+  it("accepts only the exact bearer token", () => {
+    expect(bearerMatches("Bearer s3cret", "s3cret")).toBe(true);
+    expect(bearerMatches("bearer  s3cret", "s3cret")).toBe(true);
+    expect(bearerMatches(undefined, "s3cret")).toBe(false);
+    expect(bearerMatches("Bearer s3cre", "s3cret")).toBe(false);
+    expect(bearerMatches("Bearer s3cretx", "s3cret")).toBe(false);
+    expect(bearerMatches("Basic s3cret", "s3cret")).toBe(false);
+    expect(bearerMatches("s3cret", "s3cret")).toBe(false);
+  });
+
+  it("allows only this port's loopback names as Host", () => {
+    expect(httpAllowedHosts(8080)).toEqual(["127.0.0.1:8080", "localhost:8080", "[::1]:8080"]);
+  });
+
+  it("binds 127.0.0.1 and never reaches the transport unauthenticated", async () => {
+    const seen: string[] = [];
+    const srv = await startHttpServer(0, "s3cret", async (req, res) => {
+      seen.push(req.url ?? "");
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("reached");
+    });
+    try {
+      const addr = srv.address() as AddressInfo;
+      expect(addr.address).toBe("127.0.0.1");
+      const url = `http://127.0.0.1:${addr.port}/mcp`;
+
+      const anon = await fetch(url, { method: "POST" });
+      expect(anon.status).toBe(401);
+      expect(anon.headers.get("www-authenticate")).toContain("Bearer");
+
+      const wrong = await fetch(url, { method: "POST", headers: { authorization: "Bearer nope" } });
+      expect(wrong.status).toBe(401);
+      expect(seen).toEqual([]);
+
+      const good = await fetch(url, { method: "POST", headers: { authorization: "Bearer s3cret" } });
+      expect(good.status).toBe(200);
+      expect(seen).toEqual(["/mcp"]);
+      // No CORS grant: a page on another origin must not be able to use this.
+      expect(good.headers.get("access-control-allow-origin")).toBeNull();
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
   });
 });
 
@@ -435,12 +528,22 @@ describe("sim toolset input schemas", () => {
     return tool!.inputSchema as any;
   }
 
-  it("crosspad_settings_get offers the categories CrosspadSettings declares", async () => {
-    const cats: string[] = (await schemaOf("crosspad_settings_get")).properties.category.enum;
-    expect(cats).toContain("all");
-    for (const c of ["display", "keypad", "vibration", "wireless", "audio", "system"]) {
-      expect(cats, `missing '${c}'`).toContain(c);
+  it("crosspad_settings_get publishes exactly what its handler accepts", async () => {
+    const cat = (await schemaOf("crosspad_settings_get")).properties.category;
+    // No frozen enum. settingsCategories() is derived through an
+    // mtime-invalidated cache and changes while the process runs, so an enum
+    // captured at registration rejected valid categories at the protocol edge —
+    // where the handler's own "Known: ..." message is never reached.
+    expect(cat.enum).toBeUndefined();
+    expect(cat.type).toBe("string");
+    for (const c of ["all", "display", "keypad", "vibration", "wireless", "audio", "system"]) {
+      expect(cat.description, `missing '${c}'`).toContain(c);
     }
+  });
+
+  it("an unknown category reaches the handler, which answers with the list it knows", async () => {
+    const r = await client.callTool({ name: "crosspad_settings_get", arguments: { category: "no_such_group" } });
+    expect(String((r.structuredContent as any).error)).toContain("Unknown settings category 'no_such_group'");
   });
 
   it("crosspad_settings_set takes a boolean as well as a number", async () => {

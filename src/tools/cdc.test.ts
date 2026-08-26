@@ -64,9 +64,11 @@ describe("crosspad_cdc tool", () => {
     expect(res.structuredContent).toMatchObject({ success: true, line: "MEM: free=18712 largest=4096", rtt_ms: 3.2 });
   });
   it("refuses a raw cmd with a newline or control bytes", async () => {
+    // A newline would split into two device commands past a prefix-only tier
+    // check. The schema rejects it, so the call never reaches the handler —
+    // which is the strongest form of "the daemon is never touched".
     const t = mk({});
-    const res = await t.call({ verb: "raw", cmd: "MEM\nOTA_BEGIN 1 x" });
-    expect(res.isError).toBe(true);
+    await expect(t.call({ verb: "raw", cmd: "MEM\nOTA_BEGIN 1 x" })).rejects.toThrow();
     expect(t.daemon.calls.length).toBe(0);
   });
   it("system bootloader_request under strict policy returns a confirmation token and performs nothing", async () => {
