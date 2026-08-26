@@ -13,6 +13,7 @@ import { ToolsetManager, toolsetOf, toolsetOrder, toolOrder } from "./toolsets.j
 import type { ToolContext } from "./tool-context.js";
 import { registerToolsetsTool } from "./tools/toolsets-tool.js";
 import { registerTaskTool } from "./tools/task.js";
+import { registerKnowledgeResources } from "./resources/knowledge.js";
 
 /** A v10 tool module's registration entry point, plus where the tool belongs. */
 export interface ToolRegistrar {
@@ -158,4 +159,8 @@ export function registerAll(
 
   // ── resources (not toolset-gated: a resource costs no tool-schema context) ──
   for (const register of extra.resources ?? []) register(server, ctx);
+  // The knowledge catalogs have no optional dependency to probe for — they are
+  // three daemon reads — so they are wired statically rather than through the
+  // load-if-present path the device resources use.
+  registerKnowledgeResources(server, ctx);
 }
