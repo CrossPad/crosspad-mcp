@@ -34,7 +34,7 @@ describe("release metadata", () => {
 
   it("CHANGELOG's newest entry is 10.0.0", () => {
     const firstHeading = changelog.split("\n").find((l) => l.startsWith("## ["));
-    expect(firstHeading).toBe("## [10.0.0] — 2026-08-26");
+    expect(firstHeading).toBe("## [10.0.0] — 2026-08-28");
     expect(changelog).toContain("crosspad-hil");
   });
 });

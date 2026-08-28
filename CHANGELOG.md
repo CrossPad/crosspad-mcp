@@ -4,7 +4,7 @@ All notable changes to crosspad-mcp-server. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [10.0.0] — 2026-08-26
+## [10.0.0] — 2026-08-28
 
 Breaking. The server stops being a bag of shell wrappers and becomes a thin,
 safe front over the [crosspad-hil](https://github.com/CrossPad/crosspad-hil)
@@ -35,6 +35,11 @@ daemon (`hilVersion` 1.0.0, spawned as `python -m crosspad_hil.serve`).
 - **Eval harness** (`eval/tasks.json`, `eval/grade.ts`) for the meta-bug in
   `todo.md`: 10 recorded-transcript tasks that fail when the model shells out
   instead of calling a `crosspad_*` tool.
+- **Safe DFU write order** in `crosspad_flash target=stm method=dfu`: erase
+  flash page 0, program the tail, program page 0 last — a flash interrupted
+  anywhere before the final 2 KB page re-enters DFU on a plain USB replug via
+  the G0 ROM's empty check (verified on hardware). Pairs with STM firmware
+  v1.1's post-DFU autorestart and BOOT0-pin backstop.
 
 ### Changed
 - `crosspad_devices` enumerates through the daemon (`devices.list`): USB mode,
@@ -46,6 +51,21 @@ daemon (`hilVersion` 1.0.0, spawned as `python -m crosspad_hil.serve`).
 - No `execSync`/`spawnSync` on the request path: `crosspad_repo_status` runs its
   per-repo git calls concurrently (limit 4) and every subprocess honours
   cancellation.
+
+### Fixed
+- **The HTTP transport was open**: `--http` bound 0.0.0.0 with no token and no
+  Host check. Now loopback-only with a bearer token (generated and printed when
+  unset) and DNS-rebinding protection.
+- `crosspad_trace` `write`/`call` are danger tier with honest annotations —
+  they poke SRAM and halt the core, and now confirm like every other danger
+  verb.
+- The stdio server exits when its only client closes the pipe, instead of
+  piling up orphaned servers each holding a live crosspad-hil daemon (and a
+  board handle) built from stale code.
+- Error results no longer violate the tools' closed output schemas (the
+  `details` field every error carried was undeclared, so real clients rejected
+  the first error they saw); the test fake now validates input and output the
+  way the SDK does, which is what had hidden all of the above.
 
 ### Removed
 - The v9 inline device enumeration (`listDevices()` on the tool path).
