@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { stmFlashArgv, resolveProgrammer } from "./stm-flash.js";
+import { stmFlashArgv, resolveProgrammer, prepareDfuSplit, DFU_HEAD_SIZE } from "./stm-flash.js";
 import { _setConfigPathForTest } from "../utils/userConfig.js";
 import { STM_FLASH_ADDR } from "../config.js";
 
@@ -16,7 +16,7 @@ describe("stm-flash", () => {
         "-rst", "--start", STM_FLASH_ADDR,
       ]);
     });
-    it("dfu: USB1 program + start at flash origin", () => {
+    it("dfu without split: USB1 program + start at flash origin", () => {
       const argv = stmFlashArgv("dfu", "/tmp/fw.bin");
       expect(argv).toEqual([
         "-c", "port=USB1",
@@ -24,9 +24,48 @@ describe("stm-flash", () => {
         "-s", STM_FLASH_ADDR,
       ]);
     });
+    it("dfu with split: erase page 0, tail first, head last, then start", () => {
+      const argv = stmFlashArgv("dfu", "/tmp/fw.bin", { head: "/tmp/fw.bin.dfu_head", tail: "/tmp/fw.bin.dfu_tail" });
+      expect(argv).toEqual([
+        "-c", "port=USB1",
+        "-e", "[0 0]",
+        "-w", "/tmp/fw.bin.dfu_tail", "0x08000800",
+        "-w", "/tmp/fw.bin.dfu_head", STM_FLASH_ADDR,
+        "-s", STM_FLASH_ADDR,
+      ]);
+    });
     it("never wraps the firmware path in a shell — it is a bare argv element", () => {
       const argv = stmFlashArgv("swd", "/path with spaces/fw.bin");
       expect(argv).toContain("/path with spaces/fw.bin");
+    });
+  });
+
+  describe("prepareDfuSplit", () => {
+    let tmpDir: string;
+    afterEach(() => {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("splits at the first flash page and preserves the byte stream", () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dfu-split-test-"));
+      const bin = path.join(tmpDir, "fw.bin");
+      const data = Buffer.alloc(DFU_HEAD_SIZE + 100);
+      for (let i = 0; i < data.length; i++) data[i] = i & 0xff;
+      fs.writeFileSync(bin, data);
+      const split = prepareDfuSplit(bin);
+      expect(split).not.toBeNull();
+      const head = fs.readFileSync(split!.head);
+      const tail = fs.readFileSync(split!.tail);
+      expect(head.length).toBe(DFU_HEAD_SIZE);
+      expect(tail.length).toBe(100);
+      expect(Buffer.concat([head, tail]).equals(data)).toBe(true);
+    });
+
+    it("returns null for a bin that fits one page", () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dfu-split-test-"));
+      const bin = path.join(tmpDir, "fw.bin");
+      fs.writeFileSync(bin, Buffer.alloc(DFU_HEAD_SIZE));
+      expect(prepareDfuSplit(bin)).toBeNull();
     });
   });
 

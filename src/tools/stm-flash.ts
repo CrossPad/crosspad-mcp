@@ -4,9 +4,19 @@
  * Two methods, mirroring the invocations documented in the firmware repo's
  * CLAUDE.md:
  *   - swd → ST-Link over SWD:  -c port=SWD freq=4000 -w <bin> 0x08000000 -rst --start 0x08000000
- *   - dfu → USB DFU bootloader: -c port=USB1 -w <bin> 0x08000000 -s 0x08000000
+ *   - dfu → USB DFU bootloader: -c port=USB1 -e [0 0] -w <tail> 0x08000800
+ *           -w <head> 0x08000000 -s 0x08000000
  *           (board must be in ST system bootloader — hold pad 1 at boot, or
- *            trigger boot_request_dfu).
+ *            trigger boot_request_dfu / the CDC STM_DFU verb).
+ *
+ * The DFU write order is deliberate: erase page 0 first, program the tail,
+ * program page 0 last. The G0 ROM's empty check forces the system bootloader
+ * on a POR when the first flash word is 0xFFFFFFFF, so a flash interrupted at
+ * any point before the final 2 KB page leaves a board that re-enters DFU on a
+ * simple replug — no ST-Link, no buttons. (A non-POR reset in that state
+ * LOCKUPs at pc=0xFFFFFFFE instead — the empty check is only sampled on
+ * POR/OBL resets — but with no battery a replug IS a POR.) The final
+ * head-page write is the only unprotected window, ~tens of ms.
  *
  * The flasher binary is resolved from user config → $STM32_PROG → PATH; if none
  * resolves we fail early with actionable guidance rather than spawning garbage.
@@ -54,14 +64,44 @@ export function resolveProgrammer(): string | null {
   return null;
 }
 
+/** First-page size of the G0 flash — the chunk written last over DFU. */
+export const DFU_HEAD_SIZE = 2048;
+const DFU_TAIL_ADDR = "0x08000800";
+
+export interface DfuSplit { head: string; tail: string; }
+
+/**
+ * Split the firmware into head (first flash page) and tail files next to the
+ * bin so the DFU flash can program the tail first and the boot-critical page
+ * last (see the header comment). Returns null for a bin that fits one page.
+ * @internal exported for testing
+ */
+export function prepareDfuSplit(bin: string): DfuSplit | null {
+  const data = fs.readFileSync(bin);
+  if (data.length <= DFU_HEAD_SIZE) return null;
+  const split = { head: bin + ".dfu_head", tail: bin + ".dfu_tail" };
+  fs.writeFileSync(split.head, data.subarray(0, DFU_HEAD_SIZE));
+  fs.writeFileSync(split.tail, data.subarray(DFU_HEAD_SIZE));
+  return split;
+}
+
 /**
  * Build the STM32_Programmer_CLI argv for a flash method. No shell — bin path
  * may be user-supplied, so it never touches a command line.
  * @internal exported for testing
  */
-export function stmFlashArgv(method: "swd" | "dfu", bin: string): string[] {
+export function stmFlashArgv(method: "swd" | "dfu", bin: string, split?: DfuSplit | null): string[] {
   if (method === "swd") {
     return ["-c", "port=SWD", "freq=4000", "-w", bin, STM_FLASH_ADDR, "-rst", "--start", STM_FLASH_ADDR];
+  }
+  if (split) {
+    return [
+      "-c", "port=USB1",
+      "-e", "[0 0]",
+      "-w", split.tail, DFU_TAIL_ADDR,
+      "-w", split.head, STM_FLASH_ADDR,
+      "-s", STM_FLASH_ADDR,
+    ];
   }
   return ["-c", "port=USB1", "-w", bin, STM_FLASH_ADDR, "-s", STM_FLASH_ADDR];
 }
@@ -102,9 +142,20 @@ export async function crosspadStmFlash(
     return fail(`Firmware not found at ${bin}. Run crosspad_build platform=stm first.`);
   }
 
-  const argv = stmFlashArgv(method, bin);
+  let split: DfuSplit | null = null;
+  if (method === "dfu") {
+    try {
+      split = prepareDfuSplit(bin);
+    } catch (e) {
+      return fail(`Failed to split firmware for safe DFU order: ${String(e)}`);
+    }
+  }
+  const argv = stmFlashArgv(method, bin, split);
   emit("stdout", `[stm-flash] Flashing via ${method.toUpperCase()} with ${programmer}...`);
   emit("stdout", `[stm-flash] Firmware: ${bin}`);
+  if (split) {
+    emit("stdout", "[stm-flash] Safe DFU order: erase page 0, tail, head last — an interrupted flash re-enters DFU on replug");
+  }
 
   const result = await runArgvStream(programmer, argv, CROSSPAD_STM_ROOT, emit, 180_000, signal);
   const combined = result.stdout + "\n" + result.stderr;
