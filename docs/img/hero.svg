@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320" viewBox="0 0 900 320" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b93a7"/>
+    </marker>
+    <style>
+      .box  { fill: #f4f6fb; stroke: #8b93a7; stroke-width: 1.5; rx: 12; }
+      .hub  { fill: #ffe9b8; stroke: #d9a23a; stroke-width: 2; rx: 12; }
+      .hw   { fill: #e2f4ec; stroke: #3c9a6e; stroke-width: 1.5; rx: 12; }
+      .t    { fill: #1f2430; font-size: 15px; font-weight: 600; }
+      .s    { fill: #4c5567; font-size: 12px; }
+      .q    { fill: #4c5567; font-size: 12px; font-style: italic; }
+      .edge { stroke: #8b93a7; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+      .lbl  { fill: #6b7385; font-size: 11px; }
+    </style>
+  </defs>
+
+  <!-- You -->
+  <rect class="box" x="20" y="120" width="140" height="80"/>
+  <text class="t" x="90" y="152" text-anchor="middle">You</text>
+  <text class="q" x="90" y="176" text-anchor="middle">"flash it and check</text>
+  <text class="q" x="90" y="190" text-anchor="middle">that it boots"</text>
+
+  <!-- Claude Code -->
+  <rect class="box" x="220" y="120" width="160" height="80"/>
+  <text class="t" x="300" y="152" text-anchor="middle">Claude Code</text>
+  <text class="s" x="300" y="176" text-anchor="middle">or any MCP client</text>
+
+  <!-- crosspad-mcp hub -->
+  <rect class="hub" x="440" y="100" width="180" height="120"/>
+  <text class="t" x="530" y="132" text-anchor="middle">crosspad-mcp</text>
+  <text class="s" x="530" y="156" text-anchor="middle">build · flash · drive · test</text>
+  <text class="s" x="530" y="174" text-anchor="middle">47 tools, 8 toolsets</text>
+  <text class="s" x="530" y="192" text-anchor="middle">confirms before it flashes</text>
+
+  <!-- Targets -->
+  <rect class="hw" x="700" y="24" width="180" height="64"/>
+  <text class="t" x="790" y="50" text-anchor="middle">PC simulator</text>
+  <text class="s" x="790" y="70" text-anchor="middle">screenshots, pads, MIDI</text>
+
+  <rect class="hw" x="700" y="128" width="180" height="64"/>
+  <text class="t" x="790" y="154" text-anchor="middle">CrossPad board</text>
+  <text class="s" x="790" y="174" text-anchor="middle">ESP32-S3 over USB</text>
+
+  <rect class="hw" x="700" y="232" width="180" height="64"/>
+  <text class="t" x="790" y="258" text-anchor="middle">STM32 co-processor</text>
+  <text class="s" x="790" y="278" text-anchor="middle">live variables over SWD</text>
+
+  <!-- Edges -->
+  <path class="edge" d="M 160 160 L 218 160"/>
+  <text class="lbl" x="189" y="150" text-anchor="middle">prompt</text>
+
+  <path class="edge" d="M 380 160 L 438 160"/>
+  <text class="lbl" x="409" y="150" text-anchor="middle">MCP</text>
+
+  <path class="edge" d="M 620 140 C 660 140, 660 56, 698 56"/>
+  <text class="lbl" x="655" y="92" text-anchor="middle">TCP</text>
+
+  <path class="edge" d="M 620 160 L 698 160"/>
+  <text class="lbl" x="659" y="150" text-anchor="middle">USB</text>
+
+  <path class="edge" d="M 620 180 C 660 180, 660 264, 698 264"/>
+  <text class="lbl" x="655" y="236" text-anchor="middle">ST-Link</text>
+
+  <!-- Return arrow -->
+  <path class="edge" d="M 440 232 C 400 270, 200 270, 100 210"/>
+  <text class="lbl" x="280" y="286" text-anchor="middle">"Booted in 2.1 s, smoke scenario 12/12 passed"</text>
+</svg>
