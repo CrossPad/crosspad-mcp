@@ -38,7 +38,7 @@ ones (commit, flash, clean build, apps_install) trigger one.
 | `crosspad_submodule_update` | Update submodule to `origin/<branch>` + stage |
 | `crosspad_commit` | Commit staged changes (refuses on conflicts; never pushes) |
 
-## Code search & scaffolding
+## Code search
 | Tool | Use |
 |------|-----|
 | `crosspad_search_symbols` | Find class/function/macro/enum/typedef defs |

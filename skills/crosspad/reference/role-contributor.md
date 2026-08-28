@@ -36,7 +36,6 @@ src/
     input.ts          — simulator input events
     log.ts            — log capture
     repos.ts          — multi-repo git status
-    scaffold.ts       — app boilerplate generation
     screenshot.ts     — simulator screenshots
     settings.ts       — simulator settings R/W
     stats.ts          — simulator runtime stats

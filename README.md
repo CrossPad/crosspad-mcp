@@ -256,7 +256,7 @@ action=stop
 | `crosspad_submodule_update` | Update submodule to `origin/<branch>` and stage |
 | `crosspad_commit` | Commit staged changes (refuses on conflicts; never pushes) |
 
-### Code search & scaffolding
+### Code search
 
 | Tool | Purpose |
 |------|---------|
