@@ -5,6 +5,8 @@ toolset and tool, resources, prompts, configuration, transports and the v10
 migration table. If you are new here, start with the [README](../README.md) —
 it explains what this thing is for before you meet 47 tools.
 
+**47 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 2 bundled Claude Code skills · stdio & HTTP transports**
+
 **Contents:** [Install](#install) · [Skills](#skills-start-here) ·
 [Tools + resources](#tools--resources) · [Configuration](#configuration) ·
 [Transport](#transport) · [How it works](#how-it-works) ·

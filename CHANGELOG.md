@@ -4,6 +4,22 @@ All notable changes to crosspad-mcp-server. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.0.1] — 2026-08-28
+
+Docs only. No tool, schema or behaviour change.
+
+### Changed
+- **README is an introduction now.** It opens with what you can ask for —
+  eight real prompts and what runs underneath — a hero diagram, the one-line
+  install, the toolset map and per-role entry points. The full reference
+  (every install path, every tool and toolset, resources, configuration,
+  transport, the v9 → v10 migration table) moved verbatim to
+  `docs/USAGE.md`.
+- Removed the last references to the scaffold tool, which no longer exists
+  (app generation is `idf.py app-new` in platform-idf).
+- Closed the April backlog on GitHub: 13 issues were already implemented,
+  three are not planned (#8, #11, #13), one superseded (#12).
+
 ## [10.0.0] — 2026-08-28
 
 Breaking. The server stops being a bag of shell wrappers and becomes a thin,
