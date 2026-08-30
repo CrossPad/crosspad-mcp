@@ -4,6 +4,37 @@ All notable changes to crosspad-mcp-server. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.1.0] — 2026-08-30
+
+Clicks in the simulator land where the screenshot says (#26). Needs a
+crosspad-pc built from `b4e22bf` or later for the new fields; an older
+simulator is detected and refused rather than clicked in the wrong place.
+
+### Added
+- **`crosspad_input action=click` takes LCD coordinates.** `space` is
+  `lcd` by default — the 320x240 panel, the space a `region='lcd'`
+  screenshot, `ENC_GROUP` labels and the UI code use — or `window` for
+  pixels of a full-window capture. The simulator converts; nothing is
+  hardcoded on this side.
+- **`hold_ms` on `click`** (default 120). The simulator polls the pointer
+  every ~30 ms and samples only the button state, so a down and an up pushed
+  in the same tick were never a click at all — list rows and buttons, the
+  widgets `click` is for, silently did nothing while the tool answered
+  `ok`. The release is now a one-shot LVGL timer on the simulator.
+- **The click reply says what it hit.** `response.hit` is the LVGL object
+  class and LCD-space rect the press is delivered to (`null` = nothing under
+  the pointer), with `window`, `lcd` and `in_lcd` for where it landed. A click
+  on empty background no longer looks like a click on a widget.
+- **`crosspad_screenshot` reports `lcd_origin` and `scale`**: where the panel
+  sits in the returned image, so a pixel in a `full` capture converts to an
+  LCD coordinate deterministically. The LCD crop uses the geometry the
+  simulator reports (zoom-aware) instead of a constant.
+
+### Changed
+- Simulator (crosspad-pc): the LCD rectangle has one owner,
+  `Stm32EmuWindow::LCD_*`; the remote server's own `region: "lcd"` crop was
+  18 rows stale and now reads it too.
+
 ## [10.0.1] — 2026-08-28
 
 Docs only. No tool, schema or behaviour change.

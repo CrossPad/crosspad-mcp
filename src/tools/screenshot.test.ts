@@ -78,6 +78,36 @@ describe("crosspadScreenshot region", () => {
     expect(pixel(img, 0, 0)).toEqual(MARK);
   });
 
+  it("tells the caller where the panel is in a full capture, and that an lcd capture starts at its origin", async () => {
+    const full = await crosspadScreenshot(false);
+    expect(full.lcd_origin).toEqual([LCD_RECT.x, LCD_RECT.y]);
+    expect(full.scale).toBe(1);
+    const lcd = await crosspadScreenshot(false, undefined, "lcd");
+    expect(lcd.lcd_origin).toEqual([0, 0]);
+    expect(lcd.scale).toBe(1);
+  });
+
+  it("crops where the simulator says the panel is, not where the layout constant says", async () => {
+    // A HiDPI simulator: zoom 2, panel at (170, 116), 640x480 pixels. The mark
+    // is planted there instead.
+    const W = 980, H = 1428;
+    const data = Buffer.alloc(W * H * 3);
+    const m = (116 * W + 170) * 3;
+    data[m] = MARK[0]; data[m + 1] = MARK[1]; data[m + 2] = MARK[2];
+    const png = encodePng({ width: W, height: H, data });
+    send.mockImplementation(async () => ({
+      ok: true, width: W, height: H, data: png.toString("base64"),
+      lcd_origin: [170, 116], lcd_size: [640, 480], scale: 2,
+    }));
+    const r = await crosspadScreenshot(false, undefined, "lcd");
+    expect(r.success).toBe(true);
+    expect([r.width, r.height]).toEqual([640, 480]);
+    expect(r.scale).toBe(2);
+    expect(pixel(decodePng(Buffer.from(r.data_base64!, "base64")), 0, 0)).toEqual(MARK);
+    const full = await crosspadScreenshot(false);
+    expect(full.lcd_origin).toEqual([170, 116]);
+  });
+
   it("keeps the last row of the panel — the rows the stale crop dropped", async () => {
     const r = await crosspadScreenshot(false, undefined, "lcd");
     const img = decodePng(Buffer.from(r.data_base64!, "base64"));

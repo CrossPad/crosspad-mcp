@@ -561,6 +561,13 @@ describe("sim toolset input schemas", () => {
   it("crosspad_screenshot can ask for the LCD only", async () => {
     expect((await schemaOf("crosspad_screenshot")).properties.region.enum).toEqual(["full", "lcd"]);
   });
+
+  it("crosspad_input click is in LCD space and holds the button by default (#26)", async () => {
+    const props = (await schemaOf("crosspad_input")).properties;
+    expect(props.space.enum).toEqual(["lcd", "window"]);
+    expect(props.space.default).toBe("lcd");
+    expect(props.hold_ms.default).toBe(120);
+  });
 });
 
 describe("exitWhenStdinEnds", () => {

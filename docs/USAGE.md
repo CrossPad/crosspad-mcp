@@ -244,8 +244,8 @@ action=stop
 
 | Tool | Purpose |
 |------|---------|
-| `crosspad_screenshot` | PNG screenshot (file_path by default; `return_inline` for base64) |
-| `crosspad_input` | All input events: pad_press/release, encoder_*, click, key (`action` field) |
+| `crosspad_screenshot` | PNG screenshot (file_path by default; `return_inline` for base64). `region='lcd'` = the 320x240 panel; the reply's `lcd_origin`/`scale` say where the panel is in a `full` capture |
+| `crosspad_input` | All input events: pad_press/release, encoder_*, click, key (`action` field). `click` takes LCD-space coordinates by default (`space='window'` for full-window pixels), holds the button `hold_ms` (default 120) so the 30 ms pointer poll sees it, and reports `hit` — the LVGL object under the pointer |
 | `crosspad_midi` | All MIDI events: note_on/off, cc, program_change (`type` field) |
 | `crosspad_stats` | Runtime state: pads, capabilities, heap, apps |
 | `crosspad_settings_get` / `crosspad_settings_set` | Read/write settings |

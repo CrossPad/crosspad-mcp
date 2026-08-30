@@ -17,20 +17,48 @@ import { CROSSPAD_PC_ROOT } from "../config.js";
 export type ScreenshotRegion = "full" | "lcd";
 
 /**
- * Where the LCD panel actually sits inside the emulator window, from
- * Stm32EmuWindow.cpp: LCD_X = (490 - 320) / 2, LCD_Y = 58.
+ * Where the LCD panel sits inside the emulator window, from
+ * Stm32EmuWindow.hpp: LCD_X = (490 - 320) / 2, LCD_Y = 58, at zoom 1.
  *
- * WORKAROUND: the simulator's own `region: "lcd"` still crops at y = 40, the
- * value the layout had before the status seam moved it down, so its crop loses
- * the bottom 18 rows of the screen and includes 18 rows of bezel at the top.
- * Until the simulator is fixed we ask for the whole window and cut the panel
- * out here — remove this and pass `region` through once it matches.
+ * A current simulator reports its own geometry in every screenshot reply
+ * (`lcd_origin`, `lcd_size`, `scale`) and that is what the crop uses; this
+ * constant is the fallback for a simulator that predates the field, whose own
+ * `region: "lcd"` also cropped 18 rows too high — which is why the panel is
+ * always cut out of a full-window capture here rather than requested.
  */
 export const LCD_RECT = { x: 85, y: 58, width: 320, height: 240 } as const;
 
+/** The panel's place in a full-window capture, in capture pixels. */
+export interface LcdGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+}
+
+const LcdGeometrySchema = z.object({
+  lcd_origin: z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()]),
+  lcd_size: z.tuple([z.number().int().positive(), z.number().int().positive()]),
+  scale: z.number().positive(),
+});
+
+/** Geometry the simulator reported, or the zoom-1 layout if it reported none. */
+export function lcdGeometryOf(resp: Record<string, unknown>): LcdGeometry {
+  const g = LcdGeometrySchema.safeParse(resp);
+  if (!g.success) return { ...LCD_RECT, scale: 1 };
+  return {
+    x: g.data.lcd_origin[0],
+    y: g.data.lcd_origin[1],
+    width: g.data.lcd_size[0],
+    height: g.data.lcd_size[1],
+    scale: g.data.scale,
+  };
+}
+
 /** Cut the LCD panel out of a full-window capture. */
-function cropToLcd(png: Buffer): Buffer {
-  return cropPng(png, LCD_RECT.x, LCD_RECT.y, LCD_RECT.width, LCD_RECT.height);
+function cropToLcd(png: Buffer, g: LcdGeometry): Buffer {
+  return cropPng(png, g.x, g.y, g.width, g.height);
 }
 
 // Validate the simulator's screenshot response — sim is in-process C++ but
@@ -57,6 +85,10 @@ export interface ScreenshotResult {
   data_base64?: string;
   size?: number;
   region?: ScreenshotRegion;
+  /** Where the panel's top-left pixel is in the returned image ([0, 0] for region "lcd"). */
+  lcd_origin?: [number, number];
+  /** Capture pixels per LCD pixel (the SDL window zoom). */
+  scale?: number;
   error?: string;
 }
 
@@ -112,20 +144,24 @@ export async function crosspadScreenshot(
         };
       }
 
+      const geometry = lcdGeometryOf(resp as Record<string, unknown>);
+
       if (region === "lcd") {
         // The simulator has already written the full window; re-cut it in
         // place so the caller still gets exactly the path it was promised.
         try {
-          const cropped = cropToLcd(fs.readFileSync(filePath));
+          const cropped = cropToLcd(fs.readFileSync(filePath), geometry);
           fs.writeFileSync(filePath, cropped);
           return {
             success: true,
-            width: LCD_RECT.width,
-            height: LCD_RECT.height,
+            width: geometry.width,
+            height: geometry.height,
             format: "png",
             file_path: filePath,
             size: cropped.length,
             region,
+            lcd_origin: [0, 0],
+            scale: geometry.scale,
           };
         } catch (e: any) {
           return { success: false, error: `Could not crop the LCD out of ${filePath}: ${e.message}` };
@@ -140,6 +176,8 @@ export async function crosspadScreenshot(
         file_path: filePath,
         size: parsed.data.size,
         region,
+        lcd_origin: [geometry.x, geometry.y],
+        scale: geometry.scale,
       };
     }
 
@@ -161,16 +199,20 @@ export async function crosspadScreenshot(
       };
     }
 
+    const geometry = lcdGeometryOf(resp as Record<string, unknown>);
+
     if (region === "lcd") {
       try {
-        const cropped = cropToLcd(Buffer.from(parsed.data.data, "base64"));
+        const cropped = cropToLcd(Buffer.from(parsed.data.data, "base64"), geometry);
         return {
           success: true,
-          width: LCD_RECT.width,
-          height: LCD_RECT.height,
+          width: geometry.width,
+          height: geometry.height,
           format: "png",
           data_base64: cropped.toString("base64"),
           region,
+          lcd_origin: [0, 0],
+          scale: geometry.scale,
         };
       } catch (e: any) {
         return { success: false, error: `Could not crop the LCD out of the capture: ${e.message}` };
@@ -184,6 +226,8 @@ export async function crosspadScreenshot(
       format: "png",
       data_base64: parsed.data.data,
       region,
+      lcd_origin: [geometry.x, geometry.y],
+      scale: geometry.scale,
     };
   } catch (err: any) {
     return {

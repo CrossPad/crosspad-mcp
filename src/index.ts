@@ -366,11 +366,15 @@ const O_Screenshot = {
   file_path: z.string().optional(),
   size: z.number().int().optional(),
   region: z.enum(["full", "lcd"]).optional(),
+  lcd_origin: z.tuple([z.number().int(), z.number().int()]).optional(),
+  scale: z.number().optional(),
   ...ErrorField,
 };
 
 const O_Input = {
   success: z.boolean(),
+  action: z.string().optional(),
+  response: z.record(z.string(), z.unknown()).optional(),
   ...ErrorField,
 };
 
@@ -990,7 +994,8 @@ registerLegacy(
     description:
       "[PC sim] Capture a PNG screenshot from the running PC simulator. " +
       "Default behavior (return_inline=false): saves to <crosspad-pc>/screenshots/ and returns metadata + file_path (cheap, no token cost). " +
-      "Set return_inline=true ONLY when the LLM needs to actually see the image — that returns base64 inline and burns ~50-150k tokens.",
+      "Set return_inline=true ONLY when the LLM needs to actually see the image — that returns base64 inline and burns ~50-150k tokens. " +
+      "The reply carries `lcd_origin` [x, y] and `scale`: where the 320x240 panel sits in the returned image. A pixel (px, py) of a region='full' capture is LCD coordinate ((px - x) / scale, (py - y) / scale) — what crosspad_input action=click takes by default; a region='lcd' capture is already in LCD space (origin [0, 0]).",
     inputSchema: {
       filename: z.string().optional()
         .describe("Custom filename (saved under <crosspad-pc>/screenshots/). Default: screenshot_<timestamp>.png. Ignored when return_inline=true."),
@@ -1011,7 +1016,7 @@ registerLegacy(
       // structuredContent so clients honoring outputSchema see metadata
       // alongside the image part.
       if (result.data_base64) {
-        const meta = { success: true, width: result.width, height: result.height, format: result.format, region: result.region };
+        const meta = { success: true, width: result.width, height: result.height, format: result.format, region: result.region, lcd_origin: result.lcd_origin, scale: result.scale };
         return {
           content: [
             { type: "image" as const, data: result.data_base64, mimeType: "image/png" },
@@ -1031,6 +1036,8 @@ registerLegacy(
       file_path: result.file_path,
       size: result.size,
       region: result.region,
+      lcd_origin: result.lcd_origin,
+      scale: result.scale,
     });
   }
 );
@@ -1051,8 +1058,11 @@ registerLegacy(
       "  • encoder_rotate       → delta (positive=CW, negative=CCW)\n" +
       "  • encoder_press        → (none)\n" +
       "  • encoder_release      → (none)\n" +
-      "  • click                → x, y\n" +
+      "  • click                → x, y (space optional, default 'lcd'; hold_ms optional, default 120)\n" +
       "  • key                  → keycode (SDL keycode int)\n" +
+      "click coordinates are in LCD space by default — the 320x240 panel, i.e. what crosspad_screenshot region='lcd' shows and what ENC_GROUP labels use. " +
+      "Pass space='window' for pixels of a region='full' capture. The reply's `response` reports where the click landed in both spaces (`window`, `lcd`, `in_lcd`) " +
+      "and `hit` — the LVGL object class and LCD-space rect the press is delivered to (null = nothing under the pointer), so a click on empty background is not mistaken for one on a widget. " +
       "Requires the simulator to be running (crosspad_run first).",
     inputSchema: {
       action: z.enum([
@@ -1063,14 +1073,18 @@ registerLegacy(
       pad: PadIndex.optional().describe("Required for action=pad_press|pad_release. Pad index 0-15."),
       velocity: Velocity.optional().describe("Optional for action=pad_press (default 127). Ignored for other actions."),
       delta: z.number().int().optional().describe("Required for action=encoder_rotate. Positive=CW, negative=CCW. Typical range -10..10."),
-      x: z.number().int().min(0).optional().describe("Required for action=click. X pixel coordinate (0 = left)."),
-      y: z.number().int().min(0).optional().describe("Required for action=click. Y pixel coordinate (0 = top)."),
+      x: z.number().int().min(0).optional().describe("Required for action=click. X coordinate (0 = left) in `space`."),
+      y: z.number().int().min(0).optional().describe("Required for action=click. Y coordinate (0 = top) in `space`."),
+      space: z.enum(["lcd", "window"]).default("lcd")
+        .describe("For action=click: which space x,y are in. 'lcd' (default) = the 320x240 panel, as in a region='lcd' screenshot. 'window' = the whole emulator window, as in a region='full' screenshot."),
+      hold_ms: z.number().int().min(0).max(5000).default(120)
+        .describe("For action=click: how long the button stays down. The simulator polls the pointer every ~30 ms, so 0 (press and release in one tick) is usually not seen as a click at all."),
       keycode: z.number().int().optional().describe("Required for action=key. SDL keycode (e.g. 27=ESC, 32=SPACE, 13=RETURN)."),
     },
     outputSchema: O_Input,
     annotations: ANN_SIDE_EFFECT,
   },
-  async ({ action, pad, velocity, delta, x, y, keycode }) => {
+  async ({ action, pad, velocity, delta, x, y, keycode, space, hold_ms }) => {
     // Per-action required-field validation. Cleaner than letting the sim reject
     // because the error here cites the missing field by name.
     const need = (field: string, val: unknown): string | null =>
@@ -1098,7 +1112,7 @@ registerLegacy(
         : action === "encoder_rotate"
         ? { action, delta: delta! }
         : action === "click"
-        ? { action, x: x!, y: y! }
+        ? { action, x: x!, y: y!, space, hold_ms }
         : action === "key"
         ? { action, keycode: keycode! }
         : { action };
