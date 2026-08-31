@@ -1,6 +1,7 @@
 # crosspad-mcp
 
 [![npm](https://img.shields.io/npm/v/crosspad-mcp-server)](https://www.npmjs.com/package/crosspad-mcp-server)
+[![M8ven Live Monitored](https://m8ven.ai/badge/mcp/crosspad-crosspad-mcp-11gso3)](https://m8ven.ai/mcp/crosspad-crosspad-mcp-11gso3)
 [![CI](https://github.com/CrossPad/crosspad-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/CrossPad/crosspad-mcp/actions/workflows/ci.yml)
 [![node](https://img.shields.io/node/v/crosspad-mcp-server)](package.json)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
