@@ -1,6 +1,6 @@
 {
   "name": "crosspad-mcp-server",
-  "version": "10.1.1",
+  "version": "10.1.2",
   "hilVersion": "1.0.0",
   "description": "MCP development server for CrossPad — build, test, manage apps, interact with simulator",
   "type": "module",

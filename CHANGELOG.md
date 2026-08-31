@@ -4,6 +4,15 @@ All notable changes to crosspad-mcp-server. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.1.2] — 2026-08-31
+
+### Fixed
+- **`plugin.json` version was out of sync with `package.json`** in the
+  10.1.1 tag — `release.test.ts`'s lockstep guard caught it right after
+  the tag went out, but 10.1.1 was already published to npm by then.
+  10.1.1 stays as-is (npm doesn't allow overwriting a published version);
+  this release carries the fix forward.
+
 ## [10.1.1] — 2026-08-31
 
 ### Added
