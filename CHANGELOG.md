@@ -4,6 +4,12 @@ All notable changes to crosspad-mcp-server. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.1.1] — 2026-08-31
+
+### Added
+- **`LICENSE` file (MIT)**, matching the `license` field already declared
+  in `package.json`.
+
 ## [10.1.0] — 2026-08-30
 
 Clicks in the simulator land where the screenshot says (#26). Needs a
