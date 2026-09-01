@@ -39,6 +39,21 @@ export const CANCELLED = "CANCELLED";
 
 export type HilEvent = { ev: string } & Record<string, unknown>;
 
+// ── serve.stats ──────────────────────────────────────────────────────────────
+
+/** What the daemon process is holding, counted from inside it (crosspad_hil.serve). */
+export interface DaemonStats {
+  version: string;
+  pid: number;
+  uptime_s: number;
+  ops_total: number;
+  handles: Record<string, number>;
+  handles_total: number;
+  threads: number;
+  open_fds: number;
+  alsa_seq_clients: number;
+}
+
 // ── Child process abstraction (so tests inject a fake) ───────────────────────
 
 export interface ChildLike extends EventEmitter {
@@ -61,11 +76,21 @@ export interface HilDaemonOpts {
   onEvent?: (ev: HilEvent) => void;
   /** Test seam: replaces child_process.spawn. */
   spawnFn?: SpawnFn;
+  /** Test seam: the idle clock. */
+  now?: () => number;
+  /** Idle-sweep period, and the minimum idle before the daemon is probed. 0 disables the timer. */
+  recycleCheckMs?: number;
+  /** Idle after which a daemon holding nothing is stopped. */
+  recycleIdleMs?: number;
+  /** ALSA sequencer clients tolerated on an idle daemon before it is stopped. */
+  alsaSeqBudget?: number;
 }
 
 export interface RequestOpts {
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Bookkeeping this side issued itself: does not count as activity. */
+  internal?: boolean;
 }
 
 interface Pending {
@@ -83,6 +108,19 @@ const STDERR_RING = 50;
 // from trace-session.ts §11.5 stop(): {cmd:stop} → SIGTERM 1500 ms → SIGKILL 4500 ms
 const TERM_AFTER_MS = 1500;
 const KILL_AFTER_MS = 4500;
+const STATS_TIMEOUT_MS = 5_000;
+
+// An hours-long daemon amplifies whatever it fails to give back, so an idle one
+// is stopped and request() starts a fresh one on demand. A restart is also the
+// only way a newly installed scenario becomes visible.
+const RECYCLE_CHECK_MS = 60_000;
+const RECYCLE_IDLE_MS = 15 * 60_000;
+/** ALSA's sequencer client table is ~64 for the whole machine, not per process. */
+export const ALSA_SEQ_BUDGET = 24;
+
+/** What recycleTick() decided. Only the two `stopped-*` outcomes ended a daemon. */
+export type RecycleOutcome =
+  | "stopped-idle" | "stopped-alsa" | "busy" | "in-use" | "fresh" | "no-daemon" | "unknown";
 
 export class HilDaemon {
   private proc: ChildLike | null = null;
@@ -95,13 +133,22 @@ export class HilDaemon {
   private stopWaiters: Array<() => void> = [];
   private termTimer: ReturnType<typeof setTimeout> | null = null;
   private killTimer: ReturnType<typeof setTimeout> | null = null;
+  private recycleTimer: ReturnType<typeof setInterval> | null = null;
+  private lastActivityAt = 0;
   private readonly spawnFn: SpawnFn;
+  /** The last automatic stop, for the doctor to report. */
+  lastRecycle: { at: number; reason: "idle" | "alsa_seq"; stats: DaemonStats } | null = null;
 
   constructor(private readonly opts: HilDaemonOpts) {
     this.spawnFn = opts.spawnFn ?? defaultSpawn;
   }
 
   get alive(): boolean { return this.proc !== null; }
+
+  private now(): number { return this.opts.now ? this.opts.now() : Date.now(); }
+  private get checkMs(): number { return this.opts.recycleCheckMs ?? RECYCLE_CHECK_MS; }
+  private get idleMs(): number { return this.opts.recycleIdleMs ?? RECYCLE_IDLE_MS; }
+  private get seqBudget(): number { return this.opts.alsaSeqBudget ?? ALSA_SEQ_BUDGET; }
 
   /** Last `n` daemon stderr lines, newest last (from TraceSession.stderrTail). */
   stderrTail(n: number = STDERR_RING): string {
@@ -130,6 +177,57 @@ export class HilDaemon {
     // uncaught exception that crashes the MCP server (TraceSession.start).
     child.on("error", (e: Error) => this.onExit(null, e));
     await this.request<{ version: string }>("serve.ping", {}, { timeoutMs: PING_TIMEOUT_MS });
+    this.lastActivityAt = this.now();
+    this.startRecycleTimer();
+  }
+
+  /** serve.stats. Internal, so asking does not itself keep the daemon alive. */
+  stats(opts: RequestOpts = {}): Promise<DaemonStats> {
+    return this.request<DaemonStats>("serve.stats", {},
+      { timeoutMs: STATS_TIMEOUT_MS, ...opts, internal: true });
+  }
+
+  /** Stop and start again. Daemon-side handles do not survive: an open console
+   *  or cdc session is gone and has to be reopened. */
+  async restart(): Promise<void> {
+    await this.stop();
+    await this.start();
+  }
+
+  /** Give an idle daemon's OS resources back. Never touches one that is working
+   *  or holding a handle; request() starts a fresh daemon on demand. */
+  async recycleTick(): Promise<RecycleOutcome> {
+    if (!this.proc) return "no-daemon";
+    if (this.pending.size > 0) return "busy";
+    const idle = this.now() - this.lastActivityAt;
+    if (idle < this.checkMs) return "fresh";
+    let stats: DaemonStats;
+    try {
+      stats = await this.stats();
+    } catch {
+      // An older daemon has no serve.stats, and without its handle count a stop
+      // could take a console session with it. Leave it; the doctor says why.
+      return "unknown";
+    }
+    if (stats.handles_total > 0) return "in-use";
+    const reason = idle >= this.idleMs ? "idle"
+      : stats.alsa_seq_clients >= this.seqBudget ? "alsa_seq"
+      : null;
+    if (reason === null) return "fresh";
+    this.lastRecycle = { at: this.now(), reason, stats };
+    await this.stop();
+    return reason === "idle" ? "stopped-idle" : "stopped-alsa";
+  }
+
+  private startRecycleTimer(): void {
+    if (this.recycleTimer !== null || this.checkMs <= 0) return;
+    const t = setInterval(() => { void this.recycleTick(); }, this.checkMs);
+    (t as unknown as { unref?: () => void }).unref?.();
+    this.recycleTimer = t;
+  }
+
+  private stopRecycleTimer(): void {
+    if (this.recycleTimer !== null) { clearInterval(this.recycleTimer); this.recycleTimer = null; }
   }
 
   /** Send one op and await its correlated reply. Restarts a dead daemon first. */
@@ -146,6 +244,7 @@ export class HilDaemon {
       throw new HilError(DAEMON_DIED, "crosspad-hil daemon is not running", this.lastStderr(), { stderr_tail: this.stderrTail() });
     }
     if (opts.signal?.aborted) throw new HilError(CANCELLED, `${op} cancelled before send`);
+    if (!opts.internal) this.lastActivityAt = this.now();
     const id = this.nextId++;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     return new Promise<T>((resolve, reject) => {
@@ -265,6 +364,7 @@ export class HilDaemon {
     if (this.proc === null) return;
     this.proc = null;
     this.clearKillTimers();
+    this.stopRecycleTimer();
     const why = spawnError
       ? `daemon spawn failed: ${spawnError.message}`
       : `crosspad-hil daemon exited with code ${code ?? "null"}`;

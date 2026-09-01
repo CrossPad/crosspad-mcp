@@ -277,3 +277,193 @@ describe("HilDaemon stop", () => {
     expect(h.d.alive).toBe(false);
   });
 });
+
+
+// ── restart + idle recycle ───────────────────────────────────────────────────
+
+const STATS = {
+  version: "1.1.0", pid: 1234, uptime_s: 60, ops_total: 10,
+  handles: {}, handles_total: 0, threads: 6, open_fds: 20, alsa_seq_clients: 2,
+};
+
+function recyclableRig(over: Partial<ConstructorParameters<typeof HilDaemon>[0]> = {}) {
+  const children: FakeChild[] = [];
+  const clock = { t: 0 };
+  const answered = new Set<number>();
+  const d = new HilDaemon({
+    python: "/venv/bin/python",
+    spawnFn: () => { const c = new FakeChild(); children.push(c); return c; },
+    now: () => clock.t,
+    recycleCheckMs: 0,
+    ...over,
+  });
+  async function child(n: number): Promise<FakeChild> {
+    for (let i = 0; i < 500 && children.length <= n; i++) await new Promise((r) => setTimeout(r, 1));
+    if (children.length <= n) throw new Error(`child ${n} never spawned`);
+    return children[n];
+  }
+  async function pick(n: number, op: string): Promise<{ c: FakeChild; id: number }> {
+    const c = await child(n);
+    for (let i = 0; i < 500; i++) {
+      const r = c.requests().find((x) => x.op === op && !answered.has(x.id));
+      if (r) { answered.add(r.id); return { c, id: r.id }; }
+      await new Promise((res) => setTimeout(res, 1));
+    }
+    throw new Error(`child ${n} never asked ${op}`);
+  }
+  async function answer(n: number, op: string, result: unknown): Promise<void> {
+    const { c, id } = await pick(n, op);
+    c.reply(id, result);
+  }
+  async function refuse(n: number, op: string, code: string): Promise<void> {
+    const { c, id } = await pick(n, op);
+    c.fail(id, { code, message: `unknown op ${op}` });
+  }
+  async function waitOp(n: number, op: string): Promise<void> {
+    const c = await child(n);
+    for (let i = 0; i < 500; i++) {
+      if (c.requests().some((x) => x.op === op)) return;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    throw new Error(`child ${n} never asked ${op}`);
+  }
+  async function up(n = 0): Promise<void> {
+    const p = d.start();
+    await answer(n, "serve.ping", { version: "1.1.0", uptime_s: 0 });
+    await p;
+  }
+  /** Let stop() complete: answer nothing, just let the child exit. */
+  async function letStopFinish(n = 0): Promise<void> {
+    await waitOp(n, "serve.shutdown");
+    (await child(n)).exit(0);
+  }
+  return { d, children, clock, child, answer, refuse, waitOp, up, letStopFinish };
+}
+
+describe("HilDaemon restart", () => {
+  it("ends the running process and pings a fresh one", async () => {
+    const h = recyclableRig();
+    await h.up();
+    const r = h.d.restart();
+    await h.letStopFinish(0);
+    await h.answer(1, "serve.ping", { version: "1.1.0", uptime_s: 0 });
+    await r;
+    expect(h.children).toHaveLength(2);
+    expect(h.d.alive).toBe(true);
+  });
+
+  it("starts a daemon when none is running", async () => {
+    const h = recyclableRig();
+    const r = h.d.restart();
+    await h.answer(0, "serve.ping", { version: "1.1.0", uptime_s: 0 });
+    await r;
+    expect(h.d.alive).toBe(true);
+  });
+});
+
+describe("HilDaemon idle recycle", () => {
+  it("stops an idle daemon that is holding nothing", async () => {
+    const h = recyclableRig({ recycleIdleMs: 1000 });
+    await h.up();
+    h.clock.t = 1000;
+    const t = h.d.recycleTick();
+    await h.answer(0, "serve.stats", STATS);
+    await h.letStopFinish(0);
+    expect(await t).toBe("stopped-idle");
+    expect(h.d.alive).toBe(false);
+    expect(h.d.lastRecycle?.reason).toBe("idle");
+  });
+
+  it("leaves a daemon that still holds a handle", async () => {
+    const h = recyclableRig({ recycleIdleMs: 1000 });
+    await h.up();
+    h.clock.t = 100_000;
+    const t = h.d.recycleTick();
+    await h.answer(0, "serve.stats", { ...STATS, handles: { con: 1 }, handles_total: 1 });
+    expect(await t).toBe("in-use");
+    expect(h.d.alive).toBe(true);
+  });
+
+  it("leaves a daemon with a request in flight", async () => {
+    const h = recyclableRig({ recycleIdleMs: 1000 });
+    await h.up();
+    h.clock.t = 100_000;
+    const inflight = h.d.request("devices.list", {});
+    expect(await h.d.recycleTick()).toBe("busy");
+    await h.answer(0, "devices.list", { devices: [] });
+    await inflight;
+  });
+
+  it("stops early when the ALSA sequencer clients are over budget", async () => {
+    const h = recyclableRig({ recycleIdleMs: 10_000_000, alsaSeqBudget: 4 });
+    await h.up();
+    h.clock.t = 61_000;
+    const t = h.d.recycleTick();
+    await h.answer(0, "serve.stats", { ...STATS, alsa_seq_clients: 9 });
+    await h.letStopFinish(0);
+    expect(await t).toBe("stopped-alsa");
+    expect(h.d.lastRecycle?.reason).toBe("alsa_seq");
+  });
+
+  it("leaves a daemon whose serve.stats is not answerable", async () => {
+    const h = recyclableRig({ recycleIdleMs: 1000 });
+    await h.up();
+    h.clock.t = 100_000;
+    const t = h.d.recycleTick();
+    await h.refuse(0, "serve.stats", "BAD_ARGS");
+    expect(await t).toBe("unknown");
+    expect(h.d.alive).toBe(true);
+  });
+
+  it("does not probe a daemon that was used within the sweep period", async () => {
+    const h = recyclableRig({ recycleCheckMs: 60_000 });
+    await h.up();
+    h.clock.t = 100;
+    expect(await h.d.recycleTick()).toBe("fresh");
+    expect((await h.child(0)).requests().some((r) => r.op === "serve.stats")).toBe(false);
+  });
+
+  it("says nothing to do when no daemon is running", async () => {
+    const h = recyclableRig();
+    expect(await h.d.recycleTick()).toBe("no-daemon");
+  });
+
+  it("an ordinary request resets the idle clock, stats() does not", async () => {
+    const h = recyclableRig({ recycleIdleMs: 1000 });
+    await h.up();
+    h.clock.t = 900;
+    const p = h.d.request("devices.list", {});
+    await h.answer(0, "devices.list", { devices: [] });
+    await p;
+    h.clock.t = 1000;
+    const fresh = h.d.recycleTick();
+    await h.answer(0, "serve.stats", STATS);
+    expect(await fresh).toBe("fresh");
+
+    const s = h.d.stats();
+    await h.answer(0, "serve.stats", STATS);
+    await s;
+    h.clock.t = 1900;
+    const t = h.d.recycleTick();
+    await h.answer(0, "serve.stats", STATS);
+    await h.letStopFinish(0);
+    expect(await t).toBe("stopped-idle");
+  });
+
+  it("the next request starts a fresh daemon after a recycle", async () => {
+    const h = recyclableRig({ recycleIdleMs: 1000 });
+    await h.up();
+    h.clock.t = 1000;
+    const t = h.d.recycleTick();
+    await h.answer(0, "serve.stats", STATS);
+    await h.letStopFinish(0);
+    await t;
+
+    const p = h.d.request("devices.list", {});
+    await h.answer(1, "serve.ping", { version: "1.1.0", uptime_s: 0 });
+    await h.answer(1, "devices.list", { devices: [] });
+    await p;
+    expect(h.d.alive).toBe(true);
+    expect(h.children).toHaveLength(2);
+  });
+});
