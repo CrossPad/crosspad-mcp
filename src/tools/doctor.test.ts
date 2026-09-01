@@ -109,3 +109,121 @@ describe("clangd check", () => {
     expect(c.fix).toContain("CROSSPAD_CLANGD");
   });
 });
+
+
+// ── the daemon as a process ─────────────────────────────────────────────────
+
+import { knowledgeCache } from "../resources/knowledge.js";
+
+const DSTATS = {
+  version: "1.1.0", pid: 1973262, uptime_s: 7200, ops_total: 431,
+  handles: {}, handles_total: 0, threads: 6, open_fds: 31, alsa_seq_clients: 4,
+};
+
+function ctxWith(daemon: ReturnType<typeof fakeDaemon>): ToolContext {
+  return { daemon: () => daemon, policy: { mode: "lab", rules: [] }, jobs: new JobRegistry(), handles: new HandleRegistry() };
+}
+
+describe("hil_daemon check", () => {
+  it("reports uptime, ops, handles and the resources held", async () => {
+    const checks = await runDoctorChecks(probe(), async () => [], async () => ({ ...DSTATS, handles: { con: 1 }, handles_total: 1 }));
+    const c = byName(checks).hil_daemon;
+    expect(c.ok).toBe(true);
+    expect(c.detail).toContain("pid 1973262");
+    expect(c.detail).toContain("431 ops");
+    expect(c.detail).toContain("conx1");
+    expect(c.detail).toContain("4 ALSA seq clients");
+  });
+
+  it("fails and names the repair once the ALSA clients are over budget", async () => {
+    const checks = await runDoctorChecks(probe(), async () => [], async () => ({ ...DSTATS, alsa_seq_clients: 40 }));
+    const c = byName(checks).hil_daemon;
+    expect(c.ok).toBe(false);
+    expect(c.fix).toContain("restart_daemon");
+  });
+
+  it("does not fail a daemon that predates serve.stats, but says to upgrade", async () => {
+    const checks = await runDoctorChecks(probe(), async () => [], async () => { throw new HilError("BAD_ARGS", "unknown op 'serve.stats'"); });
+    const c = byName(checks).hil_daemon;
+    expect(c.ok).toBe(true);
+    expect(c.detail).toContain("predates serve.stats");
+    expect(c.fix).toContain("Upgrade crosspad-hil");
+  });
+
+  it("fails on any other serve.stats error", async () => {
+    const checks = await runDoctorChecks(probe(), async () => [], async () => { throw new HilError("DAEMON_DIED", "exit 1"); });
+    const c = byName(checks).hil_daemon;
+    expect(c.ok).toBe(false);
+    expect(c.detail).toContain("exit 1");
+  });
+
+  it("is absent when no stats source is given", async () => {
+    const checks = await runDoctorChecks(probe(), async () => []);
+    expect(byName(checks).hil_daemon).toBeUndefined();
+  });
+});
+
+describe("crosspad_doctor action=restart_daemon", () => {
+  it("restarts and reports the daemon it came back as", async () => {
+    const daemon = fakeDaemon({ "serve.stats": () => DSTATS });
+    const fs = fakeServer();
+    registerDoctorTool(fs.server, ctxWith(daemon), probe());
+    const res = await fs.tools.get("crosspad_doctor")!.cb({ action: "restart_daemon" }, fakeExtra());
+    expect(res.structuredContent.success).toBe(true);
+    expect(res.structuredContent.action).toBe("restart_daemon");
+    expect(res.structuredContent.dropped_handles).toBe(0);
+    expect((res.structuredContent.daemon as { pid: number }).pid).toBe(1973262);
+  });
+
+  it("asks first when the restart would drop open handles", async () => {
+    const daemon = fakeDaemon({ "serve.stats": () => ({ ...DSTATS, handles: { con: 1, task: 1 }, handles_total: 2 }) });
+    const fs = fakeServer();
+    registerDoctorTool(fs.server, ctxWith(daemon), probe());
+    const res = await fs.tools.get("crosspad_doctor")!.cb({ action: "restart_daemon" }, fakeExtra());
+    expect(res.structuredContent.resultType).toBe("confirmation_required");
+    const token = (res.structuredContent.confirmation as { token: string }).token;
+    const go = await fs.tools.get("crosspad_doctor")!.cb({ action: "restart_daemon", confirm_token: token }, fakeExtra());
+    expect(go.structuredContent.success).toBe(true);
+    expect(go.structuredContent.dropped_handles).toBe(2);
+  });
+
+  it("still restarts when the daemon cannot answer serve.stats", async () => {
+    const daemon = fakeDaemon({});
+    const fs = fakeServer();
+    registerDoctorTool(fs.server, ctxWith(daemon), probe());
+    const res = await fs.tools.get("crosspad_doctor")!.cb({ action: "restart_daemon" }, fakeExtra());
+    expect(res.structuredContent.success).toBe(true);
+    expect(res.structuredContent.dropped_handles).toBe(0);
+  });
+
+  it("default action still runs the checks and now includes hil_daemon", async () => {
+    const daemon = fakeDaemon({ "devices.doctor": () => ({ checks: [] }), "serve.stats": () => DSTATS });
+    const fs = fakeServer();
+    registerDoctorTool(fs.server, ctxWith(daemon), probe());
+    const res = await fs.tools.get("crosspad_doctor")!.cb({}, fakeExtra());
+    const names = (res.structuredContent.checks as Array<{ name: string }>).map((c) => c.name);
+    expect(names).toContain("hil_daemon");
+    expect(res.structuredContent.action).toBe("check");
+  });
+});
+
+describe("crosspad_doctor restart vs the cached scenario catalog", () => {
+  it("clears the knowledge cache, so a new scenario is visible after a restart", async () => {
+    knowledgeCache.set("crosspad://hil/catalog", { scenarios: [] });
+    const daemon = fakeDaemon({ "serve.stats": () => DSTATS });
+    const fs = fakeServer();
+    registerDoctorTool(fs.server, ctxWith(daemon), probe());
+    await fs.tools.get("crosspad_doctor")!.cb({ action: "restart_daemon" }, fakeExtra());
+    expect(knowledgeCache.get("crosspad://hil/catalog")).toBeUndefined();
+  });
+
+  it("leaves the cache alone on an ordinary check", async () => {
+    knowledgeCache.set("crosspad://hil/catalog", { scenarios: [] });
+    const daemon = fakeDaemon({ "devices.doctor": () => ({ checks: [] }), "serve.stats": () => DSTATS });
+    const fs = fakeServer();
+    registerDoctorTool(fs.server, ctxWith(daemon), probe());
+    await fs.tools.get("crosspad_doctor")!.cb({}, fakeExtra());
+    expect(knowledgeCache.get("crosspad://hil/catalog")).toBeDefined();
+    knowledgeCache.clear();
+  });
+});
