@@ -14,13 +14,13 @@ const changelog = read("CHANGELOG.md");
 const ALL_TOOLS = [...new Set(Object.values(TOOLSETS).flat())];
 
 describe("release metadata", () => {
-  it("package.json is 10.1.2", () => {
-    expect(pkg.version).toBe("10.1.2");
+  it("package.json is 10.2.0", () => {
+    expect(pkg.version).toBe("10.2.0");
   });
 
   it("declares the crosspad-hil version it requires", () => {
     expect(pkg.hilVersion).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(pkg.hilVersion).toBe("1.0.0");
+    expect(pkg.hilVersion).toBe("1.1.0");
   });
 
   it("plugin.json version is synced with package.json", () => {
@@ -32,9 +32,9 @@ describe("release metadata", () => {
     expect(pkg.scripts["typecheck:eval"]).toBe("tsc -p tsconfig.eval.json --noEmit");
   });
 
-  it("CHANGELOG's newest entry is 10.1.2", () => {
+  it("CHANGELOG's newest entry is 10.2.0", () => {
     const firstHeading = changelog.split("\n").find((l) => l.startsWith("## ["));
-    expect(firstHeading).toBe("## [10.1.2] — 2026-08-31");
+    expect(firstHeading).toBe("## [10.2.0] — 2026-09-02");
     expect(changelog).toContain("crosspad-hil");
   });
 });
