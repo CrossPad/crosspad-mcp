@@ -29,7 +29,7 @@ npm i --prefix ~/.local/crosspad-mcp crosspad-mcp-server@latest
 claude mcp add crosspad -- node ~/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js
 ```
 
-Or in a project's `.mcp.json`:
+Or in a project's `.mcp.json` (this is the form the CrossPad repos track):
 
 ```json
 {
@@ -37,11 +37,17 @@ Or in a project's `.mcp.json`:
     "crosspad": {
       "type": "stdio",
       "command": "node",
-      "args": ["/home/YOU/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js"]
+      "args": ["${HOME}/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js"]
     }
   }
 }
 ```
+
+A tracked `.mcp.json` must never carry one person's absolute path — it is
+shared with everyone who clones the repo. Claude Code expands `${VAR}` and
+`${VAR:-default}` in `command`, `args` and `env`, but **not nested**
+(`${A:-${B}/x}` comes out mangled), so keep it flat and put per-machine
+choices in local scope (next section), which takes precedence over the file.
 
 Re-run the `npm i --prefix` command to pick up a new release. This install
 is independent of any `crosspad-mcp` git checkout, so it's the right choice
@@ -49,6 +55,16 @@ for repos that just *use* the tools. If you're developing `crosspad-mcp`
 itself, see the next section instead.
 
 ## Developing crosspad-mcp itself
+
+Register the checkout in **local scope** — it wins over the project's
+`.mcp.json`, and nothing user-specific lands in git:
+
+```bash
+cd /path/to/some-crosspad-repo
+claude mcp add -s local crosspad --env CROSSPAD_GIT_DIR=/path/to/GIT -- node /path/to/crosspad-mcp/dist/index.js
+```
+
+Equivalent JSON, if you prefer editing `~/.claude.json` by hand:
 
 ```json
 {
