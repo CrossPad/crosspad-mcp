@@ -25,28 +25,40 @@ The host sees **two USB devices**, and they behave differently:
 ## Standard workflow
 
 ```bash
-crosspad_flash target=esp transport=ota      # or uart
-python3 tools/hil_smoke.py                   # 30 s: boot markers, no E-lines, no boot loop
+crosspad_flash target=esp transport=ota            # or uart
+crosspad-hil run smoke                             # ~10 s: boot markers, no E-lines, no boot loop
 ```
 
-`hil_smoke.py` is the gate after **every** flash. Its REQUIRED_MARKERS are
-literal log strings — update the list when firmware log text changes (there is
-no compile-time link).
+`smoke` is the gate after **every** flash. Its required markers are literal
+log strings — update them when firmware log text changes (no compile-time
+link). Exit code **0** passed, **1** firmware failed, **2** bench problem (no
+board, port busy, missing extra). `--json` prints what the daemon hands the
+MCP. The old `tools/hil_*.py` scripts are deprecated shims over this CLI.
+The CLI is a pip package; in this workspace it is the editable install at
+`~/GIT/crosspad-hil/.venv/bin/crosspad-hil`.
 
-## Tool map
+## Scenario map
 
-| Script | What it proves |
-|--------|----------------|
-| `hil_smoke.py` | Boot health after flash (`--flash` to OTA first, `--json` for CI) |
-| `hil_stability.py` | Long soak: resets + reason + 300-line pre-reset context, heap trend from PerfMon heartbeat (silence >90 s = STALL), optional `--stim-midi` |
-| `hil_audio_loopback.py` | USB audio end-to-end: multitone out → PCB loopback → capture; band power, glitches, dropouts. `--capture-path loop` = codec1 LINE1 (near-unity; keep amp ≤0.15, it compresses above 0.2 FS) |
-| `hil_midi_stress.py` / `hil_midi_bench.py` | SysEx burst loss + dual-path (ESP vs STM bridge) throughput/latency via ECHO `0x1D/0x09` |
-| `hil_velocity.py` | Velocity reaches the sample engine |
-| `hil_speedtest.py` | Pad-trigger throughput vs loss, using PAD_STATS counters |
-| `hil_rt_glitch.py` | RT mixer + sampler under pad load — click/glitch measurement |
-| `hil_led_state.py` | Pad-LED model dump — diagnosing dark pads |
-| `hil_speaker_acoustic.py` | Acoustic proof via built-in mics (`--adc-input 2`), incl. `--amp-off` negative control |
-| `glitch_capture.py` / `glitch_analyze.py` | Raw capture + 2nd-difference glitch analysis; domain-bisection workhorse |
+| `crosspad-hil run …` | What it proves |
+|---|---|
+| `smoke` | boot health after a flash |
+| `app_churn` | open/close every app; per-app internal-heap slope + crash watch |
+| `back_churn` | `--depth` levels into every app, power-click back out; crash/launcher/heap |
+| `kit_churn` | kit swaps while pads fire; `--rapid` spins the selector (coalescing path) |
+| `fs_transfer` | CDC file round-trip (CRC + framing); `--assets <img>` reflashes the assets partition. Needs ~5 kB internal RAM on the board: with BLE up it exits 2 saying `BLE_STOP` first |
+| `usb_mode_cycle` | CDC+MIDI <-> MIDI+UAC2 re-enumeration, heap, faults |
+| `ble_midi` | BLE MIDI both ways from this PC's radio, both roles |
+| `audio_loopback` | multitone out through UAC2, PCB loopback back; band power, glitches, dropouts |
+| `sampler_record` / `speaker_acoustic` / `velocity` / `rt_glitch` | the sampler heard through UAC2 or the mics; velocity curve; clicks under load |
+| `midi_stress` / `midi_bench` / `speedtest` | MIDI loss, throughput/latency on both ports, pad-rate ceiling |
+| `stability` | overnight soak: resets, fatals, stalls, heap drift; `--stim-midi` |
+| `led_state` / `waveform_cache` | LED model dump; does every pad get its waveform |
+| `release_gate` | the whole chain in one report (smoke → … → stability), `--quick` for a CI-length dry run, `--keep-going` overnight |
+
+Long runs (gate, soaks) from an agent: start them detached
+(`setsid nohup … &`), never inside a tool call with a timeout, and kill by PID
+— a `pkill -f` whose pattern appears in its own command line kills the shell
+that issued it.
 
 Results land in `hil_logs/` (gitignored).
 
