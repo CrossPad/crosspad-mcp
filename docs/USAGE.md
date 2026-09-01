@@ -136,7 +136,7 @@ Everything here needs a connected board (`[ESP HW]`) and the `device` toolset.
 
 | Tool | Purpose |
 |------|---------|
-| `crosspad_doctor` | Host + daemon environment checks (python, crosspad-hil version, IDF export, sim binary, ports) with a `fix` per failed check |
+| `crosspad_doctor` | Host + daemon environment checks (python, crosspad-hil version, IDF export, sim binary, ports) plus the daemon's own resource counts, with a `fix` per failed check; `action=restart_daemon` restarts crosspad-hil |
 | `crosspad_console` | STM32-bridge console: `open` (never reboots the board — DTR/RTS deasserted), `read`, `expect`, `reset`, `snapshot`, `close`. Log file linked as a resource, never inlined; reads cap at 2 000 lines |
 | `crosspad_cdc` | Typed CDC verbs (`app`, `kit`, `pad`, `enc`, `led`, `mem`, `audio`, `ble`, `system`, `raw`) — the `hil_control.cpp` command set with reply parsing |
 | `crosspad_ui` | Drive the UI by snapshot ref: rotate to a labelled row, press, back. Returns a fresh snapshot |
@@ -313,7 +313,7 @@ action=stop
 | `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities` | `crosspad_architecture` with an `action` field | shipped — the three v9 names stay registered (toolset `code`) |
 | `crosspad_apps_list/install/remove/update/sync` | `crosspad_apps` with an `action` field | shipped — the five v9 names stay registered (toolset `apps`) |
 
-Startup surface: `tools/list` returns the `core` toolset only. Enable the rest with `crosspad_toolsets`, `--toolsets a,b` or `CROSSPAD_TOOLSETS`; hide every writing tool with `--read-only`. Requires `crosspad-hil` ≥ 1.0.0 (`package.json` → `hilVersion`); `crosspad_doctor` tells you when it is missing or too old.
+Startup surface: `tools/list` returns the `core` toolset only. Enable the rest with `crosspad_toolsets`, `--toolsets a,b` or `CROSSPAD_TOOLSETS`; hide every writing tool with `--read-only`. Requires `crosspad-hil` ≥ 1.1.0 (`package.json` → `hilVersion`); `crosspad_doctor` tells you when it is missing or too old.
 
 </details>
 

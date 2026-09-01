@@ -7,6 +7,9 @@ import { findClangd } from "../utils/clangd.js";
 import { z } from "zod";
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { DoctorCheckSchema, type DoctorCheck } from "../hil/schemas.js";
+import { ALSA_SEQ_BUDGET, type DaemonStats } from "../hil/daemon.js";
+import { requireConfirmation, CONFIRMATION_OUTPUT } from "../policy/confirm.js";
+import { knowledgeCache } from "../resources/knowledge.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
 import { annotationsFor, tierOf } from "../policy/tiers.js";
@@ -38,11 +41,23 @@ export interface DoctorProbe {
 }
 
 export const O_Doctor = {
+  ...CONFIRMATION_OUTPUT,
   success: z.boolean(),
+  action: z.string().optional(),
   ok: z.boolean().optional(),
   checks: z.array(DoctorCheckSchema).optional(),
+  daemon: z.record(z.string(), z.unknown()).optional(),
+  dropped_handles: z.number().int().optional(),
   error: ErrorSchema.optional(),
   details: z.record(z.string(), z.unknown()).optional(),
+};
+
+const InputShape = {
+  action: z
+    .enum(["check", "restart_daemon"])
+    .default("check")
+    .describe("check: run every check; restart_daemon: stop and start the crosspad-hil daemon again — the way to pick up a newly installed crosspad-hil or a new scenario, and the repair when it has accumulated OS resources. Open console/cdc handles do not survive it"),
+  confirm_token: z.string().optional().describe("Echo the token from a confirmation_required reply to proceed"),
 };
 
 /** Numeric semver compare on the first three dot-separated components (pre-release tags ignored). */
@@ -68,9 +83,16 @@ function ageText(ms: number): string {
   return h < 48 ? `${h} h` : `${Math.round(h / 24)} d`;
 }
 
+/** One line for `handles: {con: 1, task: 2}`. */
+function handleSummary(handles: Record<string, number>): string {
+  const parts = Object.entries(handles).map(([k, n]) => `${k}x${n}`);
+  return parts.length > 0 ? parts.join(", ") : "none";
+}
+
 export async function runDoctorChecks(
   p: DoctorProbe,
   daemonChecks: () => Promise<DoctorCheck[]>,
+  daemonStats?: () => Promise<DaemonStats>,
 ): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
 
@@ -196,6 +218,35 @@ export async function runDoctorChecks(
     });
   }
 
+  // 9. the daemon as a process. A resource it fails to give back is invisible
+  // from outside until some unrelated program is the one that cannot start.
+  if (daemonStats) {
+    try {
+      const s = await daemonStats();
+      const over = s.alsa_seq_clients >= ALSA_SEQ_BUDGET;
+      checks.push({
+        name: "hil_daemon",
+        ok: !over,
+        detail: `pid ${s.pid}, up ${ageText(s.uptime_s * 1000)}, ${s.ops_total} ops, handles: ${handleSummary(s.handles)}, ${s.alsa_seq_clients} ALSA seq clients, ${s.open_fds} fds`,
+        fix: over ? "crosspad_doctor action=restart_daemon (drops open console/cdc handles)" : "",
+      });
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      const stale = code === "BAD_ARGS";
+      const msg = e instanceof Error ? e.message : String(e);
+      checks.push({
+        name: "hil_daemon",
+        ok: stale,
+        detail: stale
+          ? "daemon predates serve.stats — its resource counts are not readable"
+          : `serve.stats failed: ${msg}`,
+        fix: stale
+          ? `Upgrade crosspad-hil to >= ${p.requiredHilVersion()}, then crosspad_doctor action=restart_daemon.`
+          : "crosspad_doctor action=restart_daemon",
+      });
+    }
+  }
+
   return checks;
 }
 
@@ -267,21 +318,59 @@ export function registerDoctorTool(server: McpServer, ctx: ToolContext, probe: D
     TOOL_NAME,
     {
       description:
-        "Environment doctor. Host checks: hil_python interpreter, crosspad-hil version vs the one this server needs, platform-idf root, ESP-IDF env, crosspad-pc root, per-rev build dirs and firmware age, simulator binary staleness. Daemon checks merged in: udev/dialout, port locks (holder PID + purpose), rtmidi/ALSA/sounddevice visibility. Each check is {name, ok, detail, fix}; `ok` is false when any check fails. Run this first when a device tool errors.",
-      inputSchema: {},
+        "Environment doctor. Host checks: hil_python interpreter, crosspad-hil version vs the one this server needs, platform-idf root, ESP-IDF env, crosspad-pc root, per-rev build dirs and firmware age, simulator binary staleness. Daemon checks merged in: udev/dialout, port locks (holder PID + purpose), rtmidi/ALSA/sounddevice visibility. Also reports the daemon as a process: uptime, ops served, open handles and the OS resources it holds (ALSA sequencer clients, fds). Each check is {name, ok, detail, fix}; `ok` is false when any check fails. Run this first when a device tool errors. action=restart_daemon restarts the crosspad-hil daemon — how a newly installed crosspad-hil or a new scenario becomes visible without restarting this server.",
+      inputSchema: InputShape,
       outputSchema: O_Doctor,
       annotations: annotationsFor(tierOf(TOOL_NAME, {})),
     },
-    async (_args, extra): Promise<ToolResult> => {
+    async (args, extra): Promise<ToolResult> => {
+      const action = args?.action ?? "check";
       if (decide(ctx.policy, TOOL_NAME, {}) === "hidden") {
         return jsonResponse({ success: false, error: { code: "HIDDEN", message: `${TOOL_NAME} is hidden by policy` } });
       }
       try {
-        const checks = await runDoctorChecks(probe, async () => {
-          const r = await ctx.daemon().request<{ checks: DoctorCheck[] }>("devices.doctor", {}, { signal: extra.signal, timeoutMs: 30_000 });
-          return r.checks;
-        });
-        return jsonResponse({ success: true, ok: checks.every((c) => c.ok), checks });
+        if (action === "restart_daemon") {
+          const d = ctx.daemon();
+          let before: DaemonStats | null = null;
+          try { before = await d.stats({ signal: extra.signal }); } catch { before = null; }
+          const dropped = before?.handles_total ?? 0;
+          // Restarting is cheap and reversible, except for what the daemon is
+          // holding: a console session or a running task dies with it.
+          if (dropped > 0) {
+            const outcome = await requireConfirmation(
+              server, extra, TOOL_NAME, (args ?? {}) as Record<string, unknown>,
+              `Restart the crosspad-hil daemon. ${dropped} open handle(s) (${handleSummary(before?.handles ?? {})}) will be dropped.`,
+            );
+            if (outcome.status === "token") {
+              return jsonResponse(outcome.result.structuredContent as Record<string, unknown>);
+            }
+            if (outcome.status === "declined") {
+              return jsonResponse({
+                success: false, action,
+                error: { code: "CANCELLED_BY_USER", message: `${TOOL_NAME} action=restart_daemon was declined by the user.`, hint: "Do not retry automatically; ask before issuing this call again." },
+              });
+            }
+          }
+          await d.restart();
+          // The scenario catalog is cached on the premise that it cannot change
+          // while one daemon process lives. This restart is that change.
+          knowledgeCache.clear();
+          let after: DaemonStats | null = null;
+          try { after = await d.stats({ signal: extra.signal }); } catch { after = null; }
+          return jsonResponse({
+            success: true, action, dropped_handles: dropped,
+            ...(after ? { daemon: after as unknown as Record<string, unknown> } : {}),
+          });
+        }
+        const checks = await runDoctorChecks(
+          probe,
+          async () => {
+            const r = await ctx.daemon().request<{ checks: DoctorCheck[] }>("devices.doctor", {}, { signal: extra.signal, timeoutMs: 30_000 });
+            return r.checks;
+          },
+          () => ctx.daemon().stats({ signal: extra.signal }),
+        );
+        return jsonResponse({ success: true, action, ok: checks.every((c) => c.ok), checks });
       } catch (e) {
         return toolError(e);
       }

@@ -3,7 +3,8 @@
 // crosspad-hil package (knowledge/*.yaml), not here: it must version with the
 // firmware, not with this server. These resources are the read-only window on
 // it, cached for KNOWLEDGE_TTL_MS because the payloads cannot change while the
-// daemon process lives.
+// daemon process lives — so a daemon restart has to clear the cache, or the
+// scenario catalog the restart was meant to refresh stays stale for an hour.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../tool-context.js";
 import { ScenarioInfoSchema } from "../hil/schemas.js";

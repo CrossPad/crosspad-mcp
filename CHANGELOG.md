@@ -4,6 +4,31 @@ All notable changes to crosspad-mcp-server. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [10.2.0] — 2026-09-02
+
+### Added
+- **`crosspad_doctor action=restart_daemon`** — stops and restarts the
+  crosspad-hil daemon. It is how a newly installed `crosspad-hil`, or a
+  scenario added to an editable install, becomes visible without
+  restarting this server, and it is the repair for a daemon that has
+  accumulated OS resources. Open `console`/`cdc` handles do not survive a
+  restart, so the call asks for confirmation when the daemon is holding
+  any.
+- **`hil_daemon` doctor check** — the daemon reported as a process: pid,
+  uptime, ops served, open handles by kind, ALSA sequencer clients and
+  open fds, read from the new `serve.stats` op. It fails once the ALSA
+  sequencer clients pass the budget, which is the leak shape that used to
+  surface only as an unrelated program failing to start.
+- **Idle recycling.** A daemon that has been idle and is holding no handle
+  is stopped; the next request starts a fresh one. A daemon over the ALSA
+  client budget is stopped as soon as it is idle, rather than at the
+  15-minute mark.
+
+### Changed
+- Requires `crosspad-hil` ≥ 1.1.0 (`package.json` → `hilVersion`), which is
+  the first version with `serve.stats` and with the sequencer-client leak
+  fixed in both `MidiIO.close()` and device discovery.
+
 ## [10.1.2] — 2026-08-31
 
 ### Fixed
