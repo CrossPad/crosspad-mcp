@@ -16,12 +16,14 @@ const DEV_BOOTLOADER = {
 /** Probe over an in-memory file table. mtimes are ms since epoch. */
 function probeFor(
   files: Record<string, number>,
-  opts: { version?: string | null; newest?: { path: string; mtimeMs: number } | null; rev?: string | null } = {},
+  opts: { version?: string | null; newest?: { path: string; mtimeMs: number } | null; rev?: string | null;
+          stmDesc?: { version: string; proto: number; pcb: number } | null } = {},
 ): FlashProbe {
   return {
     async exists(p) { return p in files; },
     async mtimeMs(p) { return files[p] ?? null; },
     async binVersion() { return opts.version ?? null; },
+    async stmDescriptor() { return opts.stmDesc ?? null; },
     async newestSource() { return opts.newest ?? null; },
     async buildBoardRev() { return opts.rev ?? null; },
   };
@@ -161,5 +163,26 @@ describe("stmPreflight", () => {
     const pf = await stmPreflight(probeFor({}), { method: "dfu" });
     expect(pf.ok).toBe(false);
     expect(pf.blockers.map((b) => b.code)).toEqual(["NO_FIRMWARE"]);
+  });
+
+  it("reports the version and board revision from the image's own descriptor", async () => {
+    const bin = "/stm/build/Debug/CrossPad_STM32_r20.bin";
+    const pf = await stmPreflight(
+      probeFor({ [bin]: 4000 }, { stmDesc: { version: "1.4", proto: 0x000f, pcb: 20 } }),
+      { method: "swd", firmware_path: bin },
+    );
+    expect(pf.firmware_version).toBe("1.4");
+    expect(pf.build_board_rev).toBe("r20");
+    expect(pf.notes.join(" ")).toMatch(/protocol 0x000f/);
+    expect(pf.ok).toBe(true);
+  });
+
+  it("warns when the binary carries no CPFW descriptor", async () => {
+    const bin = "/stm/build/Debug/not_a_crosspad_image.bin";
+    const pf = await stmPreflight(probeFor({ [bin]: 4000 }, { stmDesc: null }),
+                                  { method: "swd", firmware_path: bin });
+    expect(pf.firmware_version).toBeNull();
+    expect(pf.warnings.join(" ")).toMatch(/No CPFW descriptor/);
+    expect(pf.ok).toBe(true);
   });
 });

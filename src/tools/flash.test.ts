@@ -22,6 +22,7 @@ function goodProbe(over: Partial<FlashProbe> = {}): FlashProbe {
     async exists() { return true; },
     async mtimeMs() { return 9_000; },
     async binVersion() { return "v20-3f2a"; },
+    async stmDescriptor() { return { version: "1.4", proto: 0x000F, pcb: 20 }; },
     async newestSource() { return { path: "/idf/main/main.cpp", mtimeMs: 1_000 }; },
     async buildBoardRev() { return "v2"; },
     ...over,

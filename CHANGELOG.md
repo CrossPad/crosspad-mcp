@@ -4,6 +4,14 @@ All notable changes to crosspad-mcp-server. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **STM preflight reads the image's CPFW descriptor** (offset 0x100): reports
+  the firmware version, register-map protocol and the PCB revision the image
+  was built for, and warns when a `.bin` carries no descriptor. The board
+  revision shown for SWD/DFU is now the image's own, not the ESP build dir's.
+
 ## [10.2.0] — 2026-09-02
 
 ### Added

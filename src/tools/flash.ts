@@ -66,6 +66,8 @@ export interface FlashProbe {
   mtimeMs(p: string): Promise<number | null>;
   /** esp_app_desc_t.version: 32 bytes at file offset 48, NUL-terminated (ota_flash.py). */
   binVersion(p: string): Promise<string | null>;
+  /** CrossPad_STM32 fw_desc_t at bin offset 0x100: "CPFW", major, minor, proto, pcb. */
+  stmDescriptor(p: string): Promise<{ version: string; proto: number; pcb: number } | null>;
   newestSource(root: string, subdirs: string[]): Promise<{ path: string; mtimeMs: number } | null>;
   buildBoardRev(idfRoot: string, buildDir: string): Promise<string | null>;
 }
@@ -88,6 +90,20 @@ export function realFlashProbe(): FlashProbe {
         const nul = buf.indexOf(0);
         const s = buf.subarray(0, nul === -1 ? bytesRead : nul).toString("latin1").trim();
         return s.length > 0 && /^[\x20-\x7e]+$/.test(s) ? s : null;
+      } catch {
+        return null;
+      } finally {
+        if (fh) await fh.close().catch(() => {});
+      }
+    },
+    async stmDescriptor(p) {
+      let fh: Awaited<ReturnType<typeof fs.promises.open>> | null = null;
+      try {
+        fh = await fs.promises.open(p, "r");
+        const buf = Buffer.alloc(9);
+        const { bytesRead } = await fh.read(buf, 0, 9, 0x100);
+        if (bytesRead < 9 || buf.subarray(0, 4).toString("latin1") !== "CPFW") return null;
+        return { version: `${buf[4]}.${buf[5]}`, proto: buf.readUInt16LE(6), pcb: buf[8] };
       } catch {
         return null;
       } finally {
@@ -276,6 +292,17 @@ export async function stmPreflight(
     pf.blockers.push({ code: "NO_FIRMWARE", message: `STM firmware not found at ${firmware}. Run crosspad_build platform=stm first.` });
   } else {
     pf.firmware_mtime_ms = await probe.mtimeMs(firmware);
+    const desc = await probe.stmDescriptor(firmware);
+    if (desc) {
+      pf.firmware_version = desc.version;
+      pf.build_board_rev = `r${desc.pcb}`;
+      pf.notes.push(
+        `Image descriptor: firmware ${desc.version}, register-map protocol 0x${desc.proto.toString(16).padStart(4, "0")}, built for r${desc.pcb}. ` +
+        `The STM only offers itself for an in-field update when its bundled major.minor is newer than what is running, so a fix that leaves the version alone reaches no board.`,
+      );
+    } else {
+      pf.warnings.push(`No CPFW descriptor at offset 0x100 in ${firmware} — this may not be a CrossPad STM image.`);
+    }
   }
   const newest = await probe.newestSource(CROSSPAD_STM_ROOT, ["Core", "Drivers"]);
   if (newest) {
@@ -288,7 +315,7 @@ export async function stmPreflight(
   }
   pf.notes.push(
     args.method === "swd"
-      ? "SWD flashing addresses the ST-Link probe, not a serial port — the ESP-side checks (USB mode, port role, board revision) do not apply."
+      ? "SWD flashing addresses the ST-Link probe, not a serial port — the ESP-side checks (USB mode, port role) do not apply; the board revision here is the image's own, from its descriptor."
       : "DFU flashing addresses the STM32 system bootloader (hold pad 1 at boot) via STM32_Programmer_CLI — the ESP-side checks do not apply.",
   );
   pf.ok = pf.blockers.length === 0;
