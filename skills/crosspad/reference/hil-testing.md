@@ -75,7 +75,7 @@ STM update via `crosspad_flash target=stm method=dfu`).
 
 **SysEx `0x1D`** (works in audio mode too; send to either port, listen on
 ESP MIDI): `01` ADC input (0=DIFF 1=LINE1 2=LINE2), `02` USB-mic source codec,
-`03` DAC out (1/2/3=ALL), `04` volume, `05` mute, `06` audio-tasks override,
+`03` DAC out (1/2/3=ALL), `04` volume, `05` mute, `06` audio-tasks override (resume the RT mixer only when the pads are the source — with the host streaming it shares the I2S TX with the UAC bridge and the return comes back 1.8 % flat),
 `07`/`08` pad press/release (full physical-pad path: pad logic + sample + LED),
 `09` ECHO, `10` query → 9-byte state reply. Or use the `crosspad_audio_route`
 MCP tool. Plain MIDI NoteOn does **not** trigger pad logic (LED only) — use
