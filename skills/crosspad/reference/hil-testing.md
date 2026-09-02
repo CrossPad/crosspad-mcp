@@ -69,7 +69,7 @@ Results land in `hil_logs/` (gitignored).
 in-app back path; `APP_STOP` masks teardown bugs), `ENC_STATE`, `KIT_LIST`,
 `KIT_LOAD <id>`, `PAD_PRESS <idx> [vel]`, `PAD_RELEASE`, `PAD_PRESSURE`,
 `PAD_STATS` / `PAD_STATS_RESET` (accepted vs played vs freeslots — localizes
-where hits are lost), `AUDIO_TASKS 0|1`, `AUDIO_*` (routing, see below),
+where hits are lost), `LVGL_STATS` (refresh/render/flush-wait and pixel counts since the last read — bracket a UI action with two calls), `AUDIO_TASKS 0|1`, `AUDIO_*` (routing, see below),
 `AUDIO_LEVEL`, `APP_VERSIONS`, `STM_DFU` (drop STM into DFU → fully remote
 STM update via `crosspad_flash target=stm method=dfu`).
 
