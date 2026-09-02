@@ -49,7 +49,7 @@ The CLI is a pip package; in this workspace it is the editable install at
 | `usb_mode_cycle` | CDC+MIDI <-> MIDI+UAC2 re-enumeration, heap, faults |
 | `ble_midi` | BLE MIDI both ways from this PC's radio, both roles |
 | `audio_loopback` | multitone out through UAC2, PCB loopback back; band power, glitches, dropouts |
-| `sampler_record` / `speaker_acoustic` / `velocity` / `rt_glitch` | the sampler heard through UAC2 or the mics; velocity curve; clicks under load |
+| `sampler_record` / `speaker_acoustic` / `velocity` / `rt_glitch` | the sampler heard through UAC2 or the mics; velocity curve; clicks under load. `sampler_record` on the `HIL TONE` kit (`platform-idf/tools/make_tone_kit.py`) is how audio fidelity is judged: playback speed vs the source WAV, held frames, THD/SNR — offline, from the WAV |
 | `midi_stress` / `midi_bench` / `speedtest` | MIDI loss, throughput/latency on both ports, pad-rate ceiling |
 | `stability` | overnight soak: resets, fatals, stalls, heap drift; `--stim-midi` |
 | `led_state` / `waveform_cache` | LED model dump; does every pad get its waveform |
@@ -69,7 +69,7 @@ Results land in `hil_logs/` (gitignored).
 in-app back path; `APP_STOP` masks teardown bugs), `ENC_STATE`, `KIT_LIST`,
 `KIT_LOAD <id>`, `PAD_PRESS <idx> [vel]`, `PAD_RELEASE`, `PAD_PRESSURE`,
 `PAD_STATS` / `PAD_STATS_RESET` (accepted vs played vs freeslots — localizes
-where hits are lost), `LVGL_STATS` (refresh/render/flush-wait and pixel counts since the last read — bracket a UI action with two calls), `AUDIO_TASKS 0|1`, `AUDIO_*` (routing, see below),
+where hits are lost), `LVGL_STATS` (refresh/render/flush-wait and pixel counts since the last read — bracket a UI action with two calls), `AUDIO_TASKS 0|1`, `AUDIO_RATE [44100|48000]` (running vs persisted engine rate; the clock follows on reboot), `AUDIO_*` (routing, see below),
 `AUDIO_LEVEL`, `APP_VERSIONS`, `STM_DFU` (drop STM into DFU → fully remote
 STM update via `crosspad_flash target=stm method=dfu`).
 
