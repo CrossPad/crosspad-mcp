@@ -49,6 +49,7 @@ The CLI is a pip package; in this workspace it is the editable install at
 | `usb_mode_cycle` | CDC+MIDI <-> MIDI+UAC2 re-enumeration, heap, faults |
 | `ble_midi` | BLE MIDI both ways from this PC's radio, both roles |
 | `audio_loopback` | multitone out through UAC2, PCB loopback back; band power, glitches, dropouts |
+| `pitched_kit` | the pitched (single-sample) engine heard through UAC2 on the `HIL PITCHED` sine kit (`platform-idf/tools/make_pitched_kit.py`): per-pad cents vs `440·2^((note−69)/12)`, 16-pad chord, `PITCHED_STATUS` steals/rt budget; verbs `PITCHED_STATUS`, `PITCHED_BENCH` |
 | `sampler_record` / `speaker_acoustic` / `velocity` / `rt_glitch` | the sampler heard through UAC2 or the mics; velocity curve; clicks under load. `sampler_record` on the `HIL TONE` kit (`platform-idf/tools/make_tone_kit.py`) is how audio fidelity is judged: playback speed vs the source WAV, held frames, THD/SNR — offline, from the WAV |
 | `midi_stress` / `midi_bench` / `speedtest` | MIDI loss, throughput/latency on both ports, pad-rate ceiling |
 | `stability` | overnight soak: resets, fatals, stalls, heap drift; `--stim-midi` |
