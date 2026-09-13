@@ -34,6 +34,7 @@ repo_check CROSSPAD_PC_ROOT      crosspad-pc         "crosspad-pc (PC sim)"
 repo_check CROSSPAD_IDF_ROOT     platform-idf        "platform-idf (ESP-IDF)"
 repo_check CROSSPAD_ARDUINO_ROOT ESP32-S3            "ESP32-S3 (Arduino)"
 repo_check CROSSPAD_CORE_ROOT    crosspad-core       "crosspad-core"
+repo_check CROSSPAD_HIL_ROOT     crosspad-hil        "crosspad-hil (Python host tooling)"
 repo_check CROSSPAD_GUI_ROOT     crosspad-gui        "crosspad-gui"
 repo_check CROSSPAD_STM_ROOT     CrossPad_STM32_r20  "CrossPad_STM32_r20 (STM32)"
 

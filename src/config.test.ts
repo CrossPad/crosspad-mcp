@@ -20,6 +20,7 @@ describe("config module", () => {
       const existingPaths = new Set([
         path.join(GIT_DIR, "crosspad-pc"),
         path.join(GIT_DIR, "platform-idf"),
+        path.join(GIT_DIR, "crosspad-hil"),
       ]);
 
       vi.doMock("fs", () => ({
@@ -38,6 +39,7 @@ describe("config module", () => {
 
       expect(repos).toHaveProperty("crosspad-pc");
       expect(repos).toHaveProperty("platform-idf");
+      expect(repos["crosspad-hil"]).toBe(path.join(GIT_DIR, "crosspad-hil"));
       expect(repos).not.toHaveProperty("crosspad-core");
       expect(repos).not.toHaveProperty("ESP32-S3");
     });

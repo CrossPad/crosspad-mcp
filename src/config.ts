@@ -37,6 +37,9 @@ const CROSSPAD_GUI_ROOT =
 export const CROSSPAD_STM_ROOT =
   process.env.CROSSPAD_STM_ROOT || path.join(GIT_DIR, "CrossPad_STM32_r20");
 
+export const CROSSPAD_HIL_ROOT =
+  process.env.CROSSPAD_HIL_ROOT || path.join(GIT_DIR, "crosspad-hil");
+
 // Trace defaults (overridable later via user config at call sites).
 export const STM_ELF_DEFAULT = path.join(CROSSPAD_STM_ROOT, "build", "Debug", "CrossPad_STM32_r20.elf");
 export const TRACE_DIR_DEFAULT = path.join(CROSSPAD_STM_ROOT, "traces");
@@ -117,6 +120,7 @@ const REPO_CANDIDATES: Record<string, string> = {
   "platform-idf": CROSSPAD_IDF_ROOT,
   "ESP32-S3": CROSSPAD_ARDUINO_ROOT,
   "stm32-r20": CROSSPAD_STM_ROOT,
+  "crosspad-hil": CROSSPAD_HIL_ROOT,
 };
 
 let cachedRepos: Record<string, string> | null = null;

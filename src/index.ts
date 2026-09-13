@@ -1269,7 +1269,7 @@ registerLegacy(
       query: z.string().min(1).describe("Symbol name (substring match, case-insensitive on filter)"),
       kind: z.enum(["class", "function", "macro", "enum", "typedef", "all"]).default("all"),
       repos: z.array(z.string()).default(["all"])
-        .describe("Repo names to scan, or ['all']. Names: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, stm32-r20."),
+        .describe("Repo names to scan, or ['all']. Names: crosspad-core, crosspad-gui, crosspad-pc, platform-idf, ESP32-S3, stm32-r20, crosspad-hil."),
       max_results: z.number().int().min(1).max(500).default(50),
       context_lines: z.number().int().min(0).max(10).default(0)
         .describe("Surrounding lines per match (like grep -C). 0 = no context."),

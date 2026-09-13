@@ -58,3 +58,11 @@ actually compiles before assuming anything else is wrong.
 - `crosspad_repo_status` — git status across every detected repo at once.
 - `crosspad_repo_diff` — submodule drift in crosspad-pc / platform-idf.
 - `crosspad://workspace` resource — JSON snapshot of repos, branches, dirty counts, sim status.
+
+## crosspad-hil
+
+Python host tooling for device discovery, transports, updates and HIL scenarios.
+Discovered at `$CROSSPAD_GIT_DIR/crosspad-hil` (default `~/GIT/crosspad-hil`);
+set `CROSSPAD_HIL_ROOT` to override. Included in workspace, repository status/diffs
+and symbol searches (`repos=["crosspad-hil"]`, Python classes/functions including
+async methods). Restart the MCP server after changing repository paths.

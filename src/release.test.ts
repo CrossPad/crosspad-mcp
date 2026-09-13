@@ -32,8 +32,10 @@ describe("release metadata", () => {
     expect(pkg.scripts["typecheck:eval"]).toBe("tsc -p tsconfig.eval.json --noEmit");
   });
 
-  it("CHANGELOG's newest entry is 10.2.0", () => {
-    const firstHeading = changelog.split("\n").find((l) => l.startsWith("## ["));
+  it("CHANGELOG's newest released entry is 10.2.0", () => {
+    const firstHeading = changelog
+      .split("\n")
+      .find((l) => l.startsWith("## [") && !l.startsWith("## [Unreleased]"));
     expect(firstHeading).toBe("## [10.2.0] — 2026-09-02");
     expect(changelog).toContain("crosspad-hil");
   });

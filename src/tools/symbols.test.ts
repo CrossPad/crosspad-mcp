@@ -194,3 +194,21 @@ describe("escapeForShell", () => {
     expect(escapeForShell("`cmd`")).toBe("\\`cmd\\`");
   });
 });
+
+ describe("Python HIL definitions", () => {
+  it.each([
+    ["class Device:", "Device", "class"],
+    ["class Device(Base):", "Device", "class"],
+    ["def discover_devices():", "discover_devices", "function"],
+    ["    async def connect(self):", "connect", "function"],
+  ] as const)("finds %s", (line, name, kind) => {
+    expect(new RegExp(buildPattern(name, kind))).toBeDefined();
+    expect(new RegExp(buildPattern(name, kind)).test(line)).toBe(true);
+    expect(classifyDefinition(line.trim())).toBe(kind);
+    expect(extractSymbolName(line, kind)).toBe(name);
+  });
+  it("excludes virtual environments", () => {
+    expect(isVendoredPath(".venv/lib/python/site-packages/test.py")).toBe(true);
+    expect(isVendoredPath("crosspad_hil/ble.py")).toBe(false);
+  });
+});

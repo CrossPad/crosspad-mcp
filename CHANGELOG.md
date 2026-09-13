@@ -7,6 +7,10 @@ All notable changes to crosspad-mcp-server. Format follows
 ## [Unreleased]
 
 ### Added
+- **`crosspad_search_symbols` covers `crosspad-hil`**: the Python host repo is
+  discovered at `$CROSSPAD_GIT_DIR/crosspad-hil` (`CROSSPAD_HIL_ROOT` to
+  override), joins workspace/status/diff, and `*.py` `class`/`def`/`async def`
+  definitions are matched; `.venv`, `venv` and `__pycache__` are skipped.
 - **STM preflight reads the image's CPFW descriptor** (offset 0x100): reports
   the firmware version, register-map protocol and the PCB revision the image
   was built for, and warns when a `.bin` carries no descriptor. The board

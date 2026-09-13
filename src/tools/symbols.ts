@@ -37,7 +37,7 @@ const VENDOR_SEGMENTS = [
   // STM32 CubeMX / ST vendoring (firmware repo)
   "Drivers", "Middlewares", "CMSIS",
   // generic third-party / generated
-  "third_party", "vendor", "node_modules", "build", ".pio",
+  "third_party", "vendor", "node_modules", "build", ".pio", ".venv", "venv", "__pycache__",
 ];
 // Escape each segment so metacharacters (e.g. the "." in ".pio") match
 // literally instead of as regex wildcards.
@@ -84,6 +84,13 @@ export function buildPattern(query: string, kind: string): string {
     patterns.push(`^${W}[${W.slice(1, -1)}: \\t*&<>]+${W}*${q}${W}*${WS}*\\(`);
   }
 
+  if (kind === "class" || kind === "all") {
+    patterns.push(`^${WS}*class${WS}+${W}*${q}${W}*${WS}*[:(]`);
+  }
+  if (kind === "function" || kind === "all") {
+    patterns.push(`^${WS}*(async${WS}+)?def${WS}+${W}*${q}${W}*${WS}*\\(`);
+  }
+
   return patterns.join("|");
 }
 
@@ -116,7 +123,7 @@ export async function crosspadSearchSymbols(
   const useContext = clampedContext > 0;
 
   const contextFlag = useContext ? `-C ${clampedContext}` : "";
-  const grepCmd = `git grep --recurse-submodules -n ${contextFlag} -E "${escapeForShell(pattern)}" -- "*.hpp" "*.h" "*.cpp" "*.c"`;
+  const grepCmd = `git grep --recurse-submodules -n ${contextFlag} -E "${escapeForShell(pattern)}" -- "*.hpp" "*.h" "*.cpp" "*.c" "*.py"`;
 
   // One git grep per repo, up to DEFAULT_CONCURRENCY at a time; the greps are
   // independent, and a 6-repo search used to cost the sum of their runtimes on
@@ -270,6 +277,7 @@ export function classifyDefinition(line: string): SymbolResult["kind"] | null {
   if (/^\s*enum\s+/.test(line)) return "enum";
   if (/^\s*(typedef|using)\s+/.test(line)) return "typedef";
   if (/^\s*(class|struct)\s+\w+/.test(line)) return "class";
+  if (/^\s*(?:async\s+)?def\s+\w+\s*\(/.test(line)) return "function";
   // Function: starts with type qualifier, has word( pattern
   if (/^[\w:][\w:\s*&<>,]*\b\w+\s*\(/.test(line) &&
       !/^\s*(if|while|for|switch|return|delete|new|throw|sizeof)\b/.test(line)) {
