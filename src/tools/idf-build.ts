@@ -133,7 +133,18 @@ export async function crosspadIdfBuild(
 ): Promise<IdfBuildResult> {
   const startTime = Date.now();
 
-  const d = await resolveBoard(board);
+  let d;
+  try {
+    d = await resolveBoard(board);
+  } catch (e) {
+    return {
+      success: false,
+      duration_seconds: (Date.now() - startTime) / 1000,
+      errors: [`Board resolver failed: ${e instanceof Error ? e.message : String(e)}`],
+      warnings: [],
+      tail: [],
+    };
+  }
   if (!d.rev) {
     return {
       success: false,

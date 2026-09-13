@@ -1,11 +1,49 @@
-import { describe, it, expect } from "vitest";
-import { parseErrors, parseWarnings, getTail } from "./idf-build.js";
-import { idfArgs } from "../utils/board.js";
+import { describe, it, expect, vi } from "vitest";
+import { parseErrors, parseWarnings, getTail, crosspadIdfBuild } from "./idf-build.js";
+import { idfArgs, resolveBoard } from "../utils/board.js";
+import { runIdf, runIdfStream } from "../utils/exec.js";
+
+vi.mock("../utils/board.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utils/board.js")>();
+  return { ...actual, resolveBoard: vi.fn(actual.resolveBoard) };
+});
+
+vi.mock("../utils/exec.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utils/exec.js")>();
+  return { ...actual, runIdf: vi.fn(actual.runIdf), runIdfStream: vi.fn(actual.runIdfStream) };
+});
 
 describe("idfArgs", () => {
   it("names the build dir and sdkconfig of the revision", () => {
     expect(idfArgs({ rev: "v2", build_dir: "build_v2", sdkconfig: "sdkconfig.v2" } as any))
       .toEqual(["-B", "build_v2", "-DSDKCONFIG=sdkconfig.v2"]);
+  });
+});
+
+describe("crosspadIdfBuild — board resolution failures", () => {
+  it("turns a rejected resolveBoard into a structured build failure, never running idf.py", async () => {
+    vi.mocked(resolveBoard).mockRejectedValueOnce(new Error("crosspad_board.py gave no decision: spawn python3 ENOENT"));
+    const result = await crosspadIdfBuild("build");
+    expect(result.success).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("Board resolver failed");
+    expect(result.errors[0]).toContain("crosspad_board.py gave no decision");
+    expect(result.warnings).toEqual([]);
+    expect(result.tail).toEqual([]);
+    expect(runIdf).not.toHaveBeenCalled();
+    expect(runIdfStream).not.toHaveBeenCalled();
+  });
+
+  it("refuses with no idf.py call when the resolver reports no known revision", async () => {
+    vi.mocked(resolveBoard).mockResolvedValueOnce({
+      rev: null, source: "none", device: null, pcb: null, fw_rev: null,
+      build_dir: null, sdkconfig: null, mismatch: false,
+    });
+    const result = await crosspadIdfBuild("build");
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain("No board revision");
+    expect(runIdf).not.toHaveBeenCalled();
+    expect(runIdfStream).not.toHaveBeenCalled();
   });
 });
 
