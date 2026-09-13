@@ -25,6 +25,7 @@ function goodProbe(over: Partial<FlashProbe> = {}): FlashProbe {
     async stmDescriptor() { return { version: "1.4", proto: 0x000F, pcb: 20 }; },
     async newestSource() { return { path: "/idf/main/main.cpp", mtimeMs: 1_000 }; },
     async buildBoardRev() { return "v2"; },
+    async defaultBuildDir() { return "/idf/build"; },
     ...over,
   };
 }

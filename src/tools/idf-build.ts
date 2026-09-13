@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { CROSSPAD_IDF_ROOT } from "../config.js";
 import { runIdf, runIdfStream, OnLine } from "../utils/exec.js";
+import { resolveBoard, idfArgs } from "../utils/board.js";
 
 export interface IdfBuildResult {
   success: boolean;
@@ -10,6 +11,8 @@ export interface IdfBuildResult {
   warnings: string[];
   tail: string[];
   auto_reconfigured?: boolean;
+  board_rev?: string | null;
+  build_dir?: string | null;
 }
 
 /**
@@ -126,8 +129,22 @@ export async function crosspadIdfBuild(
   mode: "build" | "fullclean" | "clean",
   onLine?: OnLine,
   signal?: AbortSignal,
+  board?: string,
 ): Promise<IdfBuildResult> {
   const startTime = Date.now();
+
+  const d = await resolveBoard(board);
+  if (!d.rev) {
+    return {
+      success: false,
+      duration_seconds: 0,
+      errors: ["No board revision: connect a board or pass board='v2' (tools/crosspad_board.py --set v2 remembers one)."],
+      warnings: [],
+      tail: [],
+    };
+  }
+  const a = idfArgs(d).join(" ");
+
   let autoReconfigured = false;
 
   // Auto-detect unregistered apps — if found, escalate to fullclean
@@ -142,7 +159,7 @@ export async function crosspadIdfBuild(
 
   if (mode === "fullclean") {
     onLine?.("stdout", "[idf] Running idf.py fullclean...");
-    const r = await runIdfCmd("idf.py fullclean", onLine, 60_000, signal);
+    const r = await runIdfCmd(`idf.py ${a} fullclean`, onLine, 60_000, signal);
     if (!r.success) {
       const combined = r.stdout + "\n" + r.stderr;
       return {
@@ -152,12 +169,14 @@ export async function crosspadIdfBuild(
         warnings: [],
         tail: getTail(combined, 20),
         auto_reconfigured: autoReconfigured,
+        board_rev: d.rev,
+        build_dir: d.build_dir,
       };
     }
   }
 
   if (mode === "clean") {
-    const buildDir = path.join(CROSSPAD_IDF_ROOT, "build");
+    const buildDir = path.join(CROSSPAD_IDF_ROOT, d.build_dir!);
     if (fs.existsSync(buildDir)) {
       onLine?.("stdout", "[idf] Removing build directory...");
       fs.rmSync(buildDir, { recursive: true, force: true });
@@ -166,7 +185,7 @@ export async function crosspadIdfBuild(
 
   onLine?.("stdout", "[idf] Building...");
 
-  const r = await runIdfCmd("idf.py build", onLine, 600_000, signal);
+  const r = await runIdfCmd(`idf.py ${a} build`, onLine, 600_000, signal);
   const combined = r.stdout + "\n" + r.stderr;
   const errors = parseErrors(combined);
   const warnings = parseWarnings(combined);
@@ -177,6 +196,8 @@ export async function crosspadIdfBuild(
     errors,
     warnings,
     tail: getTail(combined, r.success ? 10 : 30),
+    board_rev: d.rev,
+    build_dir: d.build_dir,
   };
 
   if (autoReconfigured) {

@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { parseErrors, parseWarnings, getTail } from "./idf-build.js";
+import { idfArgs } from "../utils/board.js";
+
+describe("idfArgs", () => {
+  it("names the build dir and sdkconfig of the revision", () => {
+    expect(idfArgs({ rev: "v2", build_dir: "build_v2", sdkconfig: "sdkconfig.v2" } as any))
+      .toEqual(["-B", "build_v2", "-DSDKCONFIG=sdkconfig.v2"]);
+  });
+});
 
 describe("parseErrors (IDF build)", () => {
   it("extracts GCC compile errors", () => {

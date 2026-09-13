@@ -21,6 +21,7 @@ import { CONFIRMATION_OUTPUT, requireConfirmation } from "../policy/confirm.js";
 import { jsonResponse, toolError, type ToolResult, ErrorSchema } from "../tool-result.js";
 import { assertAllowedPath } from "../utils/paths.js";
 import { CROSSPAD_IDF_ROOT, CROSSPAD_STM_ROOT, stmArtifact, type StmPreset } from "../config.js";
+import { resolveBoard } from "../utils/board.js";
 import { crosspadIdfFlash } from "./idf-flash.js";
 import { crosspadStmFlash } from "./stm-flash.js";
 import type { OnLine } from "../utils/exec.js";
@@ -70,6 +71,8 @@ export interface FlashProbe {
   stmDescriptor(p: string): Promise<{ version: string; proto: number; pcb: number } | null>;
   newestSource(root: string, subdirs: string[]): Promise<{ path: string; mtimeMs: number } | null>;
   buildBoardRev(idfRoot: string, buildDir: string): Promise<string | null>;
+  /** The build dir the board resolver (tools/crosspad_board.py) picks for the connected/remembered board; null when no revision is known. */
+  defaultBuildDir(idfRoot: string): Promise<string | null>;
 }
 
 export function realFlashProbe(): FlashProbe {
@@ -152,6 +155,14 @@ export function realFlashProbe(): FlashProbe {
       }
       return null;
     },
+    async defaultBuildDir(idfRoot) {
+      try {
+        const d = await resolveBoard();
+        return d.build_dir ? path.join(idfRoot, d.build_dir) : null;
+      } catch {
+        return null;
+      }
+    },
   };
 }
 
@@ -184,10 +195,14 @@ export async function espPreflight(
   args: { transport: "uart" | "ota"; port?: string; firmware_path?: string; build_dir?: string },
   deviceError?: HilError,
 ): Promise<FlashPreflight> {
-  const buildDir = args.build_dir ?? path.join(CROSSPAD_IDF_ROOT, "build");
+  const resolvedDir = args.build_dir ?? (await probe.defaultBuildDir(CROSSPAD_IDF_ROOT));
+  const buildDir = resolvedDir ?? path.join(CROSSPAD_IDF_ROOT, "build");
   const firmware = args.firmware_path ?? path.join(buildDir, "CrossPad.bin");
   const pf = emptyPreflight("esp", args.transport, firmware);
   pf.build_dir = buildDir;
+  if (resolvedDir === null) {
+    pf.blockers.push({ code: "NO_BOARD", message: "No board revision known: connect a board, pass build_dir, or run tools/crosspad_board.py --set v2." });
+  }
 
   // ── the build ─────────────────────────────────────────────────────────
   if (!(await probe.exists(buildDir))) {
@@ -574,7 +589,7 @@ export function registerFlashTool(server: McpServer, ctx: ToolContext): Register
             flashResult = await pumpDaemonTask(daemon, started.task, signal, progress);
           } else {
             progress(0, undefined, "idf.py flash starting");
-            flashResult = await crosspadIdfFlash(args.port ?? preflight.port ?? undefined, progressLines(progress, "uart"), signal);
+            flashResult = await crosspadIdfFlash(args.port ?? preflight.port ?? undefined, preflight.build_dir!, progressLines(progress, "uart"), signal);
           }
           let boot: BootResult | null = null;
           if (wantBoot) {

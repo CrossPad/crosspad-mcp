@@ -259,6 +259,8 @@ export const O_Build = {
   warnings: z.array(z.string()).optional(),
   tail: z.array(z.string()).optional(),
   auto_reconfigured: z.boolean().optional(),
+  board_rev: z.string().nullable().optional(),
+  build_dir: z.string().nullable().optional(),
   ...ErrorField,
 };
 
@@ -489,7 +491,7 @@ registerLegacy(
     description:
       "[PC | ESP | STM HW] Build CrossPad for the given platform.\n" +
       "  • platform='pc'  → CMake + Ninja host simulator. PREFER THIS over `cmake --build build` (picks right MSVC env on Windows, parses errors/warnings, streams progress).\n" +
-      "  • platform='idf' → idf.py build for ESP32-S3 firmware. PREFER THIS over raw `idf.py build` (sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings).\n" +
+      "  • platform='idf' → idf.py build for ESP32-S3 firmware. PREFER THIS over raw `idf.py build` (sources IDF env, auto-fullcleans when new apps detected, parses errors/warnings). Follows the board revision resolved by tools/crosspad_board.py — passes -B build_<rev> -DSDKCONFIG=sdkconfig.<rev>; refuses if no revision is known.\n" +
       "  • platform='stm' → CMake + Ninja + arm-none-eabi for STM32G0 firmware (CrossPad r20). Uses CMakePresets (Debug/Release); output is build/<preset>/CrossPad_STM32_r20.elf.\n" +
       "Mode×platform compatibility:\n" +
       "  • incremental → all (default)\n" +
@@ -507,11 +509,13 @@ registerLegacy(
       build_type: z.enum(["Debug", "Release", "RelWithDebInfo"])
         .default("Debug")
         .describe("CMake build type — PC & STM (ignored for IDF; ESP32 build type comes from sdkconfig). STM maps to the Debug/Release preset (RelWithDebInfo→Release). Only honored on mode=clean|reconfigure (incremental keeps existing cache)."),
+      board: z.enum(["v1", "v2"]).optional()
+        .describe("IDF only. Board revision. Default: the connected board (hardware revision from the STM bridge), else the last choice (tools/crosspad_board.py)."),
     },
     outputSchema: O_Build,
     annotations: ANN_DESTRUCTIVE,
   },
-  async ({ platform, mode, build_type }, extra: any) => {
+  async ({ platform, mode, build_type, board }, extra: any) => {
     if (platform === "pc") {
       if (mode === "fullclean") return err("mode='fullclean' is IDF-only. PC supports: incremental, clean, reconfigure.");
       const onLine = makeProgressLogger("build-pc", extra);
@@ -526,7 +530,7 @@ registerLegacy(
     if (mode === "reconfigure") return err("mode='reconfigure' is PC/STM-only. IDF supports: incremental, clean, fullclean.");
     const idfMode = mode === "incremental" ? "build" : mode;
     const onLine = makeProgressLogger("build-idf", extra);
-    return jsonResponse(await crosspadIdfBuild(idfMode as "build" | "fullclean" | "clean", onLine, extra.signal));
+    return jsonResponse(await crosspadIdfBuild(idfMode as "build" | "fullclean" | "clean", onLine, extra.signal, board));
   }
 );
 

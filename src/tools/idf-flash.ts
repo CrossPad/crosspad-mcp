@@ -9,7 +9,6 @@
  */
 
 import fs from "fs";
-import path from "path";
 import { CROSSPAD_IDF_ROOT } from "../config.js";
 import { runIdfStream, runIdfArgvStream, OnLine } from "../utils/exec.js";
 import { findCrosspadPort } from "../utils/device.js";
@@ -29,6 +28,7 @@ export interface FlashResult {
 
 export async function crosspadIdfFlash(
   port: string | undefined,
+  buildDir: string,
   onLine?: OnLine,
   signal?: AbortSignal,
 ): Promise<FlashResult> {
@@ -47,7 +47,6 @@ export async function crosspadIdfFlash(
   }
 
   // Check firmware exists (build first if not)
-  const buildDir = path.join(CROSSPAD_IDF_ROOT, "build");
   if (!fs.existsSync(buildDir)) {
     return {
       success: false,
@@ -55,7 +54,7 @@ export async function crosspadIdfFlash(
       port: "",
       duration_seconds: 0,
       output_tail: [],
-      error: "No build directory found. Run crosspad_build platform=idf first.",
+      error: `No build directory found at ${buildDir}. Run crosspad_build platform=idf first.`,
     };
   }
 
@@ -78,7 +77,7 @@ export async function crosspadIdfFlash(
   // argv mode (shell:false) — port is allow-list-validated upstream but
   // defense-in-depth means we never let it touch a shell.
   const result = await runIdfArgvStream(
-    "idf.py", ["-p", targetPort, "flash"],
+    "idf.py", ["-B", buildDir, "-p", targetPort, "flash"],
     CROSSPAD_IDF_ROOT, onLine ?? (() => {}), 300_000, signal,
   );
 

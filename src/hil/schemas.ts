@@ -55,6 +55,8 @@ export const DeviceSchema = z.looseObject({
   usb_mode: UsbModeSchema,
   ports: PortsSchema,
   board_rev: z.string().nullable().optional(),
+  pcb: z.number().int().nullable().optional(),
+  fw_rev: z.string().nullable().optional(),
 });
 export type Device = z.infer<typeof DeviceSchema>;
 

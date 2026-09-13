@@ -17,7 +17,8 @@ const DEV_BOOTLOADER = {
 function probeFor(
   files: Record<string, number>,
   opts: { version?: string | null; newest?: { path: string; mtimeMs: number } | null; rev?: string | null;
-          stmDesc?: { version: string; proto: number; pcb: number } | null } = {},
+          stmDesc?: { version: string; proto: number; pcb: number } | null;
+          defaultBuildDir?: (idfRoot: string) => Promise<string | null> } = {},
 ): FlashProbe {
   return {
     async exists(p) { return p in files; },
@@ -26,6 +27,7 @@ function probeFor(
     async stmDescriptor() { return opts.stmDesc ?? null; },
     async newestSource() { return opts.newest ?? null; },
     async buildBoardRev() { return opts.rev ?? null; },
+    async defaultBuildDir(idfRoot) { return opts.defaultBuildDir ? opts.defaultBuildDir(idfRoot) : null; },
   };
 }
 
@@ -131,6 +133,18 @@ describe("espPreflight", () => {
     expect(pf.device).toBeNull();
     expect(pf.blockers.map((b) => b.code)).toContain("NO_DEVICE");
     expect(pf.firmware_exists).toBe(true);
+  });
+
+  it("defaults to the resolved board's build dir", async () => {
+    const probe = probeFor({}, { defaultBuildDir: async () => "/git/platform-idf/build_v2" });
+    const pf = await espPreflight(probe, null, { transport: "ota" });
+    expect(pf.build_dir).toBe("/git/platform-idf/build_v2");
+  });
+
+  it("blocks when no revision is known", async () => {
+    const probe = probeFor({}, { defaultBuildDir: async () => null });
+    const pf = await espPreflight(probe, null, { transport: "ota" });
+    expect(pf.blockers.map((b) => b.code)).toContain("NO_BOARD");
   });
 });
 
