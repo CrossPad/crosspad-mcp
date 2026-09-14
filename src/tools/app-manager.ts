@@ -422,7 +422,7 @@ async function runPythonAction(
     // not see an app that just appeared or vanished. Saying so is the difference
     // between "it does not show up" and a five-minute detour.
     ...(result.success && MUTATING_ACTIONS.has(action)
-      ? { next: "idf.py fullclean && idf.py build — required after adding or removing an app directory" }
+      ? { next: "idf.py -B build_<rev> fullclean && idf.py -B build_<rev> -DSDKCONFIG=sdkconfig.<rev> build (idf.py board names <rev>) — required after adding or removing an app directory" }
       : {}),
   };
 }

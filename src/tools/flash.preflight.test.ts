@@ -18,7 +18,7 @@ function probeFor(
   files: Record<string, number>,
   opts: { version?: string | null; newest?: { path: string; mtimeMs: number } | null; rev?: string | null;
           stmDesc?: { version: string; proto: number; pcb: number } | null;
-          defaultBuildDir?: (idfRoot: string) => Promise<string | null> } = {},
+          defaultBuildDir?: (idfRoot: string, device: string | null) => Promise<string | null> } = {},
 ): FlashProbe {
   return {
     async exists(p) { return p in files; },
@@ -27,7 +27,7 @@ function probeFor(
     async stmDescriptor() { return opts.stmDesc ?? null; },
     async newestSource() { return opts.newest ?? null; },
     async buildBoardRev() { return opts.rev ?? null; },
-    async defaultBuildDir(idfRoot) { return opts.defaultBuildDir ? opts.defaultBuildDir(idfRoot) : null; },
+    async defaultBuildDir(idfRoot, device) { return opts.defaultBuildDir ? opts.defaultBuildDir(idfRoot, device) : null; },
   };
 }
 
@@ -141,10 +141,22 @@ describe("espPreflight", () => {
     expect(pf.build_dir).toBe("/git/platform-idf/build_v2");
   });
 
-  it("blocks when no revision is known", async () => {
-    const probe = probeFor({}, { defaultBuildDir: async () => null });
-    const pf = await espPreflight(probe, null, { transport: "ota" });
-    expect(pf.blockers.map((b) => b.code)).toContain("NO_BOARD");
+  it("asks the resolver about the board being flashed", async () => {
+    const asked: (string | null)[] = [];
+    const probe = probeFor({}, { defaultBuildDir: async (_root, device) => { asked.push(device); return "/idf/build_v2"; } });
+    await espPreflight(probe, DEV_V2 as never, { transport: "ota" });
+    await espPreflight(probe, null, { transport: "ota" });
+    expect(asked).toEqual(["dev_3f2a", null]);
+  });
+
+  it("blocks when no revision is known, without falling back to build/", async () => {
+    const probe = probeFor({ "/idf/build": 1, [FW]: 1 }, { defaultBuildDir: async () => null });
+    const pf = await espPreflight(probe, DEV_V2 as never, { transport: "ota" });
+    expect(pf.blockers.map((b) => b.code)).toEqual(["NO_BOARD"]);
+    expect(pf.build_dir).toBeNull();
+    expect(pf.firmware_path).toBe("");
+    expect(pf.blockers[0].message).toMatch(/dev_3f2a/);
+    expect(pf.blockers[0].message).toMatch(/build_dir/);
   });
 });
 
@@ -161,6 +173,13 @@ describe("applyForce", () => {
     const pf = applyForce(await espPreflight(probe, DEV_V2 as never, { transport: "uart", port: "/dev/ttyACM1", firmware_path: FW, build_dir: BUILD }), true);
     expect(pf.ok).toBe(false);
     expect(pf.blockers.map((b) => b.code)).toEqual(["PORT_ROLE"]);
+  });
+
+  it("never clears NO_BOARD", async () => {
+    const probe = probeFor({}, { defaultBuildDir: async () => null });
+    const pf = applyForce(await espPreflight(probe, DEV_V2 as never, { transport: "ota" }), true);
+    expect(pf.ok).toBe(false);
+    expect(pf.blockers.map((b) => b.code)).toEqual(["NO_BOARD"]);
   });
 });
 

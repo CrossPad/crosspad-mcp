@@ -210,6 +210,32 @@ describe("crosspad_flash", () => {
     expect(d.calls).toHaveLength(0);
   });
 
+  it("takes the build dir of the board it flashes when two are connected", async () => {
+    const asked: (string | null)[] = [];
+    setFlashProbeForTest(goodProbe({ async defaultBuildDir(_root, device) { asked.push(device); return "/idf/build_v2"; } }));
+    const v1 = { ...DEV, id: "dev_b7c1", serial: "CCDD", board_rev: "v1",
+      ports: { ...DEV.ports, cdc: port("/dev/ttyACM2"), console: port("/dev/ttyACM3", 0x0483, 0x5740) } };
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [v1, DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", device: "dev_3f2a", dry_run: true }, fakeExtra());
+    const sc = r.structuredContent as Record<string, any>;
+    expect(asked).toEqual(["dev_3f2a"]);
+    expect(sc.preflight).toMatchObject({ device: "dev_3f2a", build_dir: "/idf/build_v2", ok: true });
+  });
+
+  it("a board with no known revision is refused, and force does not clear it", async () => {
+    setFlashProbeForTest(goodProbe({ async defaultBuildDir() { return null; } }));
+    const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", force: true }, fakeExtra());
+    const sc = r.structuredContent as Record<string, any>;
+    expect(r.isError).toBe(true);
+    expect(sc.error.code).toBe("PREFLIGHT_BLOCKED");
+    expect(sc.preflight.blockers.map((b: { code: string }) => b.code)).toEqual(["NO_BOARD"]);
+    expect(sc.error.hint).toContain("build_dir");
+    expect(d.calls.some((c) => c.op === "ota.flash")).toBe(false);
+  });
+
   // ── S5: paths ────────────────────────────────────────────────────────
   it("refuses a firmware outside the allowed roots, before it looks at a device", async () => {
     const d = fakeDaemon({ "devices.list": () => ({ devices: [DEV] }) });

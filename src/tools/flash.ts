@@ -71,8 +71,8 @@ export interface FlashProbe {
   stmDescriptor(p: string): Promise<{ version: string; proto: number; pcb: number } | null>;
   newestSource(root: string, subdirs: string[]): Promise<{ path: string; mtimeMs: number } | null>;
   buildBoardRev(idfRoot: string, buildDir: string): Promise<string | null>;
-  /** The build dir the board resolver (tools/crosspad_board.py) picks for the connected/remembered board; null when no revision is known. */
-  defaultBuildDir(idfRoot: string): Promise<string | null>;
+  /** The build dir the board resolver (tools/crosspad_board.py) picks for `device` (a crosspad-hil id), or for the connected/remembered board without one; null when no revision is known. */
+  defaultBuildDir(idfRoot: string, device: string | null): Promise<string | null>;
 }
 
 export function realFlashProbe(): FlashProbe {
@@ -155,9 +155,9 @@ export function realFlashProbe(): FlashProbe {
       }
       return null;
     },
-    async defaultBuildDir(idfRoot) {
+    async defaultBuildDir(idfRoot, device) {
       try {
-        const d = await resolveBoard();
+        const d = await resolveBoard(undefined, device ?? undefined);
         return d.build_dir ? path.join(idfRoot, d.build_dir) : null;
       } catch {
         return null;
@@ -195,25 +195,31 @@ export async function espPreflight(
   args: { transport: "uart" | "ota"; port?: string; firmware_path?: string; build_dir?: string },
   deviceError?: HilError,
 ): Promise<FlashPreflight> {
-  const resolvedDir = args.build_dir ?? (await probe.defaultBuildDir(CROSSPAD_IDF_ROOT));
-  const buildDir = resolvedDir ?? path.join(CROSSPAD_IDF_ROOT, "build");
-  const firmware = args.firmware_path ?? path.join(buildDir, "CrossPad.bin");
+  const buildDir = args.build_dir ?? (await probe.defaultBuildDir(CROSSPAD_IDF_ROOT, device?.id ?? null));
+  const firmware = args.firmware_path ?? (buildDir ? path.join(buildDir, "CrossPad.bin") : "");
   const pf = emptyPreflight("esp", args.transport, firmware);
   pf.build_dir = buildDir;
-  if (resolvedDir === null) {
-    pf.blockers.push({ code: "NO_BOARD", message: "No board revision known: connect a board, pass build_dir, or run tools/crosspad_board.py --set v2." });
+  if (buildDir === null) {
+    pf.blockers.push({
+      code: "NO_BOARD",
+      message: `No board revision known${device ? ` for ${device.id}` : ""}, so there is no build dir to take the image from. ` +
+        `Pass build_dir or board: build_dir=${path.join(CROSSPAD_IDF_ROOT, "build_v1")} or build_v2, ` +
+        "or choose the board with tools/crosspad_board.py --set v1|v2 when none is connected. force does not guess one.",
+    });
   }
 
   // ── the build ─────────────────────────────────────────────────────────
-  if (!(await probe.exists(buildDir))) {
+  if (buildDir !== null && !(await probe.exists(buildDir))) {
     pf.blockers.push({
       code: "NO_BUILD_DIR",
       message: `No build directory at ${buildDir}. Run crosspad_build platform=idf first (or pass build_dir for a per-revision dir such as build_v1/build_v2).`,
     });
   }
-  pf.firmware_exists = await probe.exists(firmware);
+  pf.firmware_exists = firmware !== "" && (await probe.exists(firmware));
   if (!pf.firmware_exists) {
-    pf.blockers.push({ code: "NO_FIRMWARE", message: `Firmware not found at ${firmware}. Run crosspad_build platform=idf first.` });
+    if (firmware !== "") {
+      pf.blockers.push({ code: "NO_FIRMWARE", message: `Firmware not found at ${firmware}. Run crosspad_build platform=idf first.` });
+    }
   } else {
     pf.firmware_mtime_ms = await probe.mtimeMs(firmware);
     pf.firmware_version = await probe.binVersion(firmware);
@@ -272,7 +278,7 @@ export async function espPreflight(
   }
 
   // ── the revision ──────────────────────────────────────────────────────
-  const buildRevRaw = await probe.buildBoardRev(CROSSPAD_IDF_ROOT, buildDir);
+  const buildRevRaw = buildDir === null ? null : await probe.buildBoardRev(CROSSPAD_IDF_ROOT, buildDir);
   pf.build_board_rev = buildRevRaw;
   const buildRev = normalizeRev(buildRevRaw);
   const devRev = normalizeRev(pf.device_board_rev);
@@ -337,11 +343,14 @@ export async function stmPreflight(
   return pf;
 }
 
-/** force=true turns every blocker except the port-role refusal into a warning. */
+/** Blockers force cannot clear: the console port is never a flash target, and with no revision there is no image to pick. */
+export const UNFORCEABLE_BLOCKERS: ReadonlySet<string> = new Set(["PORT_ROLE", "NO_BOARD"]);
+
+/** force=true turns every blocker except UNFORCEABLE_BLOCKERS into a warning. */
 export function applyForce(pf: FlashPreflight, force: boolean): FlashPreflight {
   if (!force) return pf;
-  const kept = pf.blockers.filter((b) => b.code === "PORT_ROLE");
-  const dropped = pf.blockers.filter((b) => b.code !== "PORT_ROLE");
+  const kept = pf.blockers.filter((b) => UNFORCEABLE_BLOCKERS.has(b.code));
+  const dropped = pf.blockers.filter((b) => !UNFORCEABLE_BLOCKERS.has(b.code));
   return {
     ...pf,
     blockers: kept,
@@ -393,7 +402,7 @@ export const FlashInput = z.object({
   port: z.string().min(1).optional()
     .describe("ESP only. Serial port to flash. Omit to let the daemon choose. The STM32 bridge console port is refused — it carries logs, not the flash."),
   build_dir: z.string().min(1).optional()
-    .describe("ESP only. Build directory holding the binary and its sdkconfig (default '<idf-root>/build'; per-revision dirs are build_v1 / build_v2)."),
+    .describe("ESP only. Build directory holding the binary and its sdkconfig (default: '<idf-root>/build_<rev>' of the board being flashed, from tools/crosspad_board.py; per-revision dirs are build_v1 / build_v2)."),
   firmware_path: z.string().min(1).optional()
     .describe("Custom binary. ESP default '<build_dir>/CrossPad.bin'; STM default '<stm-root>/build/<preset>/CrossPad_STM32_r20.bin'."),
   build_type: z.enum(["Debug", "Release", "RelWithDebInfo"]).optional()
@@ -407,7 +416,7 @@ export const FlashInput = z.object({
   wait_seconds: z.number().min(0).max(900).optional()
     .describe("0 (default) returns the task handle immediately — poll it with crosspad_task. >0 waits that long and inlines the task status; a timeout is not an error, the job keeps running."),
   force: z.boolean().optional()
-    .describe("Proceed despite preflight blockers (stale build, board-revision mismatch, missing device). The port-role refusal is never overridden."),
+    .describe("Proceed despite preflight blockers (stale build, board-revision mismatch, missing device). The port-role and no-board refusals are never overridden."),
   dry_run: z.boolean().optional()
     .describe("Run the preflight and stop: no confirmation token is minted and nothing is written."),
   confirm_token: z.string().optional()
@@ -533,8 +542,8 @@ export function registerFlashTool(server: McpServer, ctx: ToolContext): Register
             error: {
               code: "PREFLIGHT_BLOCKED",
               message: preflight.blockers.map((b) => `${b.code}: ${b.message}`).join(" "),
-              hint: preflight.blockers.every((b) => b.code === "PORT_ROLE")
-                ? "Pass the ESP-side port (or omit port) — this blocker is never overridden."
+              hint: preflight.blockers.every((b) => UNFORCEABLE_BLOCKERS.has(b.code))
+                ? "force does not clear these: pass the ESP-side port or omit port (PORT_ROLE), pass build_dir for the board's revision (NO_BOARD)."
                 : "Fix the cause, or re-issue with force=true if you are certain.",
             },
           });

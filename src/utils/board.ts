@@ -15,10 +15,11 @@ export interface BoardDecision {
 
 const RESOLVE_TIMEOUT_MS = 45_000;
 
-/** tools/crosspad_board.py decides; this only asks it. */
-export function resolveBoard(board?: string): Promise<BoardDecision> {
+/** tools/crosspad_board.py decides; this only asks it. `device` (a crosspad-hil id) asks about that board alone. */
+export function resolveBoard(board?: string, device?: string): Promise<BoardDecision> {
   const argv = [path.join(CROSSPAD_IDF_ROOT, "tools", "crosspad_board.py"), "--json"];
   if (board) argv.push("--board", board);
+  if (device) argv.push("--device", device);
   return new Promise((resolve, reject) => {
     execFile("python3", argv, { cwd: CROSSPAD_IDF_ROOT, timeout: RESOLVE_TIMEOUT_MS }, (e, stdout) => {
       try {
