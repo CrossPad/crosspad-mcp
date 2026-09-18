@@ -71,7 +71,10 @@ def _iter_addr_globals(dwarf):
             if not name:
                 continue
             nm = name.value.decode("utf-8", "replace")
-            yield nm, addr, info_die, cu
+            # The DIE's own CU: a declaration reached through
+            # DW_AT_specification may live in another one, and its
+            # CU-relative type refs are relative to *that* CU.
+            yield nm, addr, info_die, info_die.cu
 
 def resolve_symbols(elf_path, query=None):
     from elftools.elf.elffile import ELFFile
@@ -121,9 +124,16 @@ def build_symbol_table(elf_path):
             if nm in table:
                 continue
             t = die.attributes.get("DW_AT_type")
-            type_die = cu.dwarfinfo.get_DIE_from_refaddr(t.value + cu.cu_offset) if t else None
+            type_die = _ref_die(t, cu) if t else None
             table[nm] = {"address": addr, "type_die": type_die, "cu": cu}
     return table
+
+
+def _ref_die(attr, cu):
+    """Follow a DW_AT_type-style reference. DW_FORM_ref_addr is absolute in
+    .debug_info; every other ref form is relative to the CU header."""
+    off = attr.value if attr.form == "DW_FORM_ref_addr" else attr.value + cu.cu_offset
+    return cu.dwarfinfo.get_DIE_from_refaddr(off)
 
 def _resolve_type(die, cu):
     """Walk DW_AT_type to a base type, returning (encoding_tag, byte_size).
@@ -137,7 +147,7 @@ def _resolve_type(die, cu):
     depth = 0
     while t is not None and depth < 16:
         depth += 1
-        ref = cu.dwarfinfo.get_DIE_from_refaddr(t.value + cu.cu_offset)
+        ref = _ref_die(t, cu)
         bs = ref.attributes.get("DW_AT_byte_size")
         if bs and not size_set:
             size = bs.value
@@ -168,7 +178,7 @@ def _enrich_symbol(sym, var_die, cu):
     if t is None:
         sym["kind"] = "other"
         return
-    die = cu.dwarfinfo.get_DIE_from_refaddr(t.value + cu.cu_offset)
+    die = _ref_die(t, cu)
     die = _strip_cv_typedef(die, cu)
     if die is None:
         sym["kind"] = "other"
@@ -180,7 +190,7 @@ def _enrich_symbol(sym, var_die, cu):
         sym["kind"] = "array"
         counts = _array_dim_counts(die, cu)
         et = die.attributes.get("DW_AT_type")
-        elem = cu.dwarfinfo.get_DIE_from_refaddr(et.value + cu.cu_offset) if et else None
+        elem = _ref_die(et, cu) if et else None
         elem = _strip_cv_typedef(elem, cu)
         if counts:
             prod = 1
@@ -386,7 +396,7 @@ def _strip_cv_typedef(die, cu):
         t = die.attributes.get("DW_AT_type")
         if t is None:
             return None
-        die = cu.dwarfinfo.get_DIE_from_refaddr(t.value + cu.cu_offset)
+        die = _ref_die(t, cu)
     return die
 
 def _type_byte_size(die, cu):
@@ -402,7 +412,7 @@ def _type_byte_size(die, cu):
         t = die.attributes.get("DW_AT_type")
         if t is None:
             return None
-        die = cu.dwarfinfo.get_DIE_from_refaddr(t.value + cu.cu_offset)
+        die = _ref_die(t, cu)
     return None
 
 def _member_offset(member_die):
@@ -465,7 +475,7 @@ def _resolve_spec(spec, table):
         """Populate pending_dims/pending_elem from a DW_TAG_array_type."""
         nonlocal pending_dims, pending_elem
         et = arr_die.attributes.get("DW_AT_type")
-        elem = cu.dwarfinfo.get_DIE_from_refaddr(et.value + cu.cu_offset) if et else None
+        elem = _ref_die(et, cu) if et else None
         elem = _strip_cv_typedef(elem, cu)
         subranges = [c for c in arr_die.iter_children()
                      if c.tag == "DW_TAG_subrange_type"]
@@ -537,7 +547,7 @@ def _resolve_spec(spec, table):
                 return None
             addr += off
             mt = found.attributes.get("DW_AT_type")
-            cur = cu.dwarfinfo.get_DIE_from_refaddr(mt.value + cu.cu_offset) if mt else None
+            cur = _ref_die(mt, cu) if mt else None
             cur = _strip_cv_typedef(cur, cu)
 
     if pending_dims:
@@ -636,7 +646,7 @@ def _expand_spec(spec, table):
             if not counts:
                 return None
             et = cur.attributes.get("DW_AT_type")
-            elem = cu.dwarfinfo.get_DIE_from_refaddr(et.value + cu.cu_offset) if et else None
+            elem = _ref_die(et, cu) if et else None
             return walk_dims(counts, 0, elem, ai, parts)
 
         if ai < len(accessors):
@@ -649,7 +659,7 @@ def _expand_spec(spec, table):
             if member is None:
                 return None
             mt = member.attributes.get("DW_AT_type")
-            mtd = cu.dwarfinfo.get_DIE_from_refaddr(mt.value + cu.cu_offset) if mt else None
+            mtd = _ref_die(mt, cu) if mt else None
             return walk(mtd, ai + 1, parts + [("member", acc[1])])
 
         # No more accessors and not an array → scalar element or dead end.
