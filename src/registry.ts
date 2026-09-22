@@ -67,6 +67,7 @@ export const V10_MODULES: ModuleSpec[] = [
   { name: "crosspad_capture", toolset: "hil", module: "./tools/capture.js", export: "registerCaptureTool" },
   { name: "crosspad_analyze", toolset: "hil", module: "./tools/capture.js", export: "registerAnalyzeTool" },
   { name: "crosspad_hil_run", toolset: "hil", module: "./tools/hil-run.js", export: "registerHilRunTool" },
+  { name: "crosspad_hil_triage", toolset: "hil", module: "./tools/hil-triage.js", export: "registerHilTriageTool" },
   { name: "crosspad_apps", toolset: "apps", module: "./tools/apps.js", export: "registerAppsTool" },
 ];
 

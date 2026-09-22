@@ -18,7 +18,7 @@ export const TOOLSETS: Record<string, string[]> = {
     "crosspad_cdc", "crosspad_console", "crosspad_ui", "crosspad_midi", "crosspad_usb_mode", "crosspad_audio_route", "crosspad_diagnose_crash",
   ],
   hil: [
-    "crosspad_hil_run", "crosspad_capture", "crosspad_analyze",
+    "crosspad_hil_run", "crosspad_hil_triage", "crosspad_capture", "crosspad_analyze",
     "crosspad_stimulus", "crosspad_ble",
   ],
   sim: [

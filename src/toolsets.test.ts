@@ -41,7 +41,7 @@ describe("TOOLSETS", () => {
     ]);
     // P1 filled the hil toolset in.
     expect(TOOLSETS.hil).toEqual([
-      "crosspad_hil_run", "crosspad_capture", "crosspad_analyze", "crosspad_stimulus", "crosspad_ble",
+      "crosspad_hil_run", "crosspad_hil_triage", "crosspad_capture", "crosspad_analyze", "crosspad_stimulus", "crosspad_ble",
     ]);
     expect(toolsetOf("crosspad_commit")).toBe("git");
     expect(toolsetOf("crosspad_log")).toBe("sim");

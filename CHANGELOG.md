@@ -7,6 +7,17 @@ All notable changes to crosspad-mcp-server. Format follows
 ## [Unreleased]
 
 ### Added
+- **`crosspad_hil_triage`** (toolset `hil`, tier read): an advisory second
+  opinion on a finished HIL report from TypeSafe's System One model (Jev).
+  Takes a `report.json` path, a work directory or a finished `crosspad_hil_run`
+  task and returns typed answers, never prose: `cause` ∈ {passed_clean,
+  firmware_regression, bench_environment, known_baseline, inconclusive} with
+  its probability distribution, `exit_code_consistent` and `board_reset` as
+  probabilities. The exit code stays the verdict. The report's summary, error,
+  data and the console tail are sent to `api.typesafe.ai` together with the
+  bench's known failure signatures; needs `TYPESAFE_API_KEY` in the server's
+  environment. `eval/hil-triage-live.mjs` runs the questions against real
+  reports.
 - **`crosspad_search_symbols` covers `crosspad-hil`**: the Python host repo is
   discovered at `$CROSSPAD_GIT_DIR/crosspad-hil` (`CROSSPAD_HIL_ROOT` to
   override), joins workspace/status/diff, and `*.py` `class`/`def`/`async def`

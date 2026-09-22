@@ -82,6 +82,8 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   crosspad_analyze: "read",
   crosspad_hil_run: (args) =>
     (args as { params?: { flash?: unknown } } | undefined)?.params?.flash ? "danger" : "stimulus",
+  // Reads a report off disk and asks an external service about it; the board is never touched.
+  crosspad_hil_triage: "read",
   crosspad_cdc: cdcTier,
   crosspad_console: consoleTier,
   crosspad_ui: "stimulus",
