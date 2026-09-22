@@ -11,6 +11,7 @@ describe("plugin manifests", () => {
     const pj = readJson(".claude-plugin/plugin.json");
     expect(pj.name).toBe("crosspad");
     expect(pj.description).toMatch(/swd-tracer/);
+    expect(pj.description).toMatch(/before-after/);
     expect(pj.description).toMatch(/onboard|help|getting started/i);
   });
 
@@ -55,6 +56,37 @@ describe("crosspad skill", () => {
 
   it("ships executable doctor.sh and setup.sh", () => {
     for (const f of ["doctor.sh", "setup.sh"]) {
+      const p = resolve(root, dir, "scripts", f);
+      expect(existsSync(p)).toBe(true);
+      expect(statSync(p).mode & 0o100).toBeTruthy();
+    }
+  });
+});
+
+describe("before-after skill", () => {
+  const dir = "skills/before-after";
+
+  it("SKILL.md names itself and routes to both halves", () => {
+    const md = read(`${dir}/SKILL.md`);
+    expect(md).toMatch(/^---[\s\S]*?\nname:\s*before-after\s*\n[\s\S]*?---/);
+    expect(md).toMatch(/reference\/pc-screenshots\.md/);
+    expect(md).toMatch(/reference\/esp-perf\.md/);
+    // The description is what makes the skill fire at all, so it has to carry
+    // the words someone actually types when they want this.
+    expect(md).toMatch(/description:[^\n]*regress/i);
+  });
+
+  it("ships the reference files", () => {
+    for (const f of ["pc-screenshots.md", "esp-perf.md"]) {
+      expect(existsSync(resolve(root, dir, "reference", f))).toBe(true);
+    }
+  });
+
+  it("ships executable scripts for both halves", () => {
+    for (const f of [
+      "sim_ctl.sh", "sim_tour.py", "sim_kit_shot.py",
+      "compare_shots.py", "esp_scroll_fps.py", "esp_fps_report.py",
+    ]) {
       const p = resolve(root, dir, "scripts", f);
       expect(existsSync(p)).toBe(true);
       expect(statSync(p).mode & 0o100).toBeTruthy();
