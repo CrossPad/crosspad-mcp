@@ -1844,8 +1844,8 @@ async function shutdownStdioServer(server: McpServer): Promise<void> {
 
 // Run main() only when this module is the process entry point. Importing the
 // module from a test must NOT spin up the stdio transport.
-import { pathToFileURL } from "url";
-const isEntry = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+import { isEntryPoint } from "./entry.js";
+const isEntry = isEntryPoint(process.argv[1], import.meta.url);
 
 if (isEntry) {
   main().catch((err) => {
