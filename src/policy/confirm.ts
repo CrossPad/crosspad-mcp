@@ -159,7 +159,13 @@ function tokenResult(
   };
 }
 
-function clientHasElicitation(server: McpServer): boolean {
+/**
+ * `CROSSPAD_MCP_CONFIRM=token` forces the token round-trip even where the client
+ * advertises elicitation — for a client that declares the capability and then
+ * answers the form itself instead of showing it to anybody.
+ */
+function elicitationUsable(server: McpServer, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.CROSSPAD_MCP_CONFIRM === "token") return false;
   try {
     const caps = server.server.getClientCapabilities() as Record<string, unknown> | undefined;
     return !!caps && caps.elicitation !== undefined && caps.elicitation !== null;
@@ -185,7 +191,7 @@ export async function requireConfirmation(
     replayed = check === "replayed";
   }
 
-  if (clientHasElicitation(server)) {
+  if (elicitationUsable(server)) {
     try {
       const res = await server.server.elicitInput({
         message:
@@ -199,9 +205,14 @@ export async function requireConfirmation(
           required: ["approve"],
         },
       });
-      const content = (res as { action: string; content?: Record<string, unknown> }).content;
-      if (res.action === "accept" && content?.approve === true) return { status: "approved" };
-      return { status: "declined" };
+      const { action, content } = res as { action: string; content?: Record<string, unknown> };
+      if (action === "accept") return content?.approve === true ? { status: "approved" } : { status: "declined" };
+      if (action === "decline") return { status: "declined" };
+      // "cancel" is a form dismissed without an answer — which is also what a
+      // client that advertises elicitation but never renders it returns. The
+      // token path keeps the gate and lets the model ask in words, rather than
+      // reporting a refusal nobody made.
+      return { status: "token", result: tokenResult(tool, args, device, summary, replayed) };
     } catch {
       // Client advertised elicitation but could not serve it — fall back to the
       // token path rather than blocking the operation forever.

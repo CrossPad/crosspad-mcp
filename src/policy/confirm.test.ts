@@ -148,12 +148,27 @@ describe("requireConfirmation — elicitation path", () => {
     expect(params.message).toContain("Flash esp over OTA on dev_3f2a");
     expect(params.requestedSchema.required).toEqual(["approve"]);
   });
-  it("decline / cancel / accept without approve → declined", async () => {
-    for (const res of [{ action: "decline" }, { action: "cancel" }, { action: "accept", content: { approve: false } }, { action: "accept" }]) {
+  it("decline / accept without approve → declined", async () => {
+    for (const res of [{ action: "decline" }, { action: "accept", content: { approve: false } }, { action: "accept" }]) {
       const { server } = fakeServer({ elicitation: {} }, async () => res);
       const r = await requireConfirmation(server, extra, "crosspad_flash", ARGS, "x");
       expect(r.status).toBe("declined");
     }
+  });
+  it("cancel falls back to the token path — a dismissed form is nobody's refusal", async () => {
+    for (const res of [{ action: "cancel" }, { action: "whatever-the-client-invented" }]) {
+      const { server } = fakeServer({ elicitation: {} }, async () => res);
+      const r = await requireConfirmation(server, extra, "crosspad_flash", ARGS, "x");
+      expect(r.status).toBe("token");
+    }
+  });
+  it("CROSSPAD_MCP_CONFIRM=token skips elicitation entirely", async () => {
+    vi.stubEnv("CROSSPAD_MCP_CONFIRM", "token");
+    const { server, elicitInput } = fakeServer({ elicitation: {} }, async () => ({ action: "accept", content: { approve: true } }));
+    const r = await requireConfirmation(server, extra, "crosspad_flash", ARGS, "x");
+    expect(r.status).toBe("token");
+    expect(elicitInput).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
   });
   it("an elicitInput failure falls back to the token path", async () => {
     const { server } = fakeServer({ elicitation: {} }, async () => { throw new Error("client went away"); });
