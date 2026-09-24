@@ -6,6 +6,17 @@ All notable changes to crosspad-mcp-server. Format follows
 
 ## [Unreleased]
 
+## [10.3.0] — 2026-09-23
+
+### Fixed
+- **The server starts when run through its bin** — `npx -y crosspad-mcp-server`,
+  a global install, and every MCP client configured with the package name.
+  Entry-point detection compared `import.meta.url` with `process.argv[1]` as
+  strings; through the `node_modules/.bin` symlink they differ, so `main()`
+  never ran: the banner printed and the process exited without answering
+  `initialize`. Now compared by real path (`src/entry.ts`), with tests for the
+  symlinked start. Found by the CrossPad installer's own MCP check.
+
 ### Added
 - **`crosspad_hil_triage`** (toolset `hil`, tier read): an advisory second
   opinion on a finished HIL report from TypeSafe's System One model (Jev).

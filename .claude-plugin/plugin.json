@@ -1,7 +1,7 @@
 {
   "name": "crosspad",
   "description": "CrossPad development toolkit: the crosspad-mcp server plus three Claude Code skills \u2014 `crosspad` (onboarding/help: ecosystem map, install & config, per-role guides, tool cheat-sheet, FAQ \u2014 use this first), `swd-tracer` (real-time SWD variable tracing for CrossPad r20 / STM32G0B1 firmware over ST-Link) and `before-after` (prove a change did or did not move the UI or cost frames: per-app simulator screenshots plus an LVGL_STATS benchmark on the board).",
-  "version": "10.2.0",
+  "version": "10.3.0",
   "author": {
     "name": "Mateusz Czarnecki"
   },

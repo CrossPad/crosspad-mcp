@@ -5,7 +5,7 @@ toolset and tool, resources, prompts, configuration, transports and the v10
 migration table. If you are new here, start with the [README](../README.md) —
 it explains what this thing is for before you meet 47 tools.
 
-**47 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 2 bundled Claude Code skills · stdio & HTTP transports**
+**48 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 3 bundled Claude Code skills · stdio & HTTP transports**
 
 **Contents:** [Install](#install) · [Skills](#skills-start-here) ·
 [Tools + resources](#tools--resources) · [Configuration](#configuration) ·
@@ -69,7 +69,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 
 ## Skills (start here)
 
-This package ships two Claude Code skills (bundled in the `crosspad` plugin):
+This package ships three Claude Code skills (bundled in the `crosspad` plugin):
 
 - **`crosspad`** — the entry point. An ecosystem map, install/config guide, per-role
   guides (user / firmware dev / server contributor), a tool cheat-sheet, and an FAQ.
@@ -85,8 +85,10 @@ This package ships two Claude Code skills (bundled in the `crosspad` plugin):
     `reference/faq.md`, per-role guides
 - **`swd-tracer`** — real-time SWD variable tracing for CrossPad r20 (STM32G0B1)
   over ST-Link (see the SWD tracing section below).
+- **`before-after`** — proof that a change did or did not move the UI or cost
+  frames: per-app simulator screenshots plus an `LVGL_STATS` benchmark on the board.
 
-Install both as a plugin:
+Install them as a plugin:
 
 ```
 /plugin marketplace add CrossPad/crosspad-mcp     # or a local path to this repo
@@ -105,7 +107,7 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 |---|---|---|
 | `core` | `crosspad_devices`, `crosspad_doctor`, `crosspad_snapshot`, `crosspad_build`, `crosspad_flash`, `crosspad_repo_status`, `crosspad_toolsets`, `crosspad_task` | yes |
 | `device` | `crosspad_cdc`, `crosspad_console`, `crosspad_ui`, `crosspad_midi`, `crosspad_usb_mode`, `crosspad_audio_route`, `crosspad_diagnose_crash` | no |
-| `hil` | `crosspad_hil_run`, `crosspad_capture`, `crosspad_analyze`, `crosspad_stimulus`, `crosspad_ble` | no |
+| `hil` | `crosspad_hil_run`, `crosspad_hil_triage`, `crosspad_capture`, `crosspad_analyze`, `crosspad_stimulus`, `crosspad_ble` | no |
 | `sim` | `crosspad_run`, `crosspad_kill`, `crosspad_check`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats`, `crosspad_settings_get`, `crosspad_settings_set`, `crosspad_test_run`, `crosspad_log` | no |
 | `code` | `crosspad_docs_search`, `crosspad_architecture`, `crosspad_symbol`, `crosspad_search_symbols`, `crosspad_list_interfaces`, `crosspad_interface_implementations`, `crosspad_capabilities`, `crosspad_list_apps_source` | no |
 | `git` | `crosspad_repo_diff`, `crosspad_submodule_update`, `crosspad_commit` | no |
@@ -153,6 +155,7 @@ lets a model check what it played.
 | Tool | Purpose |
 |------|---------|
 | `crosspad_hil_run` | `list` the scenario catalog, `run` one as a task (smoke, app_churn, kit_churn, led_state, usb_mode_cycle, midi_bench, midi_stress, …) |
+| `crosspad_hil_triage` | Advisory second opinion on a finished HIL report: classifies its summary, error and console tail against the bench's known failure signatures (TypeSafe Jev, typed answers with probabilities). Never changes the scenario's verdict |
 | `crosspad_stimulus` | Play the pads: a rate across a pad set, or a pattern with real timings. Reports transport loss and engine loss separately |
 | `crosspad_capture` | Record the board through its own UAC2 endpoint — resumes the parked RT mixer and restores the USB profile for you. WAV returned as a link |
 | `crosspad_analyze` | Offline verdict on a WAV: onset, click, silence, multitone, velocity, psd. Touches no hardware |
