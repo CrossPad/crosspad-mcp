@@ -66,7 +66,7 @@ start the server with `--toolsets device,sim`.
 
 ```mermaid
 flowchart LR
-    core["core · always on<br/>devices · doctor · snapshot<br/>build · flash · repo status · tasks"]
+    core["core · always on<br/>devices · doctor · snapshot<br/>build · flash · repo status · tasks<br/>bench lease"]
     sim["sim<br/>PC simulator: run, screenshot,<br/>input, MIDI, settings, tests"]
     device["device<br/>the board over USB: console,<br/>CDC verbs, UI driving, USB mode"]
     hil["hil<br/>scenarios, pad stimulus,<br/>audio capture + analysis, BLE"]

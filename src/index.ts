@@ -20,7 +20,8 @@ import { CONFIRMATION_OUTPUT, requireConfirmation } from "./policy/confirm.js";
 import { ToolsetManager, initialToolsets, hasReadOnlyFlag } from "./toolsets.js";
 import { registerAll, loadV10Modules } from "./registry.js";
 import type { ToolContext } from "./tool-context.js";
-import { getHilDaemon } from "./hil/daemon.js";
+import { getHilDaemon, HilError } from "./hil/daemon.js";
+import { benchGate } from "./tools/bench.js";
 import { jobs } from "./tasks.js";
 import { handles } from "./handles.js";
 
@@ -93,7 +94,9 @@ WHY: these tools resolve repos dynamically from env vars, parse build output int
 
 DISCOVERY: if unsure whether a repo is detected, check the \`crosspad://workspace\` resource — it lists detected repos, current branches, dirty counts, and sim status.
 
-TOOLSETS: only the \`core\` toolset (devices, doctor, snapshot, build, flash, repo_status, toolsets, task) is visible at start. Other tools live in toolsets — device (cdc/console/ui/midi/usb_mode/audio_route), sim (run/kill/check/screenshot/input/stats/settings/test_run), code (search_symbols/list_interfaces/…), git (repo_diff/submodule_update/commit), apps (apps_*), trace (crosspad_trace), hil. If a tool you need is not listed, call crosspad_toolsets action=enable toolset=<name> and re-list tools; do NOT fall back to the shell. The server also accepts --toolsets a,b / CROSSPAD_TOOLSETS at startup and --read-only (hides every non-read tool).
+TOOLSETS: only the \`core\` toolset (devices, doctor, snapshot, build, flash, repo_status, toolsets, task, bench_claim/bench_release/bench_status) is visible at start. Other tools live in toolsets — device (cdc/console/ui/midi/usb_mode/audio_route), sim (run/kill/check/screenshot/input/stats/settings/test_run), code (search_symbols/list_interfaces/…), git (repo_diff/submodule_update/commit), apps (apps_*), trace (crosspad_trace), hil. If a tool you need is not listed, call crosspad_toolsets action=enable toolset=<name> and re-list tools; do NOT fall back to the shell. The server also accepts --toolsets a,b / CROSSPAD_TOOLSETS at startup and --read-only (hides every non-read tool).
+
+SHARED BENCH: several sessions share one CrossPad, and opening its CDC port or flashing it breaks whoever is mid-test. Before ANY hardware call (flash, cdc, console, midi device, snapshot device, hil_run, capture, stimulus, usb_mode, trace start/write/call) call crosspad_bench_claim with your session name and purpose. granted=false means another session holds the board: do not touch it — hardware tools answer BENCH_BUSY naming the holder and ETA; claim again later. When done, crosspad_bench_release with firmware_left (what is on the board now). crosspad_bench_status shows holder, queue and what firmware was left.
 
 SAFETY: flash, bootloader/DFU requests, trace write/call are "danger" tier. In the default strict policy the tool returns resultType="confirmation_required" with a confirm_token instead of acting; re-issue the identical call with confirm_token to proceed (120 s), or the client is asked directly when it supports elicitation. A declined confirmation returns error code CANCELLED_BY_USER — do not retry it on your own.
 `.trim();
@@ -697,6 +700,9 @@ function summarizeTrace(a: Record<string, unknown>): string {
  * `enforce()` because O_Trace's `error` is the v9 string, not the {code,message}
  * object that enforce()'s refusals carry.
  */
+/** crosspad_trace actions that attach to the board over SWD. */
+const TRACE_BOARD_ACTIONS = new Set(["start", "write", "call", "device_state"]);
+
 async function gateTrace(rawArgs: Record<string, unknown>, extra: any): Promise<CallToolResult | null> {
   const action = String(rawArgs.action);
   const decision = decide(policy, "crosspad_trace", rawArgs);
@@ -766,6 +772,16 @@ registerLegacy(
   async (rawTraceArgs: any, extra: any) => {
     const blocked = await gateTrace(rawTraceArgs as Record<string, unknown>, extra);
     if (blocked) return blocked;
+    if (TRACE_BOARD_ACTIONS.has(String(rawTraceArgs.action))) {
+      // The ST-Link session is outside the crosspad-hil daemon, so it asks the
+      // bench lease itself: another session may be mid-test or mid-DFU.
+      try {
+        await benchGate(getHilDaemon(), `crosspad_trace ${rawTraceArgs.action}`, undefined, extra?.signal);
+      } catch (e) {
+        if (!(e instanceof HilError)) throw e;
+        return err(`${e.code}: ${e.message}${e.hint ? ` — ${e.hint}` : ""}`, { action: rawTraceArgs.action });
+      }
+    }
     const { action, signals, rate_hz, swo, query, key, value, window_from, window_to, max_points, format, writes, func, args, confirm, ret_type, timeout } =
       rawTraceArgs as { action: z.infer<typeof TraceAction> } & Record<string, any>;
     switch (action) {

@@ -6,6 +6,20 @@ All notable changes to crosspad-mcp-server. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Bench lease: `crosspad_bench_claim`, `crosspad_bench_release`,
+  `crosspad_bench_status`** (toolset `core`). Several sessions share one
+  CrossPad, and a session opening its CDC port or flashing it broke whoever was
+  mid-test; the queue lived in a hand-edited `hil_logs/BENCH.md`. crosspad-hil
+  1.6.0 keeps a lease per board — one holder, a queue, the firmware left on the
+  board, expiry after a ttl without renewal — and refuses board ops of anyone
+  else with `BENCH_BUSY`, naming the holder and their ETA. The holder a session
+  claimed with is sent with every daemon op (`HilDaemon.benchHolder`), so the
+  hardware tools pass it without new parameters; `crosspad_flash` (uart, STM)
+  and `crosspad_trace` (start/write/call/device_state) check the lease
+  themselves before touching the board. The server instructions tell a session
+  to claim before any hardware call.
+
 ## [10.3.0] — 2026-09-23
 
 ### Fixed

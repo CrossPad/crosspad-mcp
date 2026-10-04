@@ -70,6 +70,10 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   crosspad_repo_status: "read",
   crosspad_toolsets: "read",
   crosspad_task: taskTier,
+  // The lease lives in a host-side file; claiming changes nothing on the board.
+  crosspad_bench_claim: "mutate-host",
+  crosspad_bench_release: "mutate-host",
+  crosspad_bench_status: "read",
   // device
   // A scenario only stimulates the board unless it was told to flash.
   crosspad_docs_search: "read",

@@ -25,8 +25,10 @@ The host sees **two USB devices**, and they behave differently:
 ## Standard workflow
 
 ```bash
+crosspad_bench_claim holder=<session> purpose="…"  # the board is shared: wait for granted=true
 crosspad_flash target=esp transport=ota            # or uart
-crosspad-hil run smoke                             # ~10 s: boot markers, no E-lines, no boot loop
+crosspad-hil run smoke --holder <session>          # ~10 s: boot markers, no E-lines, no boot loop
+crosspad_bench_release firmware_left="…"           # say what you left on the board
 ```
 
 `smoke` is the gate after **every** flash. Its required markers are literal
