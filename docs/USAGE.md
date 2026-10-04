@@ -153,7 +153,9 @@ holder and their ETA. `crosspad_flash` (uart, STM `swd`/`dfu`) and
 `crosspad_trace` (`start`/`write`/`call`/`device_state`) touch the board
 outside the daemon and ask `bench.check` first. A board nobody has claimed is
 not gated. Needs crosspad-hil ≥ 1.6.0; an older daemon has no lease and
-nothing is refused.
+nothing is refused. For a first rollout, `CROSSPAD_BENCH_MODE=warn` in the
+server's environment (the daemon inherits it) logs refusals instead of acting
+on them; `off` checks nothing.
 
 ### Device (crosspad-hil daemon)
 
