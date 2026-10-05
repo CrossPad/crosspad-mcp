@@ -65,11 +65,13 @@ describe("crosspad_confirm", () => {
     expect(sc.elicitation).toMatchObject({ declared: false });
     expect(ran).toEqual([]);
 
-    const ok = await fs.tools.get(TOOL_NAME)!.cb({ token: sc.confirmation.token }, fakeExtra());
+    const ok = await fs.tools.get(TOOL_NAME)!.cb(
+      { token: sc.confirmation.token, summary: sc.confirmation.summary }, fakeExtra());
     expect(ok.structuredContent).toMatchObject({ success: true, flashed: "a.bin" });
     expect(ran).toHaveLength(1);
 
-    const again = await fs.tools.get(TOOL_NAME)!.cb({ token: sc.confirmation.token }, fakeExtra());
+    const again = await fs.tools.get(TOOL_NAME)!.cb(
+      { token: sc.confirmation.token, summary: sc.confirmation.summary }, fakeExtra());
     expect((again.structuredContent as any).error.code).toBe("UNKNOWN_TOKEN");
     expect(ran).toHaveLength(1);
   });
@@ -80,7 +82,8 @@ describe("crosspad_confirm", () => {
     const r = await fs.tools.get("crosspad_fake_flash")!.cb({ file: "a.bin" }, fakeExtra());
     vi.setSystemTime(Date.now() + (CONFIRM_TTL_S + 1) * 1000);
     const late = await fs.tools.get(TOOL_NAME)!.cb(
-      { token: (r.structuredContent as any).confirmation.token }, fakeExtra());
+      { token: (r.structuredContent as any).confirmation.token, summary: "Flash a.bin to dev_1ede" },
+      fakeExtra());
     expect((late.structuredContent as any).error.code).toBe("UNKNOWN_TOKEN");
     expect(ran).toEqual([]);
   });
@@ -88,7 +91,7 @@ describe("crosspad_confirm", () => {
   it("a forged or never-issued token runs nothing", async () => {
     const { fs, ran } = setup();
     const forged = `cfm_${Date.now()}_${"0".repeat(16)}_${"a".repeat(64)}`;
-    const r = await fs.tools.get(TOOL_NAME)!.cb({ token: forged }, fakeExtra());
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ token: forged, summary: "x" }, fakeExtra());
     expect((r.structuredContent as any).error.code).toBe("UNKNOWN_TOKEN");
     expect(ran).toEqual([]);
   });
@@ -109,8 +112,34 @@ describe("crosspad_confirm", () => {
     expect(sc.resultType).toBe("confirmation_required");
     expect(sc.elicitation).toMatchObject({ declared: true, action: "decline" });
     expect(sc.elicitation.why_token).toMatch(/nobody saw the form/);
-    await fs.tools.get(TOOL_NAME)!.cb({ token: sc.confirmation.token }, fakeExtra());
+    await fs.tools.get(TOOL_NAME)!.cb(
+      { token: sc.confirmation.token, summary: sc.confirmation.summary }, fakeExtra());
     expect(ran).toHaveLength(1);
+  });
+
+  it("the prompt shows the summary: one that does not match runs nothing and spends nothing", async () => {
+    const { fs, ran } = setup();
+    const r = await fs.tools.get("crosspad_fake_flash")!.cb({ file: "a.bin" }, fakeExtra());
+    const sc = r.structuredContent as any;
+    const wrong = await fs.tools.get(TOOL_NAME)!.cb(
+      { token: sc.confirmation.token, summary: "Read the battery voltage" }, fakeExtra());
+    expect((wrong.structuredContent as any).error.code).toBe("SUMMARY_MISMATCH");
+    expect(ran).toEqual([]);
+    const right = await fs.tools.get(TOOL_NAME)!.cb(
+      { token: sc.confirmation.token, summary: sc.confirmation.summary }, fakeExtra());
+    expect(right.structuredContent).toMatchObject({ success: true });
+  });
+
+  it("CROSSPAD_MCP_CONFIRM=form keeps an instant decline a decline", async () => {
+    process.env.CROSSPAD_MCP_CONFIRM = "form";
+    try {
+      const { fs, ran } = setup({ elicitation: {} }, async () => ({ action: "decline" }));
+      const r = await fs.tools.get("crosspad_fake_flash")!.cb({ file: "a.bin" }, fakeExtra());
+      expect((r.structuredContent as any).resultType).toBeUndefined();
+      expect(ran).toEqual([]);
+    } finally {
+      delete process.env.CROSSPAD_MCP_CONFIRM;
+    }
   });
 
   it("a person who declines the form (Codex) still declines", async () => {

@@ -21,6 +21,11 @@ All notable changes to crosspad-mcp-server. Format follows
   was not used (`elicitation: {declared, action, ms, why_token}`), the server
   logs the client's `clientInfo`/capabilities at initialize, and the flash
   summary carries the file's SHA-256 and the ST-Link it goes through.
+  `crosspad_confirm` takes the summary too and runs nothing unless it matches
+  the token's action, so the permission prompt shows what is approved. A
+  flash token is bound to the image's SHA-256, re-checked right before
+  writing (`FIRMWARE_CHANGED`). `CROSSPAD_MCP_CONFIRM=form` keeps every decline
+  a decline, for a client that pre-approves tools.
 
 ## [10.3.0] — 2026-09-23
 

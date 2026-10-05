@@ -145,7 +145,7 @@ Everything here needs a connected board (`[ESP HW]`) and the `device` toolset.
 | `crosspad_snapshot` | One coherent read of a device (apps, ui, kit, leds, pads, mem, ble, console) or of the simulator; diffable against a previous snapshot |
 | `crosspad_usb_mode` | Get/set the USB profile (`default` = MIDI+CDC, `audio` = UAC2) and wait for re-enumeration |
 | `crosspad_task` | `status` / `wait` / `cancel` / `list` for long operations (build, flash, scenarios) |
-| `crosspad_confirm` | Runs the action a danger-tier call answered with `resultType: "confirmation_required"`, by its token (once, 120 s, the exact arguments). Marked destructive, so the client's own permission prompt is where the person approves — the path for Claude Code, which declares elicitation but declines every form unseen |
+| `crosspad_confirm` | Runs the action a danger-tier call answered with `resultType: "confirmation_required"`, by its token and summary (once, 120 s, the exact arguments; a flash also the image's SHA-256). Do not put it on a client's auto-approve list; `CROSSPAD_MCP_CONFIRM=form` turns the path off. Marked destructive, so the client's own permission prompt is where the person approves — the path for Claude Code, which declares elicitation but declines every form unseen |
 | `crosspad_diagnose_crash` | One call for a panic: reset reason, registers, backtrace decoded against the ELF that is actually flashed, heap after the restart, console context as a link |
 
 ### Hardware-in-the-loop (toolset `hil`)

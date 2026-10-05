@@ -445,10 +445,10 @@ export const O_Flash = {
   details: z.record(z.string(), z.unknown()).optional(),
 };
 
-/** First 12 hex of the file's SHA-256: what the person approving can compare. */
+/** The file's SHA-256 (hex), or null when it cannot be read. */
 export function fileSha(p: string): string | null {
   try {
-    return createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 12);
+    return createHash("sha256").update(fs.readFileSync(p)).digest("hex");
   } catch {
     return null;
   }
@@ -456,7 +456,7 @@ export function fileSha(p: string): string | null {
 
 function summarizeFlash(args: FlashArgs, pf: FlashPreflight): string {
   const sha = fileSha(pf.firmware_path);
-  const shaText = sha ? ` (sha256 ${sha}…)` : "";
+  const shaText = sha ? ` (sha256 ${sha.slice(0, 12)}…)` : "";
   if (args.target === "stm") {
     const probe = resolveConfigValue("probe_serial", "CROSSPAD_PROBE_SERIAL",
       process.env.CROSSPAD_PROBE_SERIAL, "");
@@ -577,8 +577,12 @@ export function registerFlashTool(server: McpServer, ctx: ToolContext): Register
         // Bound to the board the preflight actually resolved, not to the
         // `device` argument — with one board attached that argument is
         // normally absent, and an approval must not survive swapping the cable.
+        // The approval covers these bytes, not just this path: the image's hash is
+        // bound into the token, and checked again right before anything is written.
+        const imageSha = fileSha(preflight.firmware_path);
         const c = await requireConfirmation(
-          server, extra, TOOL_NAME, confirmArgs, summarizeFlash(args, preflight), preflight.device,
+          server, extra, TOOL_NAME, confirmArgs, summarizeFlash(args, preflight),
+          `${preflight.device ?? ""}#sha256:${imageSha ?? "unreadable"}`,
         );
         if (c.status === "token") {
           return jsonResponse({ ...(c.result.structuredContent as Record<string, unknown>), preflight });
@@ -601,6 +605,11 @@ export function registerFlashTool(server: McpServer, ctx: ToolContext): Register
         const deviceId = device?.id;
 
         const taskId = ctx.jobs.create("flash", async (signal, progress) => {
+          if (fileSha(preflight.firmware_path) !== imageSha) {
+            throw new HilError("FIRMWARE_CHANGED",
+              `${preflight.firmware_path} changed after it was approved; nothing was flashed`,
+              "re-issue crosspad_flash to approve the new image");
+          }
           let flashResult: unknown;
           if (args.target === "stm") {
             progress(0, undefined, `STM ${args.method} flash starting`);

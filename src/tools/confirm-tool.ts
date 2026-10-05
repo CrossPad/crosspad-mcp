@@ -11,7 +11,7 @@ import { z } from "zod";
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../tool-context.js";
 import { decide } from "../policy/policy.js";
-import { takePending } from "../policy/confirm.js";
+import { peekPending, takePending } from "../policy/confirm.js";
 import { jsonResponse, type ToolResult } from "../tool-result.js";
 
 export const TOOL_NAME = "crosspad_confirm";
@@ -30,14 +30,17 @@ export function registerConfirmTool(server: McpServer, ctx: ToolContext,
       title: "Confirm a CrossPad danger-tier action",
       description:
         "Run the action a crosspad_* tool answered with resultType=\"confirmation_required\" " +
-        "(a flash, an SWD write, a bootloader request…), by its confirmation token. Call it right " +
-        "away with that token -- do NOT ask the user in chat first: this tool is marked destructive, " +
-        "so the client shows its own permission prompt, and approving that prompt is the " +
-        "confirmation. The token is good once, for 120 s, for exactly the arguments it was issued " +
-        "for; it returns the action's own result.",
+        "(a flash, an SWD write, a bootloader request…), by its confirmation token and summary. " +
+        "Call it right away with both, copied from that result -- do NOT ask the user in chat " +
+        "first: this tool is marked destructive, so the client shows its own permission prompt " +
+        "with the summary, and approving that prompt is the confirmation. The token is good once, " +
+        "for 120 s, for exactly the arguments it was issued for; it returns the action's own result.",
       inputSchema: {
         token: z.string().regex(/^cfm_\d+_[0-9a-f]{16}_[0-9a-f]{64}$/)
           .describe("confirmation.token from the confirmation_required result"),
+        summary: z.string().min(1)
+          .describe("confirmation.summary from the same result, word for word: the permission " +
+                    "prompt shows it to the person approving, and it must match the action"),
       },
       annotations: {
         title: "Confirm a CrossPad danger-tier action",
@@ -51,12 +54,20 @@ export function registerConfirmTool(server: McpServer, ctx: ToolContext,
       if (decide(ctx.policy, TOOL_NAME, args as Record<string, unknown>) === "hidden") {
         return refused("HIDDEN", `${TOOL_NAME} is hidden by policy`, "read-only server");
       }
-      const action = takePending(args.token);
-      if (action === null) {
+      const seen = peekPending(args.token);
+      if (seen === null) {
         return refused("UNKNOWN_TOKEN",
           "no pending action for this token: it expired (120 s), was already used, or was never issued",
           "re-issue the original call to get a fresh confirmation");
       }
+      // What the person approved is what the prompt showed: the summary. One that
+      // does not describe this token's action approves nothing (and spends nothing).
+      if (args.summary.trim() !== seen.summary.trim()) {
+        return refused("SUMMARY_MISMATCH",
+          "the summary does not describe the action this token stands for; nothing was run",
+          "pass confirmation.summary from the confirmation_required result, word for word");
+      }
+      const action = takePending(args.token)!;
       const tool = lookup(action.tool);
       if (tool === undefined) {
         return refused("TOOL_UNAVAILABLE", `${action.tool} is not available on this server`,
