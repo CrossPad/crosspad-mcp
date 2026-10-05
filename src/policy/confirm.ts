@@ -1,8 +1,13 @@
 import { z } from "zod";
 // Confirmation that does not depend on the client (spec §4.2).
-//  1. Client declares `elicitation` → elicitInput form, decline → CANCELLED_BY_USER.
+//  1. Client declares `elicitation` and a person answers the form → approve runs,
+//     decline → CANCELLED_BY_USER.
 //  2. Otherwise → {resultType:"confirmation_required", confirmation:{token,…}},
-//     nothing performed; the model re-issues the identical call with confirm_token.
+//     nothing performed. The model calls `crosspad_confirm(token)`, a destructive
+//     tool of its own, so the client's own permission prompt is where the person
+//     approves (Claude Code shows one; it does not render elicitation forms -- it
+//     declares the capability and answers "decline" at once). Re-issuing the
+//     identical call with confirm_token still works too.
 // The token is an HMAC-SHA256 over (tool, canonical args, device, issuedAt,
 // nonce) with a per-process random secret, so any argument change, a different
 // board, or a server restart invalidates it. It is also good for exactly one
@@ -118,6 +123,7 @@ export function resetSpentTokens(): void {
 /** Output-schema fields a confirmation gate adds to any tool's result. */
 export const CONFIRMATION_OUTPUT = {
   resultType: z.string().optional(),
+  elicitation: z.record(z.string(), z.unknown()).optional(),
   confirmation: z
     .object({ token: z.string(), expires_in_s: z.number(), summary: z.string() })
     .optional(),
@@ -130,15 +136,55 @@ export type ConfirmationOutcome =
   | { status: "declined" }
   | { status: "token"; result: CallToolResult };
 
+// ── pending actions for crosspad_confirm ────────────────────────────────────
+// A confirmation_required result leaves the call it stands for here, keyed by
+// its token: crosspad_confirm(token) runs exactly that call, once.
+
+export interface PendingAction { tool: string; args: Record<string, unknown>; issuedAt: number }
+
+const pending = new Map<string, PendingAction>();
+
+function prunePending(now: number): void {
+  for (const [t, p] of pending) if (now - p.issuedAt > CONFIRM_TTL_S * 1000) pending.delete(t);
+}
+
+/** Take (and forget) the action a token stands for; null when unknown, spent or expired. */
+export function takePending(token: string, now: number = Date.now()): PendingAction | null {
+  prunePending(now);
+  const p = pending.get(token);
+  if (!p) return null;
+  pending.delete(token);
+  return p;
+}
+
+/** @internal vitest only */
+export function resetPending(): void {
+  pending.clear();
+}
+
+// ── what the client did with the last form, for the diagnosis ───────────────
+export interface ElicitationNote {
+  declared: boolean;
+  forced_token?: boolean;
+  action?: string;
+  ms?: number;
+  error?: string;
+  why_token?: string;
+}
+
 function tokenResult(
   tool: string,
   args: Record<string, unknown>,
   device: string | null,
   summary: string,
   replayed = false,
+  elicitation?: ElicitationNote,
 ): CallToolResult {
   const token = mintToken(tool, args, device);
-  const payload = {
+  const now = Date.now();
+  prunePending(now);
+  pending.set(token, { tool, args: canonicalArgs(args), issuedAt: now });
+  const payload: Record<string, unknown> = {
     // Every tool's outputSchema requires `success`, and nothing was performed.
     success: false,
     resultType: "confirmation_required",
@@ -148,8 +194,12 @@ function tokenResult(
       (replayed
         ? "The confirm_token you presented was already spent — a confirmation approves exactly one call. "
         : "") +
-      `Nothing was performed. Re-issue the identical ${tool} call with confirm_token="${token}" within ${CONFIRM_TTL_S} s to proceed.`,
+      `Nothing was performed. Call crosspad_confirm with token="${token}" now (within ` +
+      `${CONFIRM_TTL_S} s) -- do not ask the user in chat first: the client's own permission ` +
+      `prompt for crosspad_confirm is where the person approves, and it shows them the summary ` +
+      `above. (Re-issuing the identical ${tool} call with confirm_token works too.)`,
   };
+  if (elicitation) payload.elicitation = elicitation;
   // Deliberately NOT isError: a confirmation gate is a question, not a failure,
   // and a model that reads it as a failure will report the flash as broken
   // instead of asking for approval.
@@ -174,6 +224,19 @@ function elicitationUsable(server: McpServer, env: NodeJS.ProcessEnv = process.e
   }
 }
 
+/** A decline faster than this was not read by anybody
+ *  (CROSSPAD_MCP_ELICIT_MIN_MS overrides it; tests set 0). */
+export const ELICIT_MIN_HUMAN_MS = 500;
+
+function minHumanMs(env: NodeJS.ProcessEnv = process.env): number {
+  const v = Number(env.CROSSPAD_MCP_ELICIT_MIN_MS);
+  return env.CROSSPAD_MCP_ELICIT_MIN_MS !== undefined && Number.isFinite(v) ? v : ELICIT_MIN_HUMAN_MS;
+}
+
+function logElicitation(tool: string, note: ElicitationNote): void {
+  console.error(`crosspad-mcp: elicitation for ${tool}: ${JSON.stringify(note)}`);
+}
+
 export async function requireConfirmation(
   server: McpServer,
   extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
@@ -191,7 +254,11 @@ export async function requireConfirmation(
     replayed = check === "replayed";
   }
 
-  if (elicitationUsable(server)) {
+  const declared = elicitationUsable(server);
+  const note: ElicitationNote = { declared };
+  if (process.env.CROSSPAD_MCP_CONFIRM === "token") note.forced_token = true;
+  if (declared) {
+    const t0 = Date.now();
     try {
       const res = await server.server.elicitInput({
         message:
@@ -206,20 +273,30 @@ export async function requireConfirmation(
         },
       });
       const { action, content } = res as { action: string; content?: Record<string, unknown> };
+      note.action = action;
+      note.ms = Date.now() - t0;
+      logElicitation(tool, note);
       if (action === "accept") return content?.approve === true ? { status: "approved" } : { status: "declined" };
-      if (action === "decline") return { status: "declined" };
-      // "cancel" is a form dismissed without an answer — which is also what a
-      // client that advertises elicitation but never renders it returns. The
-      // token path keeps the gate and lets the model ask in words, rather than
-      // reporting a refusal nobody made.
-      return { status: "token", result: tokenResult(tool, args, device, summary, replayed) };
-    } catch {
+      if (action === "decline" && note.ms >= minHumanMs()) return { status: "declined" };
+      // An instant "decline" is not an answer: Claude Code declares elicitation
+      // and declines every form at once without showing it (nobody read it in
+      // under half a second). "cancel" is a form dismissed without an answer.
+      // Either way the gate stays, through the token and crosspad_confirm.
+      note.why_token = action === "decline" ? `declined in ${note.ms} ms: nobody saw the form`
+        : "the form was dismissed without an answer";
+      return { status: "token", result: tokenResult(tool, args, device, summary, replayed, note) };
+    } catch (e) {
       // Client advertised elicitation but could not serve it — fall back to the
       // token path rather than blocking the operation forever.
-      return { status: "token", result: tokenResult(tool, args, device, summary, replayed) };
+      note.error = e instanceof Error ? e.message : String(e);
+      note.why_token = "the client could not serve the form";
+      logElicitation(tool, note);
+      return { status: "token", result: tokenResult(tool, args, device, summary, replayed, note) };
     }
   }
-  return { status: "token", result: tokenResult(tool, args, device, summary, replayed) };
+  note.why_token = note.forced_token ? "CROSSPAD_MCP_CONFIRM=token"
+    : "the client does not declare elicitation";
+  return { status: "token", result: tokenResult(tool, args, device, summary, replayed, note) };
 }
 
 export function confirmationDeclined(tool: string): CallToolResult {

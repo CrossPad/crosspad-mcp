@@ -2,7 +2,7 @@
 // from --toolsets / CROSSPAD_TOOLSETS / the crosspad_toolsets meta-tool.
 //
 // Why the server hides tools at all: a v9 session paid ~30 tool schemas of
-// context before the first message. The startup surface is now 8, and a model
+// context before the first message. The startup surface is now 9, and a model
 // that needs more asks for the toolset by name.
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { decide, type Policy } from "./policy/policy.js";
@@ -12,7 +12,7 @@ import { tierOf, type Tier } from "./policy/tiers.js";
 export const TOOLSETS: Record<string, string[]> = {
   core: [
     "crosspad_devices", "crosspad_doctor", "crosspad_snapshot", "crosspad_build", "crosspad_flash",
-    "crosspad_repo_status", "crosspad_toolsets", "crosspad_task",
+    "crosspad_repo_status", "crosspad_toolsets", "crosspad_task", "crosspad_confirm",
   ],
   device: [
     "crosspad_cdc", "crosspad_console", "crosspad_ui", "crosspad_midi", "crosspad_usb_mode", "crosspad_audio_route", "crosspad_diagnose_crash",
@@ -93,6 +93,12 @@ export class ToolsetManager {
   /** Policy visibility with no arguments: readonly hides every non-read tool. */
   visible(tool: string): boolean {
     return decide(this.policy, tool, {}) !== "hidden";
+  }
+
+  /** The registered tool behind a name (hidden tools were removed: undefined). */
+  toolFor(name: string): RegisteredTool | undefined {
+    const e = this.entries.get(name);
+    return e && !e.hidden ? e.tool : undefined;
   }
 
   isEnabled(tool: string): boolean {

@@ -70,6 +70,9 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   crosspad_repo_status: "read",
   crosspad_toolsets: "read",
   crosspad_task: taskTier,
+  // The token it carries is the confirmation; its own gate is the client's
+  // permission prompt (annotations: destructiveHint). Hidden under --read-only.
+  crosspad_confirm: "stimulus",
   // device
   // A scenario only stimulates the board unless it was told to flash.
   crosspad_docs_search: "read",

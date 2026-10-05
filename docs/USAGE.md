@@ -5,7 +5,7 @@ toolset and tool, resources, prompts, configuration, transports and the v10
 migration table. If you are new here, start with the [README](../README.md) —
 it explains what this thing is for before you meet 47 tools.
 
-**48 tools in 8 toolsets (8 visible at start) · 15 resources · 6 prompts · 3 bundled Claude Code skills · stdio & HTTP transports**
+**49 tools in 8 toolsets (9 visible at start) · 15 resources · 6 prompts · 3 bundled Claude Code skills · stdio & HTTP transports**
 
 **Contents:** [Install](#install) · [Skills](#skills-start-here) ·
 [Tools + resources](#tools--resources) · [Configuration](#configuration) ·
@@ -105,7 +105,7 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 
 | Toolset | Contains | On at start |
 |---|---|---|
-| `core` | `crosspad_devices`, `crosspad_doctor`, `crosspad_snapshot`, `crosspad_build`, `crosspad_flash`, `crosspad_repo_status`, `crosspad_toolsets`, `crosspad_task` | yes |
+| `core` | `crosspad_devices`, `crosspad_doctor`, `crosspad_snapshot`, `crosspad_build`, `crosspad_flash`, `crosspad_repo_status`, `crosspad_toolsets`, `crosspad_task`, `crosspad_confirm` | yes |
 | `device` | `crosspad_cdc`, `crosspad_console`, `crosspad_ui`, `crosspad_midi`, `crosspad_usb_mode`, `crosspad_audio_route`, `crosspad_diagnose_crash` | no |
 | `hil` | `crosspad_hil_run`, `crosspad_hil_triage`, `crosspad_capture`, `crosspad_analyze`, `crosspad_stimulus`, `crosspad_ble` | no |
 | `sim` | `crosspad_run`, `crosspad_kill`, `crosspad_check`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats`, `crosspad_settings_get`, `crosspad_settings_set`, `crosspad_test_run`, `crosspad_log` | no |
@@ -145,6 +145,7 @@ Everything here needs a connected board (`[ESP HW]`) and the `device` toolset.
 | `crosspad_snapshot` | One coherent read of a device (apps, ui, kit, leds, pads, mem, ble, console) or of the simulator; diffable against a previous snapshot |
 | `crosspad_usb_mode` | Get/set the USB profile (`default` = MIDI+CDC, `audio` = UAC2) and wait for re-enumeration |
 | `crosspad_task` | `status` / `wait` / `cancel` / `list` for long operations (build, flash, scenarios) |
+| `crosspad_confirm` | Runs the action a danger-tier call answered with `resultType: "confirmation_required"`, by its token (once, 120 s, the exact arguments). Marked destructive, so the client's own permission prompt is where the person approves — the path for Claude Code, which declares elicitation but declines every form unseen |
 | `crosspad_diagnose_crash` | One call for a panic: reset reason, registers, backtrace decoded against the ELF that is actually flashed, heap after the restart, console context as a link |
 
 ### Hardware-in-the-loop (toolset `hil`)

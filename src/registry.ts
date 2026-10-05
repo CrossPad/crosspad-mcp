@@ -13,6 +13,7 @@ import { ToolsetManager, toolsetOf, toolsetOrder, toolOrder } from "./toolsets.j
 import type { ToolContext } from "./tool-context.js";
 import { registerToolsetsTool } from "./tools/toolsets-tool.js";
 import { registerTaskTool } from "./tools/task.js";
+import { registerConfirmTool } from "./tools/confirm-tool.js";
 import { registerKnowledgeResources } from "./resources/knowledge.js";
 import { registerPrompts } from "./prompts.js";
 import { registerIntrospectionResources } from "./resources/introspect.js";
@@ -150,6 +151,8 @@ export function registerAll(
   const builtIn: ToolRegistrar[] = [
     { name: "crosspad_toolsets", toolset: "core", register: (s, c) => registerToolsetsTool(s, c, manager) },
     { name: "crosspad_task", toolset: "core", register: registerTaskTool },
+    { name: "crosspad_confirm", toolset: "core",
+      register: (s, c) => registerConfirmTool(s, c, (n) => manager.toolFor(n)) },
   ];
   const newStyle = [...builtIn, ...extras].sort(byToolsetOrder);
 

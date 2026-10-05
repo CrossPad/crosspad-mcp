@@ -33,10 +33,10 @@ describe("registerAll", () => {
     const client = new Client({ name: "t", version: "0" });
     await client.connect(ct);
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toEqual(["crosspad_build", "crosspad_toolsets", "crosspad_task"]);
+    expect(names).toEqual(["crosspad_build", "crosspad_toolsets", "crosspad_task", "crosspad_confirm"]);
     manager.enable("git"); manager.enable("sim");
     const after = (await client.listTools()).tools.map((t) => t.name);
-    expect(after).toEqual(["crosspad_build", "crosspad_commit", "crosspad_log", "crosspad_toolsets", "crosspad_task"]);
+    expect(after).toEqual(["crosspad_build", "crosspad_commit", "crosspad_log", "crosspad_toolsets", "crosspad_task", "crosspad_confirm"]);
     expect(after).not.toContain("crosspad_obsolete");
     expect(Object.keys(TOOLSETS)).toContain("hil");
     await client.close(); await server.close();

@@ -6,6 +6,7 @@
 // the other board revision, a binary older than the sources, a device sitting
 // in USB-audio mode. Refusing with the reason beats a bricked-looking board.
 import fs from "fs";
+import { createHash } from "crypto";
 import path from "path";
 import { z } from "zod";
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -22,6 +23,7 @@ import { jsonResponse, toolError, type ToolResult, ErrorSchema } from "../tool-r
 import { assertAllowedPath } from "../utils/paths.js";
 import { CROSSPAD_IDF_ROOT, CROSSPAD_STM_ROOT, stmArtifact, type StmPreset } from "../config.js";
 import { resolveBoard } from "../utils/board.js";
+import { resolveConfigValue } from "../utils/userConfig.js";
 import { crosspadIdfFlash } from "./idf-flash.js";
 import { crosspadStmFlash } from "./stm-flash.js";
 import type { OnLine } from "../utils/exec.js";
@@ -443,15 +445,29 @@ export const O_Flash = {
   details: z.record(z.string(), z.unknown()).optional(),
 };
 
+/** First 12 hex of the file's SHA-256: what the person approving can compare. */
+export function fileSha(p: string): string | null {
+  try {
+    return createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
 function summarizeFlash(args: FlashArgs, pf: FlashPreflight): string {
+  const sha = fileSha(pf.firmware_path);
+  const shaText = sha ? ` (sha256 ${sha}…)` : "";
   if (args.target === "stm") {
-    return `Flash STM32 firmware ${pf.firmware_path} over ${String(args.method).toUpperCase()} — the USB console, CDC and MIDI vanish until it completes.`;
+    const probe = resolveConfigValue("probe_serial", "CROSSPAD_PROBE_SERIAL",
+      process.env.CROSSPAD_PROBE_SERIAL, "");
+    const via = args.method === "swd" ? `ST-Link ${probe || "(first probe found)"}` : "DFU";
+    return `Flash STM32 firmware ${pf.firmware_path}${shaText} over ${String(args.method).toUpperCase()} via ${via} — the USB console, CDC and MIDI vanish until it completes.`;
   }
   const rev = pf.build_board_rev ? ` (board rev ${pf.build_board_rev})` : "";
   const ver = pf.firmware_version ? ` version "${pf.firmware_version}"` : "";
   const stale = pf.stale ? " ⚠ this binary is older than the newest source file" : "";
   const warn = pf.warnings.length ? `\nWarnings: ${pf.warnings.join(" | ")}` : "";
-  return `Flash ${pf.firmware_path}${ver}${rev} to ${pf.device ?? "the only CrossPad"} over ${String(args.transport).toUpperCase()}` +
+  return `Flash ${pf.firmware_path}${shaText}${ver}${rev} to ${pf.device ?? "the only CrossPad"} over ${String(args.transport).toUpperCase()}` +
     `${pf.port ? ` (${pf.port}, role ${pf.port_role})` : ""}. This overwrites the running firmware.${stale}${warn}`;
 }
 
