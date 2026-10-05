@@ -103,6 +103,17 @@ export const server = new McpServer(
   { capabilities: { logging: {}, resources: {}, prompts: {} }, instructions: SERVER_INSTRUCTIONS }
 );
 
+// Which client this is and what it says it can do: the confirmation path depends
+// on it (Claude Code declares elicitation and declines every form unseen; Codex
+// shows it), so it is logged once per connection for the diagnosis.
+server.server.oninitialized = () => {
+  try {
+    const info = server.server.getClientVersion();
+    const caps = server.server.getClientCapabilities();
+    console.error(`crosspad-mcp: client ${JSON.stringify(info)} capabilities ${JSON.stringify(caps)}`);
+  } catch { /* diagnosis only */ }
+};
+
 // v9 tools are still registered inline below. Capturing them here lets
 // registerAll() file each one into its toolset (spec §3.1) without moving
 // 1 200 lines; the SDK's tools/list order is this file's order — stable,

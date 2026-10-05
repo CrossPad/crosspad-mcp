@@ -282,6 +282,37 @@ describe("crosspad_flash", () => {
     expect(d.calls.filter((c) => c.op === "ota.flash")).toHaveLength(1);
   });
 
+  it("a token approves the image's bytes, not just its path", async () => {
+    const os = await import("os");
+    const nodefs = await import("fs");
+    const path = await import("path");
+    const { ALLOWED_PATHS_ENV } = await import("../utils/paths.js");
+    const dir = nodefs.mkdtempSync(path.join(os.tmpdir(), "flash-sha-"));
+    const bin = path.join(dir, "CrossPad.bin");
+    nodefs.writeFileSync(bin, "image one");
+    const saved = process.env[ALLOWED_PATHS_ENV];
+    process.env[ALLOWED_PATHS_ENV] = dir;
+    try {
+      const d = fakeDaemon({
+        "devices.list": () => ({ devices: [DEV] }),
+        "ota.flash": () => ({ task: "task_9" }),
+        "task.status": () => ({ task: "task_9", status: "completed", result: { bytes: 9, seconds: 1, kbps: 9, version: "v20", mode: "full" } }),
+      });
+      registerFlashTool(fs.server, ctxFor(d));
+      const call = (extra: Record<string, unknown> = {}) =>
+        fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", firmware_path: bin, ...extra }, fakeExtra());
+      const first = (await call()).structuredContent as Record<string, any>;
+      expect(first.confirmation.summary).toMatch(/sha256 [0-9a-f]{12}…/);
+      nodefs.writeFileSync(bin, "image two, swapped in after the approval");
+      const after = (await call({ confirm_token: first.confirmation.token })).structuredContent as Record<string, any>;
+      expect(after.resultType).toBe("confirmation_required");
+      expect(d.calls.filter((c) => c.op === "ota.flash")).toHaveLength(0);
+    } finally {
+      if (saved === undefined) delete process.env[ALLOWED_PATHS_ENV]; else process.env[ALLOWED_PATHS_ENV] = saved;
+      nodefs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("a token approved for one board does not flash the board that replaced it", async () => {
     const other = { ...DEV, id: "dev_b7c1", serial: "CCDD" };
     let devices = [DEV];

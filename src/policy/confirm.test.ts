@@ -16,7 +16,13 @@ function fakeServer(caps: Record<string, unknown> | undefined, elicit?: (p: unkn
 }
 const extra = {} as never;
 
-beforeEach(() => resetSpentTokens());
+// These fakes answer the form at once; a person answering is what they stand
+// for, so the "nobody read it" threshold is off here (crosspad_confirm's tests
+// cover the instant-decline path).
+beforeEach(() => {
+  resetSpentTokens();
+  process.env.CROSSPAD_MCP_ELICIT_MIN_MS = "0";
+});
 
 describe("canonicalJson", () => {
   it("sorts keys recursively and drops undefined", () => {
