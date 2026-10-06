@@ -138,6 +138,10 @@ export class HilDaemon {
   private readonly spawnFn: SpawnFn;
   /** The last automatic stop, for the doctor to report. */
   lastRecycle: { at: number; reason: "idle" | "alsa_seq"; stats: DaemonStats } | null = null;
+  /** The bench-lease holder this session claimed with (crosspad_bench_claim).
+   *  Sent as `holder` with every op, so each board op is checked against the
+   *  lease — and renews it — without every tool growing a parameter. */
+  benchHolder: string | null = null;
 
   constructor(private readonly opts: HilDaemonOpts) {
     this.spawnFn = opts.spawnFn ?? defaultSpawn;
@@ -245,6 +249,9 @@ export class HilDaemon {
     }
     if (opts.signal?.aborted) throw new HilError(CANCELLED, `${op} cancelled before send`);
     if (!opts.internal) this.lastActivityAt = this.now();
+    if (this.benchHolder && args.holder === undefined && !op.startsWith("serve.")) {
+      args = { ...args, holder: this.benchHolder };
+    }
     const id = this.nextId++;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     return new Promise<T>((resolve, reject) => {

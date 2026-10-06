@@ -2,7 +2,7 @@
 // from --toolsets / CROSSPAD_TOOLSETS / the crosspad_toolsets meta-tool.
 //
 // Why the server hides tools at all: a v9 session paid ~30 tool schemas of
-// context before the first message. The startup surface is now 9, and a model
+// context before the first message. The startup surface is now 12, and a model
 // that needs more asks for the toolset by name.
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { decide, type Policy } from "./policy/policy.js";
@@ -13,6 +13,7 @@ export const TOOLSETS: Record<string, string[]> = {
   core: [
     "crosspad_devices", "crosspad_doctor", "crosspad_snapshot", "crosspad_build", "crosspad_flash",
     "crosspad_repo_status", "crosspad_toolsets", "crosspad_task", "crosspad_confirm",
+    "crosspad_bench_claim", "crosspad_bench_release", "crosspad_bench_status",
   ],
   device: [
     "crosspad_cdc", "crosspad_console", "crosspad_ui", "crosspad_midi", "crosspad_usb_mode", "crosspad_audio_route", "crosspad_diagnose_crash",
@@ -36,7 +37,7 @@ export const TOOLSETS: Record<string, string[]> = {
 };
 
 export const TOOLSET_DESCRIPTIONS: Record<string, string> = {
-  core: "Always on: device inventory, doctor, snapshot, build, flash (confirmed), repo status, toolsets, task control.",
+  core: "Always on: device inventory, doctor, snapshot, build, flash (confirmed), repo status, toolsets, task control, bench lease (claim/release/status).",
   device: "Device I/O through the crosspad-hil daemon: CDC verbs, console, UI driving, MIDI, USB mode, audio routing.",
   hil: "Hardware-in-the-loop scenarios, audio capture and analysis, pad stimulus, host-side BLE.",
   sim: "PC simulator: run/kill/check, screenshot, input, stats, settings, test runner.",

@@ -6,6 +6,20 @@ All notable changes to crosspad-mcp-server. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Bench lease: `crosspad_bench_claim`, `crosspad_bench_release`,
+  `crosspad_bench_status`** (toolset `core`). Several sessions share one
+  CrossPad, and a session opening its CDC port or flashing it broke whoever was
+  mid-test; the queue lived in a hand-edited `hil_logs/BENCH.md`. crosspad-hil
+  1.6.0 keeps a lease per board — one holder, a queue, the firmware left on the
+  board, expiry after a ttl without renewal — and refuses board ops of anyone
+  else with `BENCH_BUSY`, naming the holder and their ETA. The holder a session
+  claimed with is sent with every daemon op (`HilDaemon.benchHolder`), so the
+  hardware tools pass it without new parameters; `crosspad_flash` (uart, STM)
+  and `crosspad_trace` (start/write/call/device_state) check the lease
+  themselves before touching the board. The server instructions tell a session
+  to claim before any hardware call.
+
 ### Fixed
 - **Danger-tier confirmations work in Claude Code.** Claude Code declares MCP
   elicitation and answers every form with `decline` at once, without showing
@@ -26,6 +40,13 @@ All notable changes to crosspad-mcp-server. Format follows
   flash token is bound to the image's SHA-256, re-checked right before
   writing (`FIRMWARE_CHANGED`). `CROSSPAD_MCP_CONFIRM=form` keeps every decline
   a decline, for a client that pre-approves tools.
+- **`crosspad_cdc raw` returns the lines a reply continues on.** The firmware
+  sends them starting with a space (`COREDUMP_INFO` ` bt:`/` exc:`, `RESET_LOG`
+  ` #n` rows). crosspad-hil#20 collects them into `more_lines`, and the tool now
+  passes that field on instead of dropping it. The new optional `follow` asks for
+  them on a verb the catalog does not mark `continuation`; it is sent only when
+  given, because a daemon older than crosspad-hil#20 does not know it. Against
+  such a daemon the reply simply has no `more_lines`.
 
 ## [10.3.0] — 2026-09-23
 

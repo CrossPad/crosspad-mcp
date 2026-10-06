@@ -6,6 +6,7 @@ import { JobRegistry } from "../tasks.js";
 import { HandleRegistry } from "../handles.js";
 import type { ToolContext } from "../tool-context.js";
 import type { Policy } from "../policy/policy.js";
+import { HilError } from "../hil/daemon.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -46,7 +47,26 @@ describe("crosspad_flash", () => {
     expect(sc.resultType).toBe("confirmation_required");
     expect(sc.confirmation.token).toMatch(/^cfm_/);
     expect(sc.preflight).toMatchObject({ ok: true, device: "dev_3f2a", firmware_version: "v20-3f2a", board_rev_match: true });
-    expect(d.calls.map((c) => c.op)).toEqual(["devices.list"]);
+    expect(d.calls.map((c) => c.op)).toEqual(["devices.list", "bench.check"]);
+  });
+
+  it("a board another session has claimed is refused before the confirmation", async () => {
+    const d = fakeDaemon({
+      "devices.list": () => ({ devices: [DEV] }),
+      "bench.check": () => {
+        throw new HilError("BENCH_BUSY", "dev_3f2a is claimed by pidf (firmware_app) since 23:45; the lease runs to 00:40 (in 25 min) unless renewed",
+          "claim it to join the queue", { holder: "pidf", device: "dev_3f2a" });
+      },
+    });
+    registerFlashTool(fs.server, ctxFor(d));
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "uart" }, fakeExtra());
+    const sc = r.structuredContent as Record<string, any>;
+    expect(r.isError).toBe(true);
+    expect(sc.error.code).toBe("BENCH_BUSY");
+    expect(sc.error.details.holder).toBe("pidf");
+    expect(sc.preflight.ok).toBe(true);
+    expect(sc.resultType).toBeUndefined();
+    expect(d.calls.find((c) => c.op === "bench.check")!.args).toEqual({ op: "crosspad_flash esp uart", device: "dev_3f2a" });
   });
 
   it("a blocked preflight refuses before the confirmation and still returns the preflight", async () => {
