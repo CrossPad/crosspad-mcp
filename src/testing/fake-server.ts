@@ -117,6 +117,8 @@ export function fakeServer(): FakeServerHandle {
         remove: () => { tools.delete(name); },
         update: () => {},
         enabled: true,
+        // The SDK's RegisteredTool carries the raw callback as `handler`.
+        handler: cb,
       };
     },
     registerResource(name: string, uriOrTemplate: any, config: any, cb: any) {

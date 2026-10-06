@@ -94,7 +94,7 @@ WHY: these tools resolve repos dynamically from env vars, parse build output int
 
 DISCOVERY: if unsure whether a repo is detected, check the \`crosspad://workspace\` resource — it lists detected repos, current branches, dirty counts, and sim status.
 
-TOOLSETS: only the \`core\` toolset (devices, doctor, snapshot, build, flash, repo_status, toolsets, task, bench_claim/bench_release/bench_status) is visible at start. Other tools live in toolsets — device (cdc/console/ui/midi/usb_mode/audio_route), sim (run/kill/check/screenshot/input/stats/settings/test_run), code (search_symbols/list_interfaces/…), git (repo_diff/submodule_update/commit), apps (apps_*), trace (crosspad_trace), hil. If a tool you need is not listed, call crosspad_toolsets action=enable toolset=<name> and re-list tools; do NOT fall back to the shell. The server also accepts --toolsets a,b / CROSSPAD_TOOLSETS at startup and --read-only (hides every non-read tool).
+TOOLSETS: only the \`core\` toolset (devices, doctor, snapshot, build, flash, repo_status, toolsets, task, confirm, bench_claim/bench_release/bench_status) is visible at start. Other tools live in toolsets — device (cdc/console/ui/midi/usb_mode/audio_route), sim (run/kill/check/screenshot/input/stats/settings/test_run), code (search_symbols/list_interfaces/…), git (repo_diff/submodule_update/commit), apps (apps_*), trace (crosspad_trace), hil. If a tool you need is not listed, call crosspad_toolsets action=enable toolset=<name> and re-list tools; do NOT fall back to the shell. The server also accepts --toolsets a,b / CROSSPAD_TOOLSETS at startup and --read-only (hides every non-read tool).
 
 SHARED BENCH: several sessions share one CrossPad, and opening its CDC port or flashing it breaks whoever is mid-test. Before ANY hardware call (flash, cdc, console, midi device, snapshot device, hil_run, capture, stimulus, usb_mode, trace start/write/call) call crosspad_bench_claim with your session name and purpose. granted=false means another session holds the board: do not touch it — hardware tools answer BENCH_BUSY naming the holder and ETA; claim again later. When done, crosspad_bench_release with firmware_left (what is on the board now). crosspad_bench_status shows holder, queue and what firmware was left.
 
@@ -105,6 +105,17 @@ export const server = new McpServer(
   { name: "crosspad", version },
   { capabilities: { logging: {}, resources: {}, prompts: {} }, instructions: SERVER_INSTRUCTIONS }
 );
+
+// Which client this is and what it says it can do: the confirmation path depends
+// on it (Claude Code declares elicitation and declines every form unseen; Codex
+// shows it), so it is logged once per connection for the diagnosis.
+server.server.oninitialized = () => {
+  try {
+    const info = server.server.getClientVersion();
+    const caps = server.server.getClientCapabilities();
+    console.error(`crosspad-mcp: client ${JSON.stringify(info)} capabilities ${JSON.stringify(caps)}`);
+  } catch { /* diagnosis only */ }
+};
 
 // v9 tools are still registered inline below. Capturing them here lets
 // registerAll() file each one into its toolset (spec §3.1) without moving

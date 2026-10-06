@@ -70,6 +70,9 @@ export const TOOL_TIERS: Record<string, Tier | TierFn> = {
   crosspad_repo_status: "read",
   crosspad_toolsets: "read",
   crosspad_task: taskTier,
+  // The token it carries is the confirmation; its own gate is the client's
+  // permission prompt (annotations: destructiveHint). Hidden under --read-only.
+  crosspad_confirm: "stimulus",
   // The lease lives in a host-side file; claiming changes nothing on the board.
   crosspad_bench_claim: "mutate-host",
   crosspad_bench_release: "mutate-host",

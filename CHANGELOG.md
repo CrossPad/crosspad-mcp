@@ -20,6 +20,27 @@ All notable changes to crosspad-mcp-server. Format follows
   themselves before touching the board. The server instructions tell a session
   to claim before any hardware call.
 
+### Fixed
+- **Danger-tier confirmations work in Claude Code.** Claude Code declares MCP
+  elicitation and answers every form with `decline` at once, without showing
+  it: `crosspad_flash` and `crosspad_trace write` came back "declined by the
+  user" although nobody had seen a thing. A decline faster than a person can
+  read (500 ms, `CROSSPAD_MCP_ELICIT_MIN_MS`) is no longer an answer: the call
+  returns `confirmation_required` with a one-time token, and the new
+  **`crosspad_confirm(token)`** (core toolset, `destructiveHint`) runs exactly
+  that call -- through the client's own permission prompt, which is where the
+  person approves. Clients that show the form (Codex) are unchanged; a person's
+  decline still declines. Tokens stay single-use, 120 s, bound to the exact
+  arguments and board. Every `confirmation_required` result says why the form
+  was not used (`elicitation: {declared, action, ms, why_token}`), the server
+  logs the client's `clientInfo`/capabilities at initialize, and the flash
+  summary carries the file's SHA-256 and the ST-Link it goes through.
+  `crosspad_confirm` takes the summary too and runs nothing unless it matches
+  the token's action, so the permission prompt shows what is approved. A
+  flash token is bound to the image's SHA-256, re-checked right before
+  writing (`FIRMWARE_CHANGED`). `CROSSPAD_MCP_CONFIRM=form` keeps every decline
+  a decline, for a client that pre-approves tools.
+
 ## [10.3.0] — 2026-09-23
 
 ### Fixed
