@@ -40,6 +40,13 @@ All notable changes to crosspad-mcp-server. Format follows
   flash token is bound to the image's SHA-256, re-checked right before
   writing (`FIRMWARE_CHANGED`). `CROSSPAD_MCP_CONFIRM=form` keeps every decline
   a decline, for a client that pre-approves tools.
+- **`crosspad_cdc raw` returns the lines a reply continues on.** The firmware
+  sends them starting with a space (`COREDUMP_INFO` ` bt:`/` exc:`, `RESET_LOG`
+  ` #n` rows). crosspad-hil#20 collects them into `more_lines`, and the tool now
+  passes that field on instead of dropping it. The new optional `follow` asks for
+  them on a verb the catalog does not mark `continuation`; it is sent only when
+  given, because a daemon older than crosspad-hil#20 does not know it. Against
+  such a daemon the reply simply has no `more_lines`.
 
 ## [10.3.0] — 2026-09-23
 
