@@ -237,24 +237,34 @@ export async function runTraceCli<S extends TraceRun>(argv: string[], deps: Trac
   }
   const { opts } = parsed;
 
-  const running = await deps.probeDashboard(opts.port);
-  if (running) return attach(opts, running, deps);
+  // An idle dashboard (a Claude session that traced once and stopped keeps
+  // its own up) has no probe: trace beside it on a port of our own.
+  let port = opts.port;
+  const running = await deps.probeDashboard(port);
+  if (running?.active) return attach(opts, running, deps);
+  if (running) port = idleDashboardPort(opts.port, deps);
 
   // Listening before the bench check and the doctor makes the port the lock a
   // second instance sees during the seconds they take.
   let url: string;
   try {
-    url = await deps.dashboard.ensureStarted(opts.port);
+    url = await deps.dashboard.ensureStarted(port);
   } catch (e) {
     const error = e as NodeJS.ErrnoException;
     if (error.code === "EADDRINUSE") {
-      const winner = await deps.probeDashboard(opts.port);
-      if (winner) return attach(opts, winner, deps);
-      deps.err(`Port ${opts.port} is taken by a program that is not the tracer dashboard. Stop it or pass --port.`);
+      const winner = await deps.probeDashboard(port);
+      if (winner?.active) return attach(opts, winner, deps);
+      if (winner) {
+        port = idleDashboardPort(opts.port, deps);
+        url = await deps.dashboard.ensureStarted(port);
+      } else {
+        deps.err(`Port ${port} is taken by a program that is not the tracer dashboard. Stop it or pass --port.`);
+        return EXIT_ENVIRONMENT;
+      }
+    } else {
+      deps.err(`Cannot serve the dashboard on port ${port}: ${error.message}`);
       return EXIT_ENVIRONMENT;
     }
-    deps.err(`Cannot serve the dashboard on port ${opts.port}: ${error.message}`);
-    return EXIT_ENVIRONMENT;
   }
 
   // The ST-Link is outside the crosspad-hil daemon, so the lease is asked here,
@@ -270,6 +280,9 @@ export async function runTraceCli<S extends TraceRun>(argv: string[], deps: Trac
   const doctor = await deps.runDoctor();
   const verdict = formatDoctorVerdict(doctor);
   if (!doctor.ok) {
+    // A terminal's Ctrl+C reaches the doctor's own children too: a check it
+    // killed is the user stopping, not a missing venv.
+    if (await stoppedMeanwhile(deps)) return EXIT_OK;
     for (const line of verdict) deps.err(line);
     return doctorExitCode(doctor);
   }
@@ -287,7 +300,13 @@ export async function runTraceCli<S extends TraceRun>(argv: string[], deps: Trac
   deps.dashboard.bind(session);
   const stopped = new Promise<void>((resolve) => session.onStopped(resolve));
 
-  const first = await session.waitForFirstFrame(FIRST_FRAME_WAIT_MS);
+  const first = await Promise.race([
+    session.waitForFirstFrame(FIRST_FRAME_WAIT_MS),
+    deps.stop.promise.then((): typeof STOPPED => STOPPED),
+  ]);
+  if (first === STOPPED || ((first === null || first.type === "error") && await stoppedMeanwhile(deps))) {
+    return stopTrace(session, stopped, deps);
+  }
   if (first?.type === "error") {
     deps.err(`Trace connect failed: ${first.error}`);
     return failTrace(session, stopped, deps);
@@ -310,14 +329,7 @@ export async function runTraceCli<S extends TraceRun>(argv: string[], deps: Trac
   ]);
   if (ended === "exited") await delay(EXIT_RACE_GRACE_MS);
 
-  if (deps.stop.requested) {
-    deps.out("Stopping the trace...");
-    session.stop();
-    await stopped;
-    deps.dashboard.unbind();
-    deps.out(`Trace stopped. Samples: ${session.filePath ?? "none written"}`);
-    return EXIT_OK;
-  }
+  if (deps.stop.requested) return stopTrace(session, stopped, deps);
   deps.dashboard.unbind();
   deps.err(`Trace ended on its own: ${session.deviceState}`);
   printTail(session, deps);
@@ -331,6 +343,29 @@ function attach<S extends TraceRun>(opts: TraceCliOptions, hello: DashboardHello
     ? `It is tracing ${hello.signals.join(", ")}.`
     : "It has no trace running: start one from the process that owns it, or stop that process and run crosspad-trace again.");
   if (opts.open && !deps.openBrowser(url)) deps.out(NO_BROWSER_NOTE);
+  return EXIT_OK;
+}
+
+const STOPPED: unique symbol = Symbol("stopped");
+
+/** A failure that came with a stop request is the stop; the grace lets a signal
+ *  that killed a child arrive before the child's death is judged. */
+async function stoppedMeanwhile<S extends TraceRun>(deps: TraceCliDeps<S>): Promise<boolean> {
+  if (!deps.stop.requested) await delay(EXIT_RACE_GRACE_MS);
+  return deps.stop.requested;
+}
+
+function idleDashboardPort<S extends TraceRun>(asked: number, deps: TraceCliDeps<S>): number {
+  deps.out(`The dashboard on port ${asked} is idle; tracing on a port of this run's own.`);
+  return 0;
+}
+
+async function stopTrace<S extends TraceRun>(session: S, stopped: Promise<void>, deps: TraceCliDeps<S>): Promise<number> {
+  deps.out("Stopping the trace...");
+  session.stop();
+  await stopped;
+  deps.dashboard.unbind();
+  deps.out(`Trace stopped. Samples: ${session.filePath ?? "none written"}`);
   return EXIT_OK;
 }
 

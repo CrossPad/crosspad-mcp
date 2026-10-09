@@ -281,19 +281,17 @@ describe("runTraceCli — arguments", () => {
 });
 
 describe("runTraceCli — a dashboard already answers on the port", () => {
-  it("opens the running dashboard and starts no session", async () => {
+  it("an idle dashboard on the port: traces on a port of its own instead", async () => {
     const d = await startDashboard();
     const h = harness();
     h.deps.probeDashboard = (port) => probeDashboard(port);
-    expect(await runTraceCli(["--port", String(d.port)], h.deps)).toBe(EXIT_OK);
-    expect(h.deps.openBrowser).toHaveBeenCalledWith(`http://localhost:${d.port}/`);
-    expect(h.deps.dashboard.ensureStarted).not.toHaveBeenCalled();
-    expect(h.deps.benchCheck).not.toHaveBeenCalled();
-    expect(h.deps.runDoctor).not.toHaveBeenCalled();
-    expect(h.deps.createSession).not.toHaveBeenCalled();
-    const text = h.out.join("\n");
-    expect(text).toContain("no second pyOCD");
-    expect(text).toContain("no trace running");
+    const done = runTraceCli(["--port", String(d.port), "--no-open"], h.deps);
+    await vi.waitFor(() => expect(h.out).toContain(READY_LINE));
+    expect(h.deps.dashboard.ensureStarted).toHaveBeenCalledWith(0);
+    expect(h.deps.createSession).toHaveBeenCalledTimes(1);
+    expect(h.out.join("\n")).toContain("is idle");
+    h.stop.trigger();
+    expect(await done).toBe(EXIT_OK);
   });
 
   it("names the signals of the trace that dashboard shows", async () => {
@@ -308,7 +306,7 @@ describe("runTraceCli — a dashboard already answers on the port", () => {
   it("--no-open attaches without a browser", async () => {
     const d = await startDashboard();
     const h = harness();
-    h.deps.probeDashboard = (port) => probeDashboard(port);
+    h.deps.probeDashboard = vi.fn(async () => ({ active: true, signals: ["s_vbat_mv"] }));
     expect(await runTraceCli(["--port", String(d.port), "--no-open"], h.deps)).toBe(EXIT_OK);
     expect(h.deps.openBrowser).not.toHaveBeenCalled();
     expect(h.out.join("\n")).toContain(`http://localhost:${d.port}/`);
@@ -575,5 +573,34 @@ describe("runTraceCli — the trace", () => {
     setTimeout(h.stop.trigger, EXIT_RACE_GRACE_MS / 10);
     expect(await run).toBe(EXIT_OK);
     expect(h.out.join("\n")).toContain("Trace stopped");
+  });
+});
+
+
+describe("runTraceCli — the user stops it before the trace is up", () => {
+  it("a doctor that failed because of the Ctrl+C is a stop, exit 0", async () => {
+    const h = harness();
+    h.deps.runDoctor = vi.fn(async () => { h.stop.trigger(); return NO_VENV; });
+    expect(await runTraceCli([], h.deps)).toBe(EXIT_OK);
+    expect(h.err.join("\n")).not.toContain("not ready");
+    expect(h.deps.createSession).not.toHaveBeenCalled();
+  });
+
+  it("a daemon killed by the Ctrl+C while connecting is a stop, exit 0", async () => {
+    const run = new FakeRun(null);
+    const h = harness(run);
+    run.waitForFirstFrame = () => { h.stop.trigger(); run.exit("exited"); return Promise.resolve(null); };
+    expect(await runTraceCli([], h.deps)).toBe(EXIT_OK);
+    expect(h.err.join("\n")).not.toContain("exited before producing data");
+    expect(h.deps.openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("a stop while connecting opens no browser tab and stops the daemon", async () => {
+    const run = new FakeRun(null);
+    const h = harness(run);
+    run.waitForFirstFrame = () => { h.stop.trigger(); return new Promise(() => {}); };
+    expect(await runTraceCli([], h.deps)).toBe(EXIT_OK);
+    expect(h.deps.openBrowser).not.toHaveBeenCalled();
+    expect(run.stops).toBe(1);
   });
 });
