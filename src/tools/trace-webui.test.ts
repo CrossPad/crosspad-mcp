@@ -1,3 +1,4 @@
+import http from "http";
 import { describe, it, expect, vi } from "vitest";
 import { once } from "events";
 import path from "path";
@@ -283,5 +284,18 @@ describe("Dashboard persistent server lifecycle (§12.1/§12.2)", () => {
     ws1.close();
     ws2.close();
     (d as any).server?.close();
+  });
+});
+
+describe("Dashboard.ensureStarted on a taken port", () => {
+  it("rejects with EADDRINUSE instead of hanging", async () => {
+    const holder = http.createServer();
+    await new Promise<void>((r) => holder.listen(0, "127.0.0.1", () => r()));
+    const port = (holder.address() as { port: number }).port;
+    try {
+      await expect(new Dashboard().ensureStarted(port)).rejects.toMatchObject({ code: "EADDRINUSE" });
+    } finally {
+      await new Promise<void>((r) => holder.close(() => r()));
+    }
   });
 });
