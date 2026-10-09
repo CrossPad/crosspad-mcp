@@ -5,6 +5,11 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { parseArgs } from "util";
 import { WebSocket } from "ws";
+import { setTimeout as delay } from "timers/promises";
+import type { Frame, SessionOpts } from "./trace-session.js";
+import { buildUiUrl } from "./trace-webui.js";
+import { HilError } from "../hil/daemon.js";
+import { BENCH_BUSY } from "./bench.js";
 import type { DoctorIssue, DoctorResult } from "./trace-doctor.js";
 import { userConfigPath } from "../utils/userConfig.js";
 
@@ -143,4 +148,202 @@ export function formatDoctorVerdict(r: DoctorResult): string[] {
     }
   }
   return lines;
+}
+
+/** Same first-frame wait as the MCP `start`; past it the daemon is reported as still connecting. */
+export const FIRST_FRAME_WAIT_MS = 3000;
+/** Ctrl+C in a terminal reaches the daemon too (same process group), and its exit
+ *  can be handled before this process's own SIGINT. */
+export const EXIT_RACE_GRACE_MS = 100;
+const STDERR_TAIL_LINES = 5;
+const NO_BROWSER_NOTE = "No browser opened (headless, or CROSSPAD_TRACE_NO_BROWSER is set): open the URL yourself.";
+const READY_LINE = "Ctrl+C stops the trace.";
+
+/** crosspad-hil's own CLI reads the holder from the same variable. */
+export const BENCH_HOLDER_ENV = "CROSSPAD_BENCH_HOLDER";
+export const DEFAULT_BENCH_HOLDER = "crosspad-trace";
+/** What the lease holder sees in the refusal and the board's history. */
+export const BENCH_OP = "crosspad-trace start";
+const SECONDS_PER_MINUTE = 60;
+
+export function benchHolder(env: NodeJS.ProcessEnv): string {
+  const fromEnv = env[BENCH_HOLDER_ENV]?.trim();
+  return fromEnv ? fromEnv : DEFAULT_BENCH_HOLDER;
+}
+
+/** A bench refusal in plain text: crosspad-hil puts the lease in `details`. */
+export function formatBenchRefusal(e: HilError): string[] {
+  const hint = e.hint ? [`  hint: ${e.hint}`] : [];
+  if (e.code !== BENCH_BUSY) return [`Bench check failed: ${e.code}: ${e.message}`, ...hint];
+  const { holder, purpose, expires_in_s: expiresInS, queue } = e.details;
+  const lines = [`Bench busy: ${e.message}`];
+  if (typeof holder === "string") lines.push(`  holder: ${holder}`);
+  if (typeof purpose === "string" && purpose) lines.push(`  purpose: ${purpose}`);
+  if (typeof expiresInS === "number") {
+    lines.push(`  expires in: ${Math.max(0, Math.round(expiresInS / SECONDS_PER_MINUTE))} min`);
+  }
+  const waiting = Array.isArray(queue) ? queue.filter((q): q is string => typeof q === "string") : [];
+  lines.push(`  queue: ${waiting.length > 0 ? waiting.join(", ") : "empty"}`);
+  return [...lines, ...hint];
+}
+
+/** The part of TraceSession this command drives. */
+export interface TraceRun {
+  start(): void;
+  waitForFirstFrame(timeoutMs?: number): Promise<Frame | null>;
+  stop(): void;
+  onStopped(cb: () => void): void;
+  isRunning(): boolean;
+  stderrTail(n?: number): string;
+  readonly deviceState: string;
+  readonly filePath: string | null;
+}
+
+/** The part of Dashboard this command drives. */
+export interface DashboardLike<S> {
+  ensureStarted(port: number): Promise<string>;
+  bind(session: S): void;
+  unbind(): void;
+}
+
+export interface StopSignal {
+  readonly requested: boolean;
+  readonly promise: Promise<void>;
+}
+
+export interface TraceCliDeps<S extends TraceRun> {
+  probeDashboard(port: number): Promise<DashboardHello | null>;
+  /** Resolves when `holder` may trace the board; throws HilError when not. */
+  benchCheck(holder: string): Promise<void>;
+  runDoctor(): Promise<DoctorResult>;
+  dashboard: DashboardLike<S>;
+  createSession(opts: SessionOpts): S;
+  openBrowser(url: string): boolean;
+  stop: StopSignal;
+  out(line: string): void;
+  err(line: string): void;
+}
+
+export async function runTraceCli<S extends TraceRun>(argv: string[], deps: TraceCliDeps<S>): Promise<number> {
+  const parsed = parseTraceCliArgs(argv);
+  if (parsed.kind === "help") {
+    deps.out(USAGE);
+    return EXIT_OK;
+  }
+  if (parsed.kind === "error") {
+    deps.err(parsed.message);
+    deps.err(USAGE);
+    return EXIT_ENVIRONMENT;
+  }
+  const { opts } = parsed;
+
+  const running = await deps.probeDashboard(opts.port);
+  if (running) return attach(opts, running, deps);
+
+  // Listening before the bench check and the doctor makes the port the lock a
+  // second instance sees during the seconds they take.
+  let url: string;
+  try {
+    url = await deps.dashboard.ensureStarted(opts.port);
+  } catch (e) {
+    const error = e as NodeJS.ErrnoException;
+    if (error.code === "EADDRINUSE") {
+      const winner = await deps.probeDashboard(opts.port);
+      if (winner) return attach(opts, winner, deps);
+      deps.err(`Port ${opts.port} is taken by a program that is not the tracer dashboard. Stop it or pass --port.`);
+      return EXIT_ENVIRONMENT;
+    }
+    deps.err(`Cannot serve the dashboard on port ${opts.port}: ${error.message}`);
+    return EXIT_ENVIRONMENT;
+  }
+
+  // The ST-Link is outside the crosspad-hil daemon, so the lease is asked here,
+  // as crosspad_trace start does: another session may be mid-test or mid-DFU.
+  try {
+    await deps.benchCheck(benchHolder(process.env));
+  } catch (e) {
+    if (!(e instanceof HilError)) throw e;
+    for (const line of formatBenchRefusal(e)) deps.err(line);
+    return EXIT_ENVIRONMENT;
+  }
+
+  const doctor = await deps.runDoctor();
+  const verdict = formatDoctorVerdict(doctor);
+  if (!doctor.ok) {
+    for (const line of verdict) deps.err(line);
+    return doctorExitCode(doctor);
+  }
+  for (const line of verdict) deps.out(line);
+  if (deps.stop.requested) return EXIT_OK;
+
+  let session: S;
+  try {
+    session = deps.createSession({ signals: opts.signals, rateHz: TRACE_RATE_HZ });
+    session.start();
+  } catch (e) {
+    deps.err(`Cannot start the trace daemon: ${(e as Error).message}`);
+    return EXIT_ENVIRONMENT;
+  }
+  deps.dashboard.bind(session);
+  const stopped = new Promise<void>((resolve) => session.onStopped(resolve));
+
+  const first = await session.waitForFirstFrame(FIRST_FRAME_WAIT_MS);
+  if (first?.type === "error") {
+    deps.err(`Trace connect failed: ${first.error}`);
+    return failTrace(session, stopped, deps);
+  }
+  if (!first && !session.isRunning()) {
+    deps.err(`Trace daemon exited before producing data (${session.deviceState}).`);
+    return failTrace(session, stopped, deps);
+  }
+
+  deps.out(first
+    ? `Tracing ${opts.signals.join(", ")}.`
+    : "Trace daemon still connecting; the dashboard shows it when data arrives.");
+  deps.out(`Dashboard: ${url}`);
+  if (opts.open && !deps.openBrowser(url)) deps.out(NO_BROWSER_NOTE);
+  deps.out(READY_LINE);
+
+  const ended = await Promise.race([
+    deps.stop.promise.then(() => "stop" as const),
+    stopped.then(() => "exited" as const),
+  ]);
+  if (ended === "exited") await delay(EXIT_RACE_GRACE_MS);
+
+  if (deps.stop.requested) {
+    deps.out("Stopping the trace...");
+    session.stop();
+    await stopped;
+    deps.dashboard.unbind();
+    deps.out(`Trace stopped. Samples: ${session.filePath ?? "none written"}`);
+    return EXIT_OK;
+  }
+  deps.dashboard.unbind();
+  deps.err(`Trace ended on its own: ${session.deviceState}`);
+  printTail(session, deps);
+  return EXIT_TRACE_FAILED;
+}
+
+function attach<S extends TraceRun>(opts: TraceCliOptions, hello: DashboardHello, deps: TraceCliDeps<S>): number {
+  const url = buildUiUrl(opts.port);
+  deps.out(`Tracer dashboard already running at ${url}; no second pyOCD started.`);
+  deps.out(hello.active
+    ? `It is tracing ${hello.signals.join(", ")}.`
+    : "It has no trace running: start one from the process that owns it, or stop that process and run crosspad-trace again.");
+  if (opts.open && !deps.openBrowser(url)) deps.out(NO_BROWSER_NOTE);
+  return EXIT_OK;
+}
+
+async function failTrace<S extends TraceRun>(session: S, stopped: Promise<void>, deps: TraceCliDeps<S>): Promise<number> {
+  printTail(session, deps);
+  session.stop();
+  await stopped;
+  deps.dashboard.unbind();
+  return EXIT_TRACE_FAILED;
+}
+
+function printTail<S extends TraceRun>(session: S, deps: TraceCliDeps<S>): void {
+  const tail = session.stderrTail(STDERR_TAIL_LINES);
+  if (!tail) return;
+  for (const line of tail.split("\n")) deps.err(`  ${line}`);
 }
