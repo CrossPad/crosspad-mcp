@@ -7,6 +7,14 @@ All notable changes to crosspad-mcp-server. Format follows
 ## [Unreleased]
 
 ### Added
+- **`crosspad-trace`** — the SWD tracer without an MCP client. Runs the trace
+  doctor, starts the trace and its dashboard on :7373 and opens the browser;
+  Ctrl+C stops the daemon and frees the probe. When a tracer dashboard already
+  answers on the port (an MCP session, another `crosspad-trace`) it opens that
+  one and starts no second pyOCD. A new trace asks the bench lease first, as
+  `crosspad_trace start` does (holder `$CROSSPAD_BENCH_HOLDER`, default
+  `crosspad-trace`). `--signals`, `--port`, `--no-open`; exit `0` ok, `1` no
+  ST-Link or the trace failed, `2` setup (venv, ELF, port, flag, bench busy).
 - **Bench lease: `crosspad_bench_claim`, `crosspad_bench_release`,
   `crosspad_bench_status`** (toolset `core`). Several sessions share one
   CrossPad, and a session opening its CDC port or flashing it broke whoever was
