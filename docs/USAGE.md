@@ -263,6 +263,29 @@ action=save
 action=stop
 ```
 
+**Without an MCP client: `crosspad-trace`**
+
+The same tracer from a terminal: doctor, trace, dashboard, browser tab.
+
+```bash
+npx -p crosspad-mcp-server crosspad-trace                # s_vbat_mv + the 16 pad pressures
+crosspad-trace --signals "s_adc_raw[*],s_vbat_mv"        # your own set; add more from the dashboard
+crosspad-trace --port 7474 --no-open                     # print the URL only
+```
+
+Ctrl+C stops the daemon and frees the ST-Link. If a tracer dashboard already
+answers on the port (an MCP session's trace, another `crosspad-trace`), it opens
+that one and starts no second pyOCD (`--signals` is then ignored). Before a new
+trace it asks the bench lease like `crosspad_trace start`, as
+`$CROSSPAD_BENCH_HOLDER` (default `crosspad-trace`). A board another holder has
+claimed is refused with the holder, purpose, expiry and queue, and
+`CROSSPAD_BENCH_MODE` applies as for the server. A failing doctor prints each
+issue with its fix. Exit codes: `0` ok or stopped, `1` no ST-Link or the trace
+failed, `2` setup (pyOCD venv, ELF, port taken, bad flag, bench busy).
+Paths come from the same config as the tool: `pyocd_python` and `stm_elf_path`
+in `~/.config/crosspad-mcp/config.json`, or `CROSSPAD_TRACE_PYTHON` /
+`CROSSPAD_STM_ELF`.
+
 ### Tests
 
 | Tool | Purpose |
@@ -443,6 +466,7 @@ npm run test:watch  # tests in watch mode
 ```
 src/
   index.ts              — 30 focused tool registrations (one tool per action) + resources
+  trace-cli.ts          — the crosspad-trace bin
   config.ts             — per-repo env vars, dynamic discovery, IDF/MSVC/STM paths
   utils/                — platform-aware exec (MSVC/IDF/shell), git helpers,
                           TCP client for the simulator (localhost:19840)
@@ -451,7 +475,7 @@ src/
     idf-flash.ts / stm-flash.ts              — ESP (uart/ota) and STM (swd/dfu) flashing
     build-check.ts / diff-core.ts / repos.ts — health checks, submodule drift, git status
     trace-*.ts            — SWD tracer: session, symbols (DWARF), buffer, export,
-                            device-state, write, doctor, web UI
+                            device-state, write, doctor, web UI, launcher
     audio-route.ts        — runtime codec routing over MIDI SysEx
     input.ts / midi.ts / screenshot.ts / settings.ts / stats.ts — simulator interaction
     app-manager.ts        — multi-platform app registry + Python subprocess
