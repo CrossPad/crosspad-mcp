@@ -6,6 +6,10 @@ All notable changes to crosspad-mcp-server. Format follows
 
 ## [Unreleased]
 
+### Changed
+- **License: GPL-3.0-or-later** (was MIT), like the rest of CrossPad.
+  Releases up to 10.3.0 stay MIT.
+
 ### Added
 - **Bench lease: `crosspad_bench_claim`, `crosspad_bench_release`,
   `crosspad_bench_status`** (toolset `core`). Several sessions share one

@@ -10,5 +10,5 @@
     "type": "git",
     "url": "https://github.com/CrossPad/crosspad-mcp.git"
   },
-  "license": "MIT"
+  "license": "GPL-3.0-or-later"
 }

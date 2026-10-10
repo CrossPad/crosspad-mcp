@@ -4,7 +4,7 @@
 [![M8ven Live Monitored](https://m8ven.ai/badge/mcp/crosspad-crosspad-mcp-11gso3)](https://m8ven.ai/mcp/crosspad-crosspad-mcp-11gso3)
 [![CI](https://github.com/CrossPad/crosspad-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/CrossPad/crosspad-mcp/actions/workflows/ci.yml)
 [![node](https://img.shields.io/node/v/crosspad-mcp-server)](package.json)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+[![license: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](#license)
 
 **Talk to your CrossPad. Let Claude do the toolchain.**
 
@@ -106,4 +106,5 @@ scenarios) run as tasks you can check on, wait for or cancel.
 
 ## License
 
-MIT — part of the [CrossPad](https://github.com/CrossPad) project.
+GPL-3.0-or-later — see [LICENSE](LICENSE). Part of the [CrossPad](https://github.com/CrossPad) project.
+Releases up to 10.3.0 were published under MIT.
