@@ -34,8 +34,24 @@ const CROSSPAD_GUI_ROOT =
 // STM32 firmware (CrossPad r20 single-board target). Separate repo, not a
 // submodule of the others — but its code (sleep/power/reg-map/charger) is part
 // of day-to-day development, so symbol search / repo status should cover it.
-export const CROSSPAD_STM_ROOT =
-  process.env.CROSSPAD_STM_ROOT || path.join(GIT_DIR, "CrossPad_STM32_r20");
+// Default folder is the GitHub repo name (what `git clone` creates); machines
+// that cloned it under the older local name CrossPad_STM32_r20 keep working.
+export const STM_REPO_NAME = "CrossPad_STM32_r2";
+const STM_REPO_LEGACY_NAME = "CrossPad_STM32_r20";
+
+/** Env var → $GIT_DIR/CrossPad_STM32_r2 → legacy $GIT_DIR/CrossPad_STM32_r20 (only if it alone exists). */
+export function resolveStmRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  gitDir: string = GIT_DIR,
+  exists: (p: string) => boolean = fs.existsSync,
+): string {
+  if (env.CROSSPAD_STM_ROOT) return env.CROSSPAD_STM_ROOT;
+  const primary = path.join(gitDir, STM_REPO_NAME);
+  const legacy = path.join(gitDir, STM_REPO_LEGACY_NAME);
+  return !exists(primary) && exists(legacy) ? legacy : primary;
+}
+
+export const CROSSPAD_STM_ROOT = resolveStmRoot();
 
 export const CROSSPAD_HIL_ROOT =
   process.env.CROSSPAD_HIL_ROOT || path.join(GIT_DIR, "crosspad-hil");

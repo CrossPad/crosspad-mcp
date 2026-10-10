@@ -41,7 +41,11 @@ GIT_DIR="${CROSSPAD_GIT_DIR:-$HOME/GIT}"
 PC_ROOT="$(ask 'crosspad-pc repo path'      "$GIT_DIR/crosspad-pc")"
 IDF_ROOT="$(ask 'platform-idf repo path'    "$GIT_DIR/platform-idf")"
 ARDUINO_ROOT="$(ask 'ESP32-S3 repo path'    "$GIT_DIR/ESP32-S3")"
-STM_ROOT="$(ask 'CrossPad_STM32_r20 repo path' "$GIT_DIR/CrossPad_STM32_r20")"
+# STM32 repo: GitHub name (what `git clone` creates) is CrossPad_STM32_r2;
+# older clones used CrossPad_STM32_r20 — fall back to it only if it alone exists.
+STM_DIR=CrossPad_STM32_r2
+[ ! -d "$GIT_DIR/$STM_DIR" ] && [ -d "$GIT_DIR/CrossPad_STM32_r20" ] && STM_DIR=CrossPad_STM32_r20
+STM_ROOT="$(ask 'CrossPad_STM32_r2 repo path' "$GIT_DIR/$STM_DIR")"
 
 ENV_ARGS=()
 [ -d "$PC_ROOT" ]      && ENV_ARGS+=(--env "CROSSPAD_PC_ROOT=$PC_ROOT")

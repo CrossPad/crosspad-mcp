@@ -1,6 +1,6 @@
 ---
 name: swd-tracer
-description: Use when tracing/plotting STM32 firmware variables in real time over SWD (ST-Link) on the CrossPad r20 board (CrossPad_STM32_r20 repo, STM32G0B1xx), or when the SWD tracer / pyOCD environment needs setting up or repairing. Covers the doctor→config→symbols→start→read/ui→stop workflow, signal-spec syntax (arrays/structs/whole-array expansion), configuring all four environments (pyOCD venv, user config paths, ST-Link udev rules, the Debug ELF), and recovering from no-probe / wedged-probe / halted-core / MCU-STOP conditions. The MCP tool is `crosspad_trace`.
+description: Use when tracing/plotting STM32 firmware variables in real time over SWD (ST-Link) on the CrossPad r20 board (CrossPad_STM32_r2 repo, STM32G0B1xx), or when the SWD tracer / pyOCD environment needs setting up or repairing. Covers the doctor→config→symbols→start→read/ui→stop workflow, signal-spec syntax (arrays/structs/whole-array expansion), configuring all four environments (pyOCD venv, user config paths, ST-Link udev rules, the Debug ELF), and recovering from no-probe / wedged-probe / halted-core / MCU-STOP conditions. The MCP tool is `crosspad_trace`.
 ---
 
 # CrossPad SWD real-time tracer
@@ -11,7 +11,7 @@ server already lists *which* tools exist; this skill encodes *how* to set the
 tracer up and drive it, and how to recover when the probe misbehaves.
 
 **Target:** CrossPad r20 = **STM32G0B1xx (Cortex-M0+)** firmware in the
-`CrossPad_STM32_r20` repo. Variables are resolved from the **Debug ELF** DWARF;
+`CrossPad_STM32_r2` repo. Variables are resolved from the **Debug ELF** DWARF;
 pyOCD polls their RAM addresses while the core keeps running. (Cortex-M0+ has no
 ITM/SWO/DWT, so SWO/ITM "printf" is impossible — RAM polling is the mechanism.)
 

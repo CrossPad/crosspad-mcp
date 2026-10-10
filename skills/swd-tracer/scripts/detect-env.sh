@@ -29,7 +29,10 @@ fi
 # 3. Debug ELF (look in common spots if not configured)
 ELF="${CROSSPAD_STM_ELF:-}"
 if [ -z "$ELF" ]; then
-  ELF=$(ls "${CROSSPAD_STM_ROOT:-$HOME/GIT/CrossPad_STM32_r20}"/build/Debug/*.elf 2>/dev/null | head -1)
+  # STM32 repo: CrossPad_STM32_r2 (GitHub name), legacy local clones: CrossPad_STM32_r20.
+  STM_ROOT="${CROSSPAD_STM_ROOT:-$HOME/GIT/CrossPad_STM32_r2}"
+  [ -z "${CROSSPAD_STM_ROOT:-}" ] && [ ! -d "$STM_ROOT" ] && STM_ROOT="$HOME/GIT/CrossPad_STM32_r20"
+  ELF=$(ls "$STM_ROOT"/build/Debug/*.elf 2>/dev/null | head -1)
 fi
 if [ -n "$ELF" ] && [ -f "$ELF" ]; then
   if "${VENV}/bin/python" - "$ELF" <<'PY' 2>/dev/null

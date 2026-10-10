@@ -148,7 +148,7 @@ appear in tool results.
 | `CROSSPAD_ARDUINO_ROOT` | `$GIT_DIR/ESP32-S3` | Arduino platform repo |
 | `CROSSPAD_CORE_ROOT` | `$GIT_DIR/crosspad-core` | crosspad-core (standalone) |
 | `CROSSPAD_GUI_ROOT` | `$GIT_DIR/crosspad-gui` | crosspad-gui (standalone) |
-| `CROSSPAD_STM_ROOT` | `$GIT_DIR/CrossPad_STM32_r20` | STM32 r20 firmware (build/flash/trace/symbol-search) |
+| `CROSSPAD_STM_ROOT` | `$GIT_DIR/CrossPad_STM32_r2` (falls back to `$GIT_DIR/CrossPad_STM32_r20` if only that exists) | STM32 r20 firmware (build/flash/trace/symbol-search) |
 | `IDF_PATH` | auto (`~/esp/esp-idf`) | ESP-IDF SDK path |
 | `VCPKG_ROOT` | `~/vcpkg` / `C:/vcpkg` | vcpkg install (PC build deps) |
 | `VCVARSALL` | VS2022 default | MSVC vcvarsall.bat (Windows only) |

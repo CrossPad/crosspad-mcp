@@ -73,7 +73,7 @@ Example — query `s_vbat_mv`:
 
 ```bash
 /path/to/venv/bin/python swd_tracer.py symbols \
-  --elf ~/GIT/CrossPad_STM32_r20/build/Debug/CrossPad_STM32_r20.elf \
+  --elf ~/GIT/CrossPad_STM32_r2/build/Debug/CrossPad_STM32_r20.elf \
   --query s_vbat_mv
 # stdout: {"symbols": [{"name": "s_vbat_mv", "address": 536885450, "encoding": "uint", "size": 2}]}
 ```
@@ -184,7 +184,7 @@ The daemon reads control commands (`add` / `remove` / `stop`) as NDJSON on its
 ```bash
 mkfifo /tmp/trace_in
 /path/to/venv/bin/python swd_tracer.py trace \
-  --elf ~/GIT/CrossPad_STM32_r20/build/Debug/CrossPad_STM32_r20.elf \
+  --elf ~/GIT/CrossPad_STM32_r2/build/Debug/CrossPad_STM32_r20.elf \
   --signals s_vbat_mv,s_inputs[0],s_inputs[1] \
   --rate 100 \
   --out /tmp/session.cptrace \
