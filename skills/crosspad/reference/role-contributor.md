@@ -68,7 +68,10 @@ src/
 2. Wire it up: an entry in `V10_MODULES` (`src/registry.ts`) **and** its name in
    `TOOLSETS` (`src/toolsets.ts`) — a tool that is in no toolset is removed at
    start. Give it a tier in `TOOL_TIERS` (`src/policy/tiers.ts`); an unlisted
-   tool is treated as `danger` (confirmation required).
+   tool is treated as `danger` (confirmation required). Set its MCP annotations
+   (`readOnlyHint` for status/search/list, `destructiveHint` for mutating ops —
+   clients use them to decide on confirmation prompts); most tools take them
+   from the tier with `annotationsFor(tierOf(name, args))`.
 3. Return the uniform envelope `{ success: boolean, ...data, error?: string }`; set
    `isError: true` on failure so clients route errors distinctly.
 4. Name it in `docs/USAGE.md` (toolset table + banner count) — `src/release.test.ts`
