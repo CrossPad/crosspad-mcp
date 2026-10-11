@@ -1,13 +1,15 @@
 # Role: firmware developer
 
 You edit CrossPad firmware/core logic. Use the MCP tools to navigate and verify
-across repos instead of raw shell.
+across repos instead of raw shell. Toolchain setup (ESP-IDF, first build and
+flash) is on the site: https://crosspad.app/docs/start-here/.
 
-## Find code (prefer over `grep -r`)
+## Find code (prefer over `grep -r`) — toolset `code`
 
 | Want | Tool |
 |------|------|
 | A class/function/macro/enum/typedef definition | `crosspad_search_symbols` |
+| clangd-precise references, call hierarchy, hover, outline | `crosspad_symbol` |
 | List crosspad-core interfaces | `crosspad_list_interfaces` |
 | Find implementations of an interface | `crosspad_interface_implementations` |
 | Capability flags + per-platform sets | `crosspad_capabilities` |
@@ -20,14 +22,16 @@ across repos instead of raw shell.
   ESP32-S3) implement them. Add behavior at the right layer — shared logic in core,
   platform specifics in the platform repo. See `reference/repos.md`, and
   `reference/philosophy.md` for the principles behind the split ("if it could
-  work on another platform, it doesn't belong in a platform repo").
+  work on another platform, it doesn't belong in a platform repo"). The
+  public versions: https://crosspad.app/docs/concepts/architecture/ and
+  https://crosspad.app/docs/concepts/where-code-belongs/.
 - **crosspad-core/crosspad-gui are vendored in three separate, unlinked
   checkouts** (one per platform repo). A change in one does not propagate —
   `reference/repos.md` has the full warning and how to check which checkout
   a given build target actually compiles. Check this *before* concluding a
   change "isn't taking effect."
 - **You're often working across a hardware boundary, not just a software
-  one.** CrossPad_STM32_r20 (STM32) and platform-idf/ESP32-S3 (ESP32) are
+  one.** CrossPad_STM32_r2 (STM32) and platform-idf/ESP32-S3 (ESP32) are
   two separate MCUs — a symptom that looks like it's on "your" side may
   actually be owned by the other. If you're not sure which repo owns a
   symptom, check both repos' `CLAUDE.md` before fixing anything; guessing
@@ -39,7 +43,7 @@ across repos instead of raw shell.
 ## Build & test
 
 ```
-crosspad_build    platform=pc          # or platform=idf
+crosspad_build    platform=pc          # or platform=idf | platform=stm
 crosspad_test_run                      # build + run Catch2 suite (filter, list_only)
 crosspad_check    platform=pc          # health: stale exe, new sources, submodule drift
 ```
@@ -47,17 +51,19 @@ crosspad_check    platform=pc          # health: stale exe, new sources, submodu
 To verify on the **real device** (boot smoke after every flash, soak runs,
 audio/MIDI measurements, remote pad/app control over CDC/SysEx), see
 `reference/hil-testing.md` — including the USB-topology and codec-routing traps
-that repeatedly cost debugging sessions.
+that repeatedly cost debugging sessions. Crash triage on the board:
+`crosspad_diagnose_crash` (toolset `device`); the human version is
+https://crosspad.app/docs/how-to/debugging/.
 
 `crosspad_build` parses compiler output into a structured `errors[]` — read those
 rather than scrolling raw logs.
 
 ## Committing across repos
 
-`crosspad_commit` commits staged changes with correct multi-repo paths and refuses
+`crosspad_commit` (toolset `git`) commits staged changes with correct multi-repo paths and refuses
 on merge conflicts (never pushes). Use it instead of raw `git commit`.
 
 ## Real-time variable tracing
 
-For live RAM-variable plots on the STM32 board (CrossPad_STM32_r20), use the
+For live RAM-variable plots on the STM32 board (CrossPad_STM32_r2), use the
 **`swd-tracer`** skill (`crosspad_trace` tool) — not covered here.

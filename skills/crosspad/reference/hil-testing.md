@@ -1,8 +1,16 @@
 # HIL testing — hardware-in-the-loop on the real CrossPad
 
 The DUT is fully drivable over USB — flash, reset, press pads, load kits,
-start apps, reroute audio, measure — no physical presence needed. All scripts
-live in **platform-idf `tools/`** and exit 0 = PASS / 1 = FAIL / 2 = no device.
+start apps, reroute audio, measure — no physical presence needed. The tooling
+is **crosspad-hil** (CLI `crosspad-hil`; the MCP `hil` toolset drives the same
+daemon). platform-idf's `tools/hil_*.py` are deprecated shims over it. Every
+scenario exits 0 = PASS / 1 = firmware FAIL / 2 = bench problem (no device,
+port busy, missing extra).
+
+Human walkthrough (venv, doctor, bench lease, smoke, reports):
+https://crosspad.app/docs/how-to/hil-testing/. Scenario details and firmware
+traps: https://crosspad.app/docs/subsystems/hil-testing/. This page keeps the
+traps an agent needs at the bench.
 
 ## USB topology (read this first — it costs an hour when guessed)
 
@@ -10,8 +18,8 @@ The host sees **two USB devices**, and they behave differently:
 
 | Device | VID:PID | Carries | Gotchas |
 |--------|---------|---------|---------|
-| STM bridge "CrossPad MIDI+Serial" | `0483:5740` | ESP **console** (VCP), MIDI relay (`hw:3`) | Opening the VCP **pulses ESP reset** (bridge emulates esptool DTR/RTS). SysEx *requests* arrive through it, but **replies never come back this way**. |
-| ESP native "Crosspad" | `303a:3456` | CDC control channel, MIDI (`hw:4`), UAC2 in audio mode | Disappears during reset. SysEx **replies come out only here**. |
+| STM bridge "CrossPad MIDI+Serial" | `0483:5740` | ESP **console** (VCP), MIDI relay (ALSA card number varies; `hw:3` on the reference bench) | Opening the VCP **pulses ESP reset** (bridge emulates esptool DTR/RTS). SysEx *requests* arrive through it, but **replies never come back this way**. |
+| ESP native "Crosspad" | `303a:3456` | CDC control channel, MIDI (`hw:4` on the reference bench), UAC2 in audio mode | Disappears during reset. SysEx **replies come out only here**. |
 
 - **ttyACM numbers shuffle on every re-enumeration** — always re-detect by
   VID:PID, never hardcode `ttyACM0`.
@@ -31,15 +39,31 @@ crosspad-hil run smoke --holder <session>          # ~10 s: boot markers, no E-l
 crosspad_bench_release firmware_left="…"           # say what you left on the board
 ```
 
+From MCP only: `crosspad_toolsets action=enable toolset=hil`, then
+`crosspad_hil_run action=run scenario=smoke` (a task — follow it with
+`crosspad_task`; a pass reports `passed: true`). Without the bench tools
+(npm 10.3.0), use the `crosspad-hil bench` CLI.
+
 `smoke` is the gate after **every** flash. Its required markers are literal
 log strings — update them when firmware log text changes (no compile-time
 link). Exit code **0** passed, **1** firmware failed, **2** bench problem (no
 board, port busy, missing extra). `--json` prints what the daemon hands the
 MCP. The old `tools/hil_*.py` scripts are deprecated shims over this CLI.
-The CLI is a pip package; in this workspace it is the editable install at
-`~/GIT/crosspad-hil/.venv/bin/crosspad-hil`.
+The CLI is not on PyPI yet: `pip install "crosspad-hil[all] @ git+https://github.com/CrossPad/crosspad-hil"`
+(the one-line installer puts it in the project's `.venv`), or an editable
+side-by-side checkout (`$CROSSPAD_GIT_DIR/crosspad-hil/.venv/bin/crosspad-hil`).
+The MCP daemon runs it under `CROSSPAD_HIL_PYTHON` (`reference/install.md`).
+
+**Unattended bench:** never leave the board waiting for an on-screen tap.
+Keep `USB_GUARD 0` (`crosspad-hil cdc "USB_GUARD 0"`, saved on the board) so
+it never stops at the **USB serial mode?** prompt, and tick **Auto-accept
+updates** once so OTA needs no **Update** press.
 
 ## Scenario map
+
+The current catalog with parameters and defaults: `crosspad_hil_run action=list`
+or the `crosspad://hil/catalog` resource (`crosspad-hil run <name> --help` per
+scenario). The table below is the subset with bench lore attached.
 
 | `crosspad-hil run …` | What it proves |
 |---|---|
@@ -94,8 +118,11 @@ SysEx `07`/`08` for that.
   routing after device re-entry.
 - **Every ADC input except codec0 LINE2 is an electrical DAC loopback** — it
   will "hear" a working speaker even with the amplifier physically off.
-  codec0 LINE2 = the built-in mics. Acoustic claims need `--adc-input 2` plus
-  an `--amp-off` negative control (~13 dB ON/OFF delta on the mics).
+  codec0 LINE2 = the built-in mics. Acoustic claims go through
+  `speaker_acoustic`, whose default capture `--preset mics` is that input (any
+  other preset reads the DAC electrically), plus a negative control with the
+  amp forced off (~13 dB ON/OFF delta on the mics; the scenario has no flag for
+  it).
 - **Amp gate cache:** ESP writes `REG_CTL_AUDIO_EN` only on decision *change*;
   if the STM (or you, over SWD) moves the pin behind ESP's back, the cache is
   stale and no write ever comes. After forcing `AMP_EN` low in a test, restore
