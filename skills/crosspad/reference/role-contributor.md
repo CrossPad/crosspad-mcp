@@ -24,15 +24,17 @@ every build.
 
 ```
 src/
-  index.ts            — v9-style tools still registered inline, SERVER_INSTRUCTIONS,
+  index.ts            — v9-style tools still registered inline; five resources registered
+                        inline (crosspad://workspace, trace, apps/registry/*,
+                        apps/installed/*, symbols/{repo}/{symbol}); SERVER_INSTRUCTIONS,
                         stdio / HTTP transports, the start-up line
-  registry.ts         — registers everything: V10_MODULES (tools/*.ts), the built-in
-                        core tools, legacy index.ts tools, resources, prompts
+  registry.ts         — registers V10_MODULES (tools/*.ts), the built-in core tools,
+                        the legacy index.ts tools, the resources/ modules and prompts
   toolsets.ts         — TOOLSETS: which tool lives in which toolset (only `core` at start)
   policy/             — tiers.ts (read / stimulus / mutate-host / danger per tool),
                         policy.ts (strict / lab / readonly), confirm.ts (confirmation tokens)
   hil/                — client for the crosspad-hil daemon (`python -m crosspad_hil.serve`)
-  resources/          — crosspad:// resources (workspace, device, knowledge, introspect, skills)
+  resources/          — the other crosspad:// resources (device, knowledge, introspect, skills)
   prompts.ts          — MCP prompts
   config.ts           — per-repo env vars, dynamic repo discovery, IDF/MSVC/STM paths
   utils/
@@ -66,8 +68,9 @@ src/
    `register<Name>Tool(server, ctx)` (+ `<name>.test.ts`), with a zod schema
    (validate ranges/enums).
 2. Wire it up: an entry in `V10_MODULES` (`src/registry.ts`) **and** its name in
-   `TOOLSETS` (`src/toolsets.ts`) — a tool that is in no toolset is removed at
-   start. Give it a tier in `TOOL_TIERS` (`src/policy/tiers.ts`); an unlisted
+   `TOOLSETS` (`src/toolsets.ts`) — a `V10_MODULES` entry missing from `TOOLSETS`
+   fails `src/registry.test.ts`; a legacy index.ts tool in no toolset is removed
+   at start. Give it a tier in `TOOL_TIERS` (`src/policy/tiers.ts`); an unlisted
    tool is treated as `danger` (confirmation required). Set its MCP annotations
    (`readOnlyHint` for status/search/list, `destructiveHint` for mutating ops —
    clients use them to decide on confirmation prompts); most tools take them

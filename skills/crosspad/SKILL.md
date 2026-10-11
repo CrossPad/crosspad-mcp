@@ -47,7 +47,7 @@ still `$CROSSPAD_GIT_DIR/CrossPad_STM32_r20` (see `reference/install.md`).
 | Goal | Open |
 |------|------|
 | **First-time setup** of a CrossPad workstation (ESP-IDF, crosspad-hil, first build, first flash, smoke test) | Start here: https://crosspad.app/docs/start-here/ — the site owns the human setup path; don't re-derive it |
-| Install / configure the crosspad-mcp server (direct `node` launch, env vars, `.mcp.json`, plugin, Desktop) | `reference/install.md` — or run `scripts/setup.sh` for assisted install |
+| Install / configure the crosspad-mcp server (direct `node` launch, env vars, `.mcp.json`, plugin, Desktop) | `reference/install.md` (its `-s user` recipe is the recommended one). `scripts/setup.sh` assists, but registers for the current folder only (local scope) |
 | Understand the repos and what lives where | `reference/repos.md` |
 | Why the ecosystem is shaped this way — design principles, where code belongs | `reference/philosophy.md` |
 | I'm a **user** of the MCP/firmware (build sim, flash, manage apps, drive sim) | `reference/role-user.md` |

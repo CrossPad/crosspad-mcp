@@ -13,7 +13,7 @@ npm i --prefix ~/.local/crosspad-mcp crosspad-mcp-server@latest
 claude mcp add -s user crosspad -- node ~/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js
 ```
 
-Restart Claude Code and ask *"is my CrossPad connected, and is the toolchain set up?"* — that runs `crosspad_doctor`. The `crosspad` plugin (`/plugin marketplace add CrossPad/crosspad-mcp`, then `/plugin install crosspad@crosspad`) adds the bundled skills only, not a runnable server.
+Restart Claude Code and ask *"is my CrossPad connected, and is the toolchain set up?"* — that runs `crosspad_doctor`. For the bundled skills, symlink them from a clone; the `crosspad` plugin adds them too, but also a second server entry — see [Skills, and the plugin's second server](skills/crosspad/reference/install.md#skills-and-the-plugins-second-server).
 
 ## Configuration
 

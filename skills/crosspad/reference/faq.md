@@ -36,8 +36,8 @@ local copy and register it with `node` (`reference/install.md` → "Install"),
 then restart. (2) **Launched through `npx`** — npx's own startup output pollutes
 the stdio JSON-RPC channel; this is a launch-wrapper problem, not a server bug,
 so retrying npx won't help. Re-register with `node …/dist/index.js`. (3) **Only
-the plugin is installed** — it brings the skills but its server cannot start
-(no `dist/` in git). `bash scripts/doctor.sh` says whether *a* `crosspad` entry
+the plugin is installed** — from the GitHub marketplace it brings the skills,
+but its server cannot start (no `dist/` in git). `bash scripts/doctor.sh` says whether *a* `crosspad` entry
 is registered (it greps `claude mcp list`) and flags tracked `.mcp.json` files
 that still use `npx`; `claude mcp get crosspad` shows the actual launch command.
 User-facing fix: https://crosspad.app/docs/troubleshooting/#claude-shows-no-crosspad-tools
@@ -62,9 +62,11 @@ See `reference/repos.md` for which checkout each build target actually
 compiles; confirm your edit is in the right one before looking further.
 
 **Q: The HIL / device tools say crosspad-hil is missing.**
-A: The daemon runs under `python3` unless `CROSSPAD_HIL_PYTHON` (or `hil_python`
-in `~/.config/crosspad-mcp/config.json`) names an interpreter that has
-crosspad-hil — usually the project's `.venv/bin/python`. Re-register with
+A: The daemon's interpreter is, in order: `hil_python` in
+`~/.config/crosspad-mcp/config.json`, `CROSSPAD_HIL_PYTHON`, the tracer's
+Python (`pyocd_python` in that config, or `CROSSPAD_TRACE_PYTHON`), then
+`python3`. The first one set must have crosspad-hil — usually the project's
+`.venv/bin/python`. Re-register with
 `--env CROSSPAD_HIL_PYTHON=…` and restart; the doctor's `config_set
 key=hil_python` hint is rejected by `config_set`. Exact commands:
 https://crosspad.app/docs/troubleshooting/#hil-tools-say-crosspad-hil-is-missing
@@ -79,7 +81,8 @@ A: The PC simulator uses vcpkg. Set `VCPKG_ROOT` (default `~/vcpkg`, `C:/vcpkg` 
 on Windows also `VCVARSALL` for the MSVC environment.
 
 **Q: IDF build can't find ESP-IDF.**
-A: Set `IDF_PATH` (auto-detect tries `~/esp/esp-idf`). The build sources the IDF export env.
+A: Set `IDF_PATH` (auto-detect tries `~/esp/esp-idf`, then `~/esp/v5.5.4/esp-idf`,
+then `~/esp/v5.5/esp-idf`). The build sources the IDF export env.
 
 **Q: `npm test` / tooling fails with "styleText is not exported from node:util" (or similar).**
 A: System Node is too old. Use Node 22 (e.g. `nvm use 22`). Server runtime needs Node ≥ 18.

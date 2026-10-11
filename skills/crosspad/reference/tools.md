@@ -9,13 +9,24 @@ https://crosspad.app/docs/reference/mcp-tools/. Don't trust a tool count
 written anywhere — ask the server.
 
 All tools return `{ success, ...data, error? }`; failures also set `isError: true`.
-Read-only tools (status/search/list) skip client confirmation prompts. Danger-tier
-calls (flash, bootloader/DFU requests, SWD writes) answer
+Read-only tools (status/search/list) skip client confirmation prompts.
+Mutate-host tools (commit, submodule_update, apps_install/remove/update, clean
+builds) are marked destructive, so the client asks before running them.
+Danger-tier calls (flash, bootloader/DFU requests, SWD writes) answer
 `resultType="confirmation_required"` with a token valid for 120 s: pass that token
 and summary to `crosspad_confirm` right away (the client shows its own permission
-prompt). `--read-only` removes every writing tool. Long jobs (build, flash,
-hil_run, capture, stimulus, submodule_update) return a `task_<n>` handle:
-`crosspad_task action=status|wait|cancel|list`.
+prompt). `--read-only` removes every writing tool. `crosspad_flash` and
+`crosspad_hil_run` return a `task_<n>` handle (`crosspad_task
+action=status|wait|cancel|list`); builds and tests stream progress and return
+inline.
+
+**Version check.** `crosspad_confirm`, `crosspad_hil_triage` and the three
+`crosspad_bench_*` tools exist on master only; the published npm
+`crosspad-mcp-server@latest` (10.3.0) has none of them. On 10.3.0, confirm a
+danger-tier call by re-issuing the identical call with `confirm_token="<token>"`
+(the result's `hint` says so), use the `crosspad-hil bench` CLI for the lease, and
+skip triage — or run a build of master (`reference/install.md` → "Developing
+crosspad-mcp itself"). The start-up line on stderr names the version.
 
 ## core — always on
 | Tool | Use |
@@ -37,8 +48,7 @@ hil_run, capture, stimulus, submodule_update) return a `task_<n>` handle:
 
 Board-touching tools refuse with `BENCH_BUSY` while another session holds the
 board. CLI and scripts: `crosspad-hil bench claim|release|status --holder NAME`
-(or `CROSSPAD_BENCH_HOLDER`). The bench tools are on master; the published npm
-10.3.0 has none, so with that server run the `crosspad-hil bench` CLI instead.
+(or `CROSSPAD_BENCH_HOLDER`). Not in npm 10.3.0 — see "Version check" above.
 
 ## sim — PC simulator
 | Tool | Use |
@@ -57,7 +67,7 @@ board. CLI and scripts: `crosspad-hil bench claim|release|status --holder NAME`
 | Tool | Use |
 |------|-----|
 | `crosspad_cdc` | Typed CDC verbs (app, kit, pad, encoder, LED, memory, audio, BLE, system) or a raw command |
-| `crosspad_console` | STM bridge console: open, read, expect, reset, close |
+| `crosspad_console` | STM bridge console: open, read, expect, reset, snapshot, close |
 | `crosspad_ui` | Drive the device UI by snapshot refs |
 | `crosspad_midi` | `target: sim` + `type` (note_on/off, cc, program_change), or `target: device` + `action` (note, sysex, echo_rtt, query_route). Lives in `device` even for the sim |
 | `crosspad_usb_mode` | Read/switch USB profile (default = MIDI + CDC, audio = MIDI + UAC2 — no CDC) |
@@ -68,7 +78,7 @@ board. CLI and scripts: `crosspad-hil bench claim|release|status --holder NAME`
 | Tool | Use |
 |------|-----|
 | `crosspad_hil_run` | List/run crosspad-hil scenarios as a task (see `reference/hil-testing.md`) |
-| `crosspad_hil_triage` | Advisory classification of a finished report (sends it to an external API; needs a key) |
+| `crosspad_hil_triage` | Advisory classification of a finished report (sends it to an external API; needs a key; master only) |
 | `crosspad_capture` / `crosspad_analyze` | Record through the board's UAC2 endpoint / offline WAV verdicts |
 | `crosspad_stimulus` | Play the pads at a rate or timed pattern |
 | `crosspad_ble` | This computer's Bluetooth against the board's BLE MIDI |
@@ -114,6 +124,7 @@ board. CLI and scripts: `crosspad-hil bench claim|release|status --holder NAME`
 | `crosspad://cdc`, `crosspad://sysex`, `crosspad://hil/catalog` | CDC verb, SysEx and HIL scenario catalogs |
 | `crosspad://apps/registry/<platform>` | Raw `app-registry.json` per platform |
 | `crosspad://apps/installed/<platform>` | Raw installed `apps.json` per platform |
+| `crosspad://apps/registered/idf` | Apps the firmware will register, including installed components |
 | `crosspad://symbols/{repo}/{symbol}` | Resolve one symbol in `<repo>` (or `all`) |
 
 The rest (`trace`, `events`, `settings/schema`, `features`, console log,

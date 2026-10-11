@@ -106,7 +106,9 @@ fixes: https://crosspad.app/docs/troubleshooting/#mcp. Every other variant
 
 ### Alternative: `.mcp.json` in your project
 
-Add to your repo root — Claude Code picks it up automatically:
+Add to your repo root — Claude Code picks it up automatically. A tracked file
+is shared with everyone who clones the repo, so it carries no personal paths
+(`${HOME}` is expanded per user; nested `${A:-${B}}` is not):
 
 ```json
 {
@@ -114,15 +116,14 @@ Add to your repo root — Claude Code picks it up automatically:
     "crosspad": {
       "type": "stdio",
       "command": "node",
-      "args": ["${HOME}/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js"],
-      "env": {
-        "CROSSPAD_IDF_ROOT": "/path/to/platform-idf",
-        "CROSSPAD_PC_ROOT": "/path/to/crosspad-pc"
-      }
+      "args": ["${HOME}/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js"]
     }
   }
 }
 ```
+
+Per-machine repo paths go in local scope, which wins over the file:
+`claude mcp add -s local crosspad --env CROSSPAD_IDF_ROOT=/path/to/platform-idf -- node ~/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js`.
 
 ### Alternative: Claude Desktop
 
@@ -163,18 +164,13 @@ This package ships three Claude Code skills (bundled in the `crosspad` plugin):
 - **`before-after`** — proof that a change did or did not move the UI or cost
   frames: per-app simulator screenshots plus an `LVGL_STATS` benchmark on the board.
 
-Install them as a plugin:
-
-```
-/plugin marketplace add CrossPad/crosspad-mcp     # or a local path to this repo
-/plugin install crosspad@crosspad
-```
-
-The plugin gives you the skills only: its `.mcp.json` starts
-`${CLAUDE_PLUGIN_ROOT}/dist/index.js`, and `dist/` is not in git, so register
-the server with `node` as in [Install](#install). The server also serves the
-skill pages as `skill://` resources, so a client without the plugin still gets
-them.
+Install them by symlinking `skills/<name>` into `~/.claude/skills/`, or as a
+plugin (`/plugin marketplace add CrossPad/crosspad-mcp`, then
+`/plugin install crosspad@crosspad`). The plugin also adds its own `crosspad`
+server entry, which next to a `node` registration means a failed or a second
+server — how to avoid that:
+[Skills, and the plugin's second server](../skills/crosspad/reference/install.md#skills-and-the-plugins-second-server).
+The server also serves the skill pages as `skill://` resources.
 
 ## Tools + resources
 
@@ -276,16 +272,10 @@ Non-halting real-time trace of STM32G0B1 firmware variables via ST-Link — the 
 (`skills/swd-tracer/`) + plugin manifest so a fresh agent automatically
 understands the tracer and can walk you through configuring every environment
 (pyOCD venv, config paths, udev rules, the Debug ELF) and the
-doctor→symbols→start→read→ui→stop workflow. Install it as a plugin:
-
-```
-/plugin marketplace add CrossPad/crosspad-mcp     # or a local path to this repo
-/plugin install crosspad@crosspad
-```
-
-The plugin bundles BOTH this MCP server and the skill, so a new machine gets the
-tracer end-to-end in one install. (Already running the server? The skill alone
-also lives at `skills/swd-tracer/SKILL.md`.)
+doctor→symbols→start→read→ui→stop workflow. The skill lives at
+`skills/swd-tracer/SKILL.md`; install it with the other skills (symlink or
+plugin — see [Skills](#skills-start-here)). Register the server itself with
+`node` as in [Install](#install).
 
 **Prerequisites** (the skill's `scripts/setup-venv.sh` automates this)
 
@@ -481,6 +471,8 @@ Each repo path is individually configurable via env vars. If not set, falls back
 | `CROSSPAD_HIL_PYTHON` | the tracer's Python, else `python3` | Interpreter with crosspad-hil installed, for the daemon |
 | `CROSSPAD_TOOLSETS` | — | Extra toolsets at start (same as `--toolsets`) |
 | `CROSSPAD_MCP_TOKEN` | generated per run | Bearer token for the HTTP transport |
+| `CROSSPAD_MCP_CONFIRM` | — | `token` forces the confirm-token round trip even when the client advertises elicitation forms |
+| `CROSSPAD_CLANGD` | first `clangd*` on `PATH` | clangd binary for `crosspad_symbol` |
 | `IDF_PATH` | auto-detected (`~/esp/esp-idf`, then `~/esp/v5.5.4/esp-idf`, `~/esp/v5.5/esp-idf`) | ESP-IDF SDK path |
 | `VCPKG_ROOT` | `~/vcpkg` (Linux) / `C:/vcpkg` (Win) | vcpkg installation |
 | `VCVARSALL` | VS2022 default | MSVC vcvarsall.bat (Windows only) |
@@ -493,7 +485,7 @@ Repos are discovered dynamically — only repos that exist on disk appear in too
 
 **stdio (default)** — `node <install>/dist/index.js`. Standard MCP transport for Claude Code / Claude Desktop / IDE plugins.
 
-**HTTP (`--http <port>`)** — `node <install>/dist/index.js --http 3000` (bare `--http` = 3000). Exposes a Streamable HTTP endpoint at `http://127.0.0.1:<port>/mcp`, loopback only, for remote dev boxes (over an SSH tunnel) or browser-based MCP clients. Every request needs `Authorization: Bearer <token>`: set `CROSSPAD_MCP_TOKEN`, or the server generates one and prints it on stderr. Stateful sessions (`Mcp-Session-Id` header echoed after `initialize`). One transport, multi-session multiplexed internally.
+**HTTP (`--http <port>`)** — `node <install>/dist/index.js --http 3000`. Exposes a Streamable HTTP endpoint at `http://127.0.0.1:<port>/mcp` for MCP clients on the same machine, or a remote dev box through an SSH tunnel. Loopback only, `Host` must be `127.0.0.1`, `localhost` or `[::1]` with the port (DNS-rebinding protection), and no CORS headers, so a page on another origin cannot reach it. `--http` without a number means 3000 only as the last argument (`--http --read-only` exits with "Invalid --http port"). Every request needs `Authorization: Bearer <token>`: set `CROSSPAD_MCP_TOKEN`, or the server generates one and prints it on stderr. Stateful sessions (`Mcp-Session-Id` header echoed after `initialize`). One transport, multi-session multiplexed internally.
 
 ```bash
 # Minimal HTTP smoke test:
@@ -529,7 +521,12 @@ npm run test:watch  # tests in watch mode
 
 ```
 src/
-  index.ts              — 30 focused tool registrations (one tool per action) + resources
+  index.ts              — v9-style tools registered inline, the workspace/trace/apps/symbols
+                          resources, SERVER_INSTRUCTIONS, stdio + HTTP transports
+  registry.ts           — registers the v10 tool modules (V10_MODULES), the built-in core
+                          tools, the legacy tools, the other resources and the prompts
+  toolsets.ts           — TOOLSETS: which tool lives in which toolset
+  policy/               — tiers, policy modes, confirmation tokens
   config.ts             — per-repo env vars, dynamic discovery, IDF/MSVC/STM paths
   utils/                — platform-aware exec (MSVC/IDF/shell), git helpers,
                           TCP client for the simulator (localhost:19840)
@@ -545,7 +542,7 @@ src/
     architecture.ts / symbols.ts             — interfaces, REGISTER_APP scan, symbol search
     test.ts               — Catch2 test runner
     *.test.ts             — unit tests alongside each module
-skills/                 — bundled Claude Code skills (crosspad, swd-tracer)
+skills/                 — bundled Claude Code skills (crosspad, swd-tracer, before-after)
 tracer/                 — SWD tracer runtime (pyOCD host script + protocol docs)
 vscode-extension/       — companion VS Code extension
 ```
