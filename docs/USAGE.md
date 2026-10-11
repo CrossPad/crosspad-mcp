@@ -2,52 +2,128 @@
 
 The complete reference for `crosspad-mcp-server`: every install path, every
 toolset and tool, resources, prompts, configuration, transports and the v10
-migration table. If you are new here, start with the [README](../README.md) —
-it explains what this thing is for before you meet 52 tools.
+migration table. If you are new here, start with
+[What you can do with it](#what-you-can-do-with-it) below. The CrossPad SDK
+docs are at https://crosspad.app/docs/; their
+[MCP tools page](https://crosspad.app/docs/reference/mcp-tools/) is the public
+version of the tool list here.
 
 **52 tools in 8 toolsets (12 visible at start) · 15 resources · 6 prompts · 3 bundled Claude Code skills · stdio & HTTP transports**
 
-**Contents:** [Install](#install) · [Skills](#skills-start-here) ·
+**Contents:** [What you can do with it](#what-you-can-do-with-it) ·
+[Install](#install) · [Skills](#skills-start-here) ·
 [Tools + resources](#tools--resources) · [Configuration](#configuration) ·
 [Transport](#transport) · [How it works](#how-it-works) ·
 [Development](#development)
 
+## What you can do with it
+
+**Talk to your CrossPad. Let Claude do the toolchain.** You say *"flash the
+new build and check that it boots"*; the server runs the ESP-IDF build, asks
+you to confirm the flash, opens the console, runs the smoke scenario and tells
+you what happened — with the hardware traps already built in, so you don't
+have to remember which serial port reboots the board when you open it.
+
+<p align="center">
+  <img src="img/hero.svg" alt="You prompt Claude Code, Claude Code talks MCP to crosspad-mcp, crosspad-mcp drives the PC simulator over TCP, the CrossPad board over USB and the STM32 co-processor over ST-Link" width="900">
+</p>
+
+Every row is a real prompt. The tools named underneath are what runs — you
+never have to call them yourself.
+
+| Say this… | …and this happens |
+|---|---|
+| **"Build the firmware and flash it over OTA."** | `crosspad_build platform=idf` streams the build, `crosspad_flash transport=ota` asks for confirmation, then streams the upload. New app directories are detected and the `fullclean` is done for you. |
+| **"Show me what's on the simulator screen."** | `crosspad_run` launches the PC sim, `crosspad_screenshot` returns the LCD as an image Claude can actually look at. Then *"press pad 5"*, *"turn the encoder left twice"* — `crosspad_input`. |
+| **"Play a drum pattern on the pads and record what comes out."** | `crosspad_stimulus` hits the pads with real timings, `crosspad_capture` records the board through its own USB-audio endpoint, `crosspad_analyze` gives a verdict (onsets, clicks, silence, velocity curve). |
+| **"Why did it crash?"** | `crosspad_diagnose_crash` — reset reason, registers, backtrace decoded against the ELF that is *actually* flashed, heap after restart. One call. |
+| **"Watch the battery charger state machine while I plug the cable in."** | `crosspad_trace` polls STM32 variables live over ST-Link without halting the core, and plots them. |
+| **"Install the sampler app and rebuild."** | `crosspad_apps_install app_name=sampler` adds the submodule from the [crosspad-apps](https://github.com/CrossPad/crosspad-apps) registry, then a clean build. |
+| **"Where is `IPadLogicHandler` implemented?"** | `crosspad_interface_implementations` across every repo of the ecosystem, or `crosspad_symbol` for clangd-precise definitions and call hierarchies. |
+| **"Is my board even connected?"** | `crosspad_devices` and `crosspad_doctor` — which USB mode it is in, which ports belong to it, what is missing on the host, and how to fix each thing. |
+
+Only the `core` toolset is visible when the server starts, so the tool list
+stays small. Claude enables the others as the conversation needs them — or you
+start the server with `--toolsets device,sim`.
+
+```mermaid
+flowchart LR
+    core["core · always on<br/>devices · doctor · snapshot<br/>build · flash · repo status · tasks<br/>bench lease"]
+    sim["sim<br/>PC simulator: run, screenshot,<br/>input, settings, tests"]
+    device["device<br/>the board over USB: console,<br/>CDC verbs, UI driving, MIDI, USB mode"]
+    hil["hil<br/>scenarios, pad stimulus,<br/>audio capture + analysis, BLE"]
+    code["code<br/>symbols, interfaces,<br/>docs search"]
+    git["git<br/>submodule drift,<br/>update, commit"]
+    apps["apps<br/>crosspad-apps registry"]
+    trace["trace<br/>SWD live variables"]
+    core --> sim & device & code & git & apps
+    device --> hil
+    core --> trace
+```
+
+Anything that writes to a device or your host is tiered. Flashing, DFU and
+SWD writes come back as *confirmation required* first; `--read-only` removes
+every writing tool from the list entirely. Long operations (builds, flashes,
+scenarios) run as tasks you can check on, wait for or cancel.
+
+**Who is it for**
+
+- **You build and drive CrossPad firmware** — mostly the simulator, sometimes
+  the board. Start with the [user guide](../skills/crosspad/reference/role-user.md).
+- **You work on the firmware itself** — flash, console, HIL scenarios, crash
+  diagnosis, SWD. Read the [firmware developer guide](../skills/crosspad/reference/role-fw-dev.md)
+  and [HIL testing](../skills/crosspad/reference/hil-testing.md).
+- **You want to extend this server** — the
+  [contributor guide](../skills/crosspad/reference/role-contributor.md) and the
+  [Development section](#development).
+
 ## Install
 
+Install a local copy and launch it with `node`. Never launch it through `npx`:
+npx's own startup output breaks the stdio channel
+(`MCP error -32000: Connection closed`).
+
 ```bash
-claude mcp add crosspad -- npx -y crosspad-mcp-server
+npm i --prefix ~/.local/crosspad-mcp crosspad-mcp-server@latest
+claude mcp add -s user crosspad -- node ~/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js
 ```
 
 Or with custom repo paths:
 
 ```bash
-claude mcp add crosspad \
+claude mcp add -s user crosspad \
   --env CROSSPAD_IDF_ROOT=/path/to/platform-idf \
   --env CROSSPAD_PC_ROOT=/path/to/crosspad-pc \
-  -- npx -y crosspad-mcp-server
+  -- node ~/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js
 ```
 
-That's it. Restart Claude Code and the tools are available.
+Restart Claude Code and the tools are available. Re-run the `npm i` line to
+update. On Windows use `$HOME\.local\crosspad-mcp` in both paths. Step by step,
+with the crosspad-hil setting: https://crosspad.app/docs/how-to/hil-testing/#from-claude-code-optional;
+fixes: https://crosspad.app/docs/troubleshooting/#mcp. Every other variant
+(developing this repo, tracked `.mcp.json`, scopes) is in
+[`skills/crosspad/reference/install.md`](../skills/crosspad/reference/install.md).
 
 ### Alternative: `.mcp.json` in your project
 
-Add to your repo root — Claude Code picks it up automatically:
+Add to your repo root — Claude Code picks it up automatically. A tracked file
+is shared with everyone who clones the repo, so it carries no personal paths
+(`${HOME}` is expanded per user; nested `${A:-${B}}` is not):
 
 ```json
 {
   "mcpServers": {
     "crosspad": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "crosspad-mcp-server"],
-      "env": {
-        "CROSSPAD_IDF_ROOT": "/path/to/platform-idf",
-        "CROSSPAD_PC_ROOT": "/path/to/crosspad-pc"
-      }
+      "command": "node",
+      "args": ["${HOME}/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js"]
     }
   }
 }
 ```
+
+Per-machine repo paths go in local scope, which wins over the file:
+`claude mcp add -s local crosspad --env CROSSPAD_IDF_ROOT=/path/to/platform-idf -- node ~/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js`.
 
 ### Alternative: Claude Desktop
 
@@ -57,8 +133,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "crosspad": {
-      "command": "npx",
-      "args": ["-y", "crosspad-mcp-server"],
+      "command": "node",
+      "args": ["/absolute/path/to/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js"],
       "env": {
         "CROSSPAD_IDF_ROOT": "/path/to/platform-idf"
       }
@@ -79,7 +155,7 @@ This package ships three Claude Code skills (bundled in the `crosspad` plugin):
   - `reference/philosophy.md` — the CrossPad design principles ("write once, run
     everywhere", thin platform repos) and where code belongs
   - `reference/hil-testing.md` — hardware-in-the-loop testing on the real device:
-    the flash→smoke workflow, every `tools/hil_*.py` script, the CDC/SysEx remote
+    the flash→smoke workflow, the crosspad-hil scenario map, the CDC/SysEx remote
     control surface, and the hardware traps that cost real debugging sessions
   - `reference/repos.md`, `reference/tools.md`, `reference/install.md`,
     `reference/faq.md`, per-role guides
@@ -88,12 +164,13 @@ This package ships three Claude Code skills (bundled in the `crosspad` plugin):
 - **`before-after`** — proof that a change did or did not move the UI or cost
   frames: per-app simulator screenshots plus an `LVGL_STATS` benchmark on the board.
 
-Install them as a plugin:
-
-```
-/plugin marketplace add CrossPad/crosspad-mcp     # or a local path to this repo
-/plugin install crosspad@crosspad
-```
+Install them by symlinking `skills/<name>` into `~/.claude/skills/`, or as a
+plugin (`/plugin marketplace add CrossPad/crosspad-mcp`, then
+`/plugin install crosspad@crosspad`). The plugin also adds its own `crosspad`
+server entry, which next to a `node` registration means a failed or a second
+server — how to avoid that:
+[Skills, and the plugin's second server](../skills/crosspad/reference/install.md#skills-and-the-plugins-second-server).
+The server also serves the skill pages as `skill://` resources.
 
 ## Tools + resources
 
@@ -195,16 +272,10 @@ Non-halting real-time trace of STM32G0B1 firmware variables via ST-Link — the 
 (`skills/swd-tracer/`) + plugin manifest so a fresh agent automatically
 understands the tracer and can walk you through configuring every environment
 (pyOCD venv, config paths, udev rules, the Debug ELF) and the
-doctor→symbols→start→read→ui→stop workflow. Install it as a plugin:
-
-```
-/plugin marketplace add CrossPad/crosspad-mcp     # or a local path to this repo
-/plugin install crosspad@crosspad
-```
-
-The plugin bundles BOTH this MCP server and the skill, so a new machine gets the
-tracer end-to-end in one install. (Already running the server? The skill alone
-also lives at `skills/swd-tracer/SKILL.md`.)
+doctor→symbols→start→read→ui→stop workflow. The skill lives at
+`skills/swd-tracer/SKILL.md`; install it with the other skills (symlink or
+plugin — see [Skills](#skills-start-here)). Register the server itself with
+`node` as in [Install](#install).
 
 **Prerequisites** (the skill's `scripts/setup-venv.sh` automates this)
 
@@ -395,7 +466,14 @@ Each repo path is individually configurable via env vars. If not set, falls back
 | `CROSSPAD_ARDUINO_ROOT` | `$GIT_DIR/ESP32-S3` | Arduino platform repo |
 | `CROSSPAD_CORE_ROOT` | `$GIT_DIR/crosspad-core` | crosspad-core (standalone) |
 | `CROSSPAD_GUI_ROOT` | `$GIT_DIR/crosspad-gui` | crosspad-gui (standalone) |
-| `IDF_PATH` | auto-detected (`~/esp/esp-idf`) | ESP-IDF SDK path |
+| `CROSSPAD_STM_ROOT` | `$GIT_DIR/CrossPad_STM32_r20` | STM32 firmware. The GitHub repo is `CrossPad_STM32_r2`; set this if you cloned it under that name |
+| `CROSSPAD_HIL_ROOT` | `$GIT_DIR/crosspad-hil` | crosspad-hil checkout |
+| `CROSSPAD_HIL_PYTHON` | the tracer's Python, else `python3` | Interpreter with crosspad-hil installed, for the daemon |
+| `CROSSPAD_TOOLSETS` | — | Extra toolsets at start (same as `--toolsets`) |
+| `CROSSPAD_MCP_TOKEN` | generated per run | Bearer token for the HTTP transport |
+| `CROSSPAD_MCP_CONFIRM` | — | `token` forces the confirm-token round trip even when the client advertises elicitation forms |
+| `CROSSPAD_CLANGD` | first `clangd*` on `PATH` | clangd binary for `crosspad_symbol` |
+| `IDF_PATH` | auto-detected (`~/esp/esp-idf`, then `~/esp/v5.5.4/esp-idf`, `~/esp/v5.5/esp-idf`) | ESP-IDF SDK path |
 | `VCPKG_ROOT` | `~/vcpkg` (Linux) / `C:/vcpkg` (Win) | vcpkg installation |
 | `VCVARSALL` | VS2022 default | MSVC vcvarsall.bat (Windows only) |
 | `CROSSPAD_REMOTE_PORT` | `19840` | TCP port for simulator remote control |
@@ -405,14 +483,15 @@ Repos are discovered dynamically — only repos that exist on disk appear in too
 
 ## Transport
 
-**stdio (default)** — `npx crosspad-mcp-server`. Standard MCP transport for Claude Code / Claude Desktop / IDE plugins.
+**stdio (default)** — `node <install>/dist/index.js`. Standard MCP transport for Claude Code / Claude Desktop / IDE plugins.
 
-**HTTP (`--http <port>`)** — `npx crosspad-mcp-server --http 3000`. Exposes a Streamable HTTP endpoint at `http://localhost:<port>/mcp` for remote dev boxes or browser-based MCP clients. Stateful sessions (`Mcp-Session-Id` header echoed after `initialize`). One transport, multi-session multiplexed internally.
+**HTTP (`--http <port>`)** — `node <install>/dist/index.js --http 3000`. Exposes a Streamable HTTP endpoint at `http://127.0.0.1:<port>/mcp` for MCP clients on the same machine, or a remote dev box through an SSH tunnel. Loopback only, `Host` must be `127.0.0.1`, `localhost` or `[::1]` with the port (DNS-rebinding protection), and no CORS headers, so a page on another origin cannot reach it. `--http` without a number means 3000 only as the last argument (`--http --read-only` exits with "Invalid --http port"). Every request needs `Authorization: Bearer <token>`: set `CROSSPAD_MCP_TOKEN`, or the server generates one and prints it on stderr. Stateful sessions (`Mcp-Session-Id` header echoed after `initialize`). One transport, multi-session multiplexed internally.
 
 ```bash
 # Minimal HTTP smoke test:
-npx crosspad-mcp-server --http 3000
-curl -X POST http://localhost:3000/mcp \
+CROSSPAD_MCP_TOKEN=secret node ~/.local/crosspad-mcp/node_modules/crosspad-mcp-server/dist/index.js --http 3000
+curl -X POST http://127.0.0.1:3000/mcp \
+  -H "Authorization: Bearer secret" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"x","version":"0"}}}'
@@ -442,7 +521,12 @@ npm run test:watch  # tests in watch mode
 
 ```
 src/
-  index.ts              — 30 focused tool registrations (one tool per action) + resources
+  index.ts              — v9-style tools registered inline, the workspace/trace/apps/symbols
+                          resources, SERVER_INSTRUCTIONS, stdio + HTTP transports
+  registry.ts           — registers the v10 tool modules (V10_MODULES), the built-in core
+                          tools, the legacy tools, the other resources and the prompts
+  toolsets.ts           — TOOLSETS: which tool lives in which toolset
+  policy/               — tiers, policy modes, confirmation tokens
   config.ts             — per-repo env vars, dynamic discovery, IDF/MSVC/STM paths
   utils/                — platform-aware exec (MSVC/IDF/shell), git helpers,
                           TCP client for the simulator (localhost:19840)
@@ -458,7 +542,7 @@ src/
     architecture.ts / symbols.ts             — interfaces, REGISTER_APP scan, symbol search
     test.ts               — Catch2 test runner
     *.test.ts             — unit tests alongside each module
-skills/                 — bundled Claude Code skills (crosspad, swd-tracer)
+skills/                 — bundled Claude Code skills (crosspad, swd-tracer, before-after)
 tracer/                 — SWD tracer runtime (pyOCD host script + protocol docs)
 vscode-extension/       — companion VS Code extension
 ```

@@ -14,14 +14,29 @@ npm test             # vitest run
 npm run test:watch   # vitest watch
 ```
 
-Node ≥ 18; use Node 22 if tooling complains about missing `node:` exports.
+Node ≥ 18 runs the server; CI builds and tests on Node 20 and 22 — use Node 22
+if tooling complains about missing `node:` exports. To run your checkout from
+Claude Code, register `node <checkout>/dist/index.js` in local scope
+(`reference/install.md` → "Developing crosspad-mcp itself") and restart after
+every build.
 
 ## Layout
 
 ```
 src/
-  index.ts            — tool registrations (one tool per action) + SERVER_INSTRUCTIONS
-  config.ts           — per-repo env vars, dynamic repo discovery, IDF/MSVC paths
+  index.ts            — v9-style tools still registered inline; five resources registered
+                        inline (crosspad://workspace, trace, apps/registry/*,
+                        apps/installed/*, symbols/{repo}/{symbol}); SERVER_INSTRUCTIONS,
+                        stdio / HTTP transports, the start-up line
+  registry.ts         — registers V10_MODULES (tools/*.ts), the built-in core tools,
+                        the legacy index.ts tools, the resources/ modules and prompts
+  toolsets.ts         — TOOLSETS: which tool lives in which toolset (only `core` at start)
+  policy/             — tiers.ts (read / stimulus / mutate-host / danger per tool),
+                        policy.ts (strict / lab / readonly), confirm.ts (confirmation tokens)
+  hil/                — client for the crosspad-hil daemon (`python -m crosspad_hil.serve`)
+  resources/          — the other crosspad:// resources (device, knowledge, introspect, skills)
+  prompts.ts          — MCP prompts
+  config.ts           — per-repo env vars, dynamic repo discovery, IDF/MSVC/STM paths
   utils/
     exec.ts           — platform-aware command execution (MSVC/IDF/shell)
     git.ts            — repo status, submodule pins
@@ -33,6 +48,9 @@ src/
     build-check.ts    — build health check
     diff-core.ts      — submodule drift analysis
     idf-build.ts      — ESP-IDF build
+    stm-build.ts / idf-flash.ts / stm-flash.ts / flash.ts — STM build, ESP and STM flashing
+    devices.ts / cdc.ts / console.ts / ui.ts / … — device tools over the daemon
+    hil-run.ts / capture.ts / stimulus.ts         — HIL scenarios and measurements
     input.ts          — simulator input events
     log.ts            — log capture
     repos.ts          — multi-repo git status
@@ -46,18 +64,31 @@ src/
 
 ## Adding a tool
 
-1. Implement the logic in a focused `src/tools/<name>.ts` (+ `<name>.test.ts`).
-2. Register it in `src/index.ts` with a zod schema (validate ranges/enums) and the
-   right MCP annotations: `readOnlyHint` for status/search/list, `destructiveHint`
-   for mutating ops (clients use these to decide on confirmation prompts).
+1. Implement it in a focused `src/tools/<name>.ts` exporting
+   `register<Name>Tool(server, ctx)` (+ `<name>.test.ts`), with a zod schema
+   (validate ranges/enums).
+2. Wire it up: an entry in `V10_MODULES` (`src/registry.ts`) **and** its name in
+   `TOOLSETS` (`src/toolsets.ts`) — a `V10_MODULES` entry missing from `TOOLSETS`
+   fails `src/registry.test.ts`; a legacy index.ts tool in no toolset is removed
+   at start. Give it a tier in `TOOL_TIERS` (`src/policy/tiers.ts`); an unlisted
+   tool is treated as `danger` (confirmation required). Set its MCP annotations
+   (`readOnlyHint` for status/search/list, `destructiveHint` for mutating ops —
+   clients use them to decide on confirmation prompts); most tools take them
+   from the tier with `annotationsFor(tierOf(name, args))`.
 3. Return the uniform envelope `{ success: boolean, ...data, error?: string }`; set
    `isError: true` on failure so clients route errors distinctly.
-4. If the tool changes how a user should work, update `SERVER_INSTRUCTIONS` and the
-   relevant `skills/crosspad/reference/*.md`.
-5. `npm run build` then `npm test`.
+4. Name it in `docs/USAGE.md` (toolset table + banner count) — `src/release.test.ts`
+   fails otherwise. If it changes how a user should work, update
+   `SERVER_INSTRUCTIONS` and the relevant `skills/crosspad/reference/*.md`.
+5. The site's tool list (https://crosspad.app/docs/reference/mcp-tools/) is
+   written by hand in CrossPad/crosspad-docs: open an issue there for every
+   tool added, removed or renamed.
+6. `npm run build` then `npm test`.
 
 ## Conventions
 
 - One tool = one action with a strict schema. Stream long-running output via MCP
-  logging (build/test/log) so the client sees progress.
+  logging (build/test/log) so the client sees progress; long jobs return a task
+  (`crosspad_task`).
 - Keep files focused; mirror the existing module-per-concern split.
+- A change that breaks a docs page (command, output, path) opens an issue in CrossPad/crosspad-docs.

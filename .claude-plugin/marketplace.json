@@ -7,7 +7,7 @@
     {
       "name": "crosspad",
       "source": "./",
-      "description": "crosspad-mcp server + the `crosspad` onboarding skill (ecosystem map, install/config, per-role guides) and the `swd-tracer` skill (STM32G0B1 real-time SWD tracing over ST-Link)."
+      "description": "Claude Code skills for crosspad-mcp (register the server itself with node): the `crosspad` onboarding skill (ecosystem map, install/config, per-role guides), the `swd-tracer` skill (STM32G0B1 real-time SWD tracing over ST-Link) and the `before-after` skill (UI and frame-time regressions)."
     }
   ]
 }

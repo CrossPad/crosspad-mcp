@@ -30,7 +30,7 @@
   <rect class="hub" x="440" y="100" width="180" height="120"/>
   <text class="t" x="530" y="132" text-anchor="middle">crosspad-mcp</text>
   <text class="s" x="530" y="156" text-anchor="middle">build · flash · drive · test</text>
-  <text class="s" x="530" y="174" text-anchor="middle">47 tools, 8 toolsets</text>
+  <text class="s" x="530" y="174" text-anchor="middle">toolsets on demand</text>
   <text class="s" x="530" y="192" text-anchor="middle">confirms before it flashes</text>
 
   <!-- Targets -->
