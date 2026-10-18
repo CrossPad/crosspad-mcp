@@ -417,11 +417,25 @@ export interface KillOptions {
 
 /** /proc/<pid>/exe, canonical and without the " (deleted)" suffix; null when gone. */
 function exeOf(pid: number): string | null {
-  try {
-    return canonicalize(stripDeletedSuffix(fs.readlinkSync(`/proc/${pid}/exe`)));
-  } catch {
-    return null;
+  if (process.platform === "linux") {
+    try {
+      return canonicalize(stripDeletedSuffix(fs.readlinkSync(`/proc/${pid}/exe`)));
+    } catch {
+      return null;
+    }
   }
+  // No /proc: ask the OS for the process's image. Unknown means null, and
+  // null means "not ours" below -- a PID from the caller is never signalled
+  // on trust.
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === "win32") {
+    const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8" });
+    const m = r.status === 0 ? /^"([^"]+)"/.exec((r.stdout ?? "").trim()) : null;
+    return m ? m[1] : null;
+  }
+  const r = spawnSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" });
+  const name = r.status === 0 ? (r.stdout ?? "").trim() : "";
+  return name || null;
 }
 
 /**
@@ -430,7 +444,6 @@ function exeOf(pid: number): string | null {
  * compared, but a port held by some other program must never be signalled.
  */
 function isSimProcess(pid: number): boolean {
-  if (process.platform !== "linux") return true; // no /proc to ask; the port/PID came from lsof or the caller
   const exe = exeOf(pid);
   return exe !== null && path.basename(exe).replace(/\.exe$/i, "") === path.basename(BIN_EXE).replace(/\.exe$/i, "");
 }
