@@ -23,8 +23,9 @@ export type ScreenshotRegion = "full" | "lcd";
  * A current simulator reports its own geometry in every screenshot reply
  * (`lcd_origin`, `lcd_size`, `scale`) and that is what the crop uses; this
  * constant is the fallback for a simulator that predates the field, whose own
- * `region: "lcd"` also cropped 18 rows too high — which is why the panel is
- * always cut out of a full-window capture here rather than requested.
+ * `region: "lcd"` also cropped 18 rows too high and came back black now and
+ * then — which is why the panel is always cut out of a full-window capture here
+ * rather than requested.
  */
 export const LCD_RECT = { x: 85, y: 58, width: 320, height: 240 } as const;
 
@@ -101,9 +102,10 @@ export interface ScreenshotResult {
 export async function crosspadScreenshot(
   saveToFile: boolean = true,
   filename?: string,
-  region: ScreenshotRegion = "full"
+  region: ScreenshotRegion = "full",
+  port?: number
 ): Promise<ScreenshotResult> {
-  const running = await isSimulatorRunning();
+  const running = await isSimulatorRunning(port);
   if (!running) {
     return {
       success: false,
@@ -127,7 +129,7 @@ export async function crosspadScreenshot(
       }
       const filePath = path.join(screenshotsDir, fname).replace(/\\/g, "/");
 
-      const resp = await sendRemoteCommand({ cmd: "screenshot", file: filePath });
+      const resp = await sendRemoteCommand({ cmd: "screenshot", file: filePath }, { port });
 
       if (!resp.ok) {
         return {
@@ -182,7 +184,7 @@ export async function crosspadScreenshot(
     }
 
     // Inline path: returns base64-encoded PNG
-    const resp = await sendRemoteCommand({ cmd: "screenshot" });
+    const resp = await sendRemoteCommand({ cmd: "screenshot" }, { port });
 
     if (!resp.ok) {
       return {

@@ -187,3 +187,31 @@ describe("isSimulatorRunning", () => {
     expect(sim.received.filter((c) => c.cmd === "ping")).toHaveLength(1);
   }, 10000);
 });
+
+describe("addressing one simulator among several", () => {
+  it("a per-call port beats the environment, and switching drops the cached socket", async () => {
+    const other = await FakeSim.start();
+    try {
+      await sendRemoteCommand({ cmd: "stats" });                              // env port: `sim`
+      await sendRemoteCommand({ cmd: "stats" }, { port: other.port });        // explicit port
+      await sendRemoteCommand({ cmd: "stats" });                              // back to `sim`
+      expect(other.received).toHaveLength(1);
+      expect(sim.received).toHaveLength(2);
+      expect(await isSimulatorRunning(other.port)).toBe(true);
+    } finally {
+      closeSimConnection();
+      await other.close();
+    }
+  });
+
+  it("reports a port nothing listens on as not running", async () => {
+    const dead = await FakeSim.start();
+    const port = dead.port;
+    await dead.close();
+    expect(await isSimulatorRunning(port)).toBe(false);
+  });
+
+  it("treats top_bar as a read", () => {
+    expect(isReadCommand("top_bar")).toBe(true);
+  });
+});

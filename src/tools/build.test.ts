@@ -17,6 +17,7 @@ import {
 import { BIN_EXE } from "../config.js";
 import * as remote from "../utils/remote-client.js";
 import * as exec from "../utils/exec.js";
+import * as portOwner from "../utils/port-owner.js";
 
 describe("parseErrors (PC build)", () => {
   it("extracts MSVC-style errors", () => {
@@ -259,25 +260,39 @@ linuxDescribe("crosspadKill (orchestration)", () => {
 
   let killCalls: KillCall[];
   let killSpy: ReturnType<typeof vi.spyOn>;
-  let readdirSpy: ReturnType<typeof vi.spyOn>;
   let readlinkSpy: ReturnType<typeof vi.spyOn>;
   let realpathSpy: ReturnType<typeof vi.spyOn>;
+  let owners: ReturnType<typeof vi.spyOn>;
   let tcpAlive: boolean;
-  const target = path.resolve(BIN_EXE);
+  /** pid -> its /proc/<pid>/exe; a pid not in the map has no /proc entry (gone). */
+  let procs: Map<number, string>;
+  /** Which signal ends a process; null = nothing does. */
+  let diesOn: NodeJS.Signals | null;
+  const simExe = "/somewhere/bin/CrossPad";
 
   beforeEach(() => {
     killCalls = [];
     tcpAlive = false;
+    procs = new Map();
+    diesOn = "SIGTERM";
 
     killSpy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
       killCalls.push({ pid, signal });
+      if (signal === diesOn) procs.delete(pid);
       return true;
     }) as any);
 
     vi.spyOn(remote, "isSimulatorRunning").mockImplementation(async () => tcpAlive);
+    vi.spyOn(remote, "closeSimConnection").mockImplementation(() => {});
+    owners = vi.spyOn(portOwner, "findPortOwnerPids");
 
-    readdirSpy = vi.spyOn(fs, "readdirSync") as any;
     readlinkSpy = vi.spyOn(fs, "readlinkSync") as any;
+    readlinkSpy.mockImplementation((p: any) => {
+      const m = String(p).match(/^\/proc\/(\d+)\/exe$/);
+      const exe = m ? procs.get(Number(m[1])) : undefined;
+      if (!exe) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return exe;
+    });
     realpathSpy = vi.spyOn(fs, "realpathSync") as any;
     realpathSpy.mockImplementation((p: any) => {
       throw Object.assign(new Error("test-stub"), { code: "ENOENT" });
@@ -287,80 +302,49 @@ linuxDescribe("crosspadKill (orchestration)", () => {
     vi.restoreAllMocks();
   });
 
-  /**
-   * Drive findCrosspadPids() across the kill flow. Each entry in `phases`
-   * is the set of "still-alive" PIDs returned by one /proc scan, in order.
-   * The first scan corresponds to crosspadKill's `initialPids` capture; the
-   * subsequent scans correspond to polling iterations and the final check.
-   * Once the list is exhausted the last phase is repeated indefinitely.
-   */
-  function scriptProcScans(phases: number[][]) {
-    let call = 0;
-    readdirSpy.mockImplementation((p: any) => {
-      if (p !== "/proc") throw new Error(`unexpected readdir: ${p}`);
-      const idx = Math.min(call, phases.length - 1);
-      call++;
-      return phases[idx].map(String);
-    });
-    let readlinkCall = 0;
-    readlinkSpy.mockImplementation((p: any) => {
-      const m = String(p).match(/^\/proc\/(\d+)\/exe$/);
-      if (!m) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      readlinkCall++;
-      // We always claim the listed PIDs run BIN_EXE — readdir already filtered.
-      return target;
-    });
+  function simulators(...pids: number[]) {
+    for (const pid of pids) procs.set(pid, simExe);
+    owners.mockReturnValue(pids);
   }
 
-  it("returns was_running=false when no pids and TCP dead", async () => {
-    scriptProcScans([[]]);
+  it("returns was_running=false when nothing owns the port and TCP is dead", async () => {
+    owners.mockReturnValue([]);
     const r = await crosspadKill();
     expect(r).toEqual({ success: true, killed_pids: [], was_running: false });
     expect(killCalls).toEqual([]);
   });
 
-  it("SIGTERMs found pids; succeeds when SIGTERM clears them on first poll", async () => {
-    // initial scan: [111, 222]; first poll: []
-    scriptProcScans([[111, 222], []]);
-    const r = await crosspadKill();
+  it("asks for the owner of the default port, or of the one it was given", async () => {
+    owners.mockReturnValue([]);
+    await crosspadKill();
+    await crosspadKill({ port: 20001 });
+    expect(owners.mock.calls.map((c) => c[0])).toEqual([19840, 20001]);
+  });
+
+  it("SIGTERMs the port's owner and nothing else; succeeds when it exits", async () => {
+    simulators(111);
+    procs.set(222, simExe); // another simulator — the user's — on another port
+    const r = await crosspadKill({ port: 20001 });
     expect(r.success).toBe(true);
     expect(r.was_running).toBe(true);
-    expect(r.killed_pids.sort((a, b) => a - b)).toEqual([111, 222]);
-    expect(killCalls.map((k) => k.signal).sort()).toEqual(["SIGTERM", "SIGTERM"]);
-    expect(killCalls.some((k) => k.signal === "SIGKILL")).toBe(false);
+    expect(r.killed_pids).toEqual([111]);
+    expect(killCalls).toEqual([{ pid: 111, signal: "SIGTERM" }]);
   });
 
   it("escalates to SIGKILL when SIGTERM doesn't clear within 3s", async () => {
-    // Stay alive across all polls until SIGKILL handler kicks in.
-    let sigkilled = false;
-    killSpy.mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
-      killCalls.push({ pid, signal });
-      if (signal === "SIGKILL") sigkilled = true;
-      return true;
-    }) as any);
-
-    let scan = 0;
-    readdirSpy.mockImplementation((p: any) => {
-      if (p !== "/proc") throw new Error(`bad readdir: ${p}`);
-      scan++;
-      // After SIGKILL is delivered the next scan reports clean.
-      return sigkilled ? [] : ["777"];
-    });
-    readlinkSpy.mockImplementation(() => target);
-
+    simulators(777);
+    diesOn = "SIGKILL";
     const r = await crosspadKill();
     expect(r.success).toBe(true);
     expect(r.killed_pids).toEqual([777]);
     const signals = killCalls.map((k) => k.signal);
     expect(signals).toContain("SIGTERM");
     expect(signals).toContain("SIGKILL");
-    // Polling deadline was 3s; SIGTERM came before, SIGKILL after.
-    expect(scan).toBeGreaterThan(1);
   }, 10000);
 
   it("reports failure with diagnostics when even SIGKILL leaves the sim alive", async () => {
-    // Process never dies — both SIGTERM and SIGKILL no-op against our mock.
-    scriptProcScans([[999]]); // every scan returns [999]
+    simulators(999);
+    diesOn = null;
     const r = await crosspadKill();
     expect(r.success).toBe(false);
     expect(r.was_running).toBe(true);
@@ -369,10 +353,7 @@ linuxDescribe("crosspadKill (orchestration)", () => {
   }, 10000);
 
   it("surfaces EPERM in the error message — REGRESSION: previous code swallowed it silently", async () => {
-    // Process owned by another user → EPERM on signal. crosspadKill should
-    // *not* report success and should *include the errno* so the agent gets
-    // a useful failure message instead of just 'still running'.
-    scriptProcScans([[5000]]); // sim stays "alive" forever
+    simulators(5000);
     killSpy.mockImplementation(((_pid: number, signal?: NodeJS.Signals | number) => {
       killCalls.push({ pid: _pid, signal });
       const e: NodeJS.ErrnoException = new Error("operation not permitted") as any;
@@ -388,43 +369,70 @@ linuxDescribe("crosspadKill (orchestration)", () => {
   }, 10000);
 
   it("treats ESRCH (PID already exited) as success — no spurious failure on race", async () => {
-    // /proc lists pid 42 at scan 0, then pid 42 is reaped before SIGTERM lands.
-    // process.kill throws ESRCH; we should not flag this as a failure.
-    let sawSigterm = false;
+    simulators(42);
     killSpy.mockImplementation(((_pid: number, signal?: NodeJS.Signals | number) => {
       killCalls.push({ pid: _pid, signal });
-      if (signal === "SIGTERM") {
-        sawSigterm = true;
-        const e: NodeJS.ErrnoException = new Error("no such process") as any;
-        e.code = "ESRCH";
-        throw e;
-      }
-      return true;
+      procs.delete(_pid);
+      const e: NodeJS.ErrnoException = new Error("no such process") as any;
+      e.code = "ESRCH";
+      throw e;
     }) as any);
-    // initial: [42]; first poll: []
-    scriptProcScans([[42], []]);
 
     const r = await crosspadKill();
-    expect(sawSigterm).toBe(true);
     expect(r.success).toBe(true);
     expect(r.was_running).toBe(true);
-    // ESRCH is not a failure — killed_pids should reflect "considered killed".
     expect(r.killed_pids).toEqual([42]);
     expect(r.error).toBeUndefined();
   });
 
-  it("uses /proc as the primary signal even when TCP probe lies", async () => {
-    // /proc says clean from the start, but TCP port still answers (zombie
-    // listener / TIME_WAIT race). crosspadKill must still detect the sim is
-    // up via the TCP probe and report stillRunning=true at the end.
+  it("reports a TCP answer with no owner it could find", async () => {
+    // The port answers but /proc shows no owner (another user's process).
     tcpAlive = true;
-    scriptProcScans([[]]); // /proc always empty
+    owners.mockReturnValue([]);
     const r = await crosspadKill();
-    // wasRunning=true because of TCP; no PIDs to signal; final TCP still alive.
     expect(r.was_running).toBe(true);
     expect(r.success).toBe(false);
     expect(r.killed_pids).toEqual([]);
     expect(r.error).toMatch(/tcp_alive=true/);
+  });
+
+  it("leaves a port holder that is not a CrossPad binary alone", async () => {
+    procs.set(31, "/usr/bin/python3");
+    owners.mockReturnValue([31]);
+    const r = await crosspadKill();
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/not a CrossPad simulator/);
+    expect(killCalls).toEqual([]);
+  });
+
+  it("takes a worktree build for a simulator: same file name, other directory", async () => {
+    procs.set(55, "/home/u/GIT/_wt/pc-x/bin/CrossPad");
+    owners.mockReturnValue([55]);
+    const r = await crosspadKill({ port: 20002 });
+    expect(r.killed_pids).toEqual([55]);
+  });
+
+  it("kills an exact pid without asking about ports, after checking what it is", async () => {
+    procs.set(66, simExe);
+    const r = await crosspadKill({ pid: 66 });
+    expect(r.success).toBe(true);
+    expect(r.killed_pids).toEqual([66]);
+    expect(owners).not.toHaveBeenCalled();
+
+    procs.set(67, "/bin/sleep");
+    const refused = await crosspadKill({ pid: 67 });
+    expect(refused.success).toBe(false);
+    expect(killCalls.some((k) => k.pid === 67)).toBe(false);
+  });
+
+  it("all=true sweeps every process running the built binary", async () => {
+    const readdirSpy = vi.spyOn(fs, "readdirSync") as any;
+    readdirSpy.mockImplementation((p: any) => (p === "/proc" ? ["10", "11"] : []));
+    procs.set(10, path.resolve(BIN_EXE));
+    procs.set(11, path.resolve(BIN_EXE));
+    const r = await crosspadKill({ all: true });
+    expect(r.killed_pids.sort()).toEqual([10, 11]);
+    expect(owners).not.toHaveBeenCalled();
   });
 });
 
