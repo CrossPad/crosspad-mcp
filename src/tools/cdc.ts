@@ -45,6 +45,7 @@ export const CdcInputShape = {
   cmd: RawCmd.optional().describe("raw: exact CDC command line, e.g. 'KIT_STATUS'"),
   expect: z.string().max(40).optional().describe("raw: reply prefix to wait for (default: from the verb catalog)"),
   timeout_ms: z.number().int().min(50).max(60_000).optional().describe("raw: reply timeout"),
+  follow: z.boolean().optional().describe("raw: also collect the lines the reply continues on (they start with a space, e.g. COREDUMP_INFO bt:/exc:) into more_lines; default from the verb catalog"),
 };
 
 export const CdcInput = z.discriminatedUnion("verb", [
@@ -96,6 +97,7 @@ export const CdcInput = z.discriminatedUnion("verb", [
     cmd: RawCmd,
     expect: z.string().max(40).optional(),
     timeout_ms: z.number().int().min(50).max(60_000).optional(),
+    follow: z.boolean().optional(),
   }),
 ]);
 export type CdcArgs = z.infer<typeof CdcInput>;
@@ -109,6 +111,7 @@ export const O_Cdc = {
   line: z.string().optional(),
   parsed: z.record(z.string(), z.unknown()).nullable().optional(),
   rtt_ms: z.number().optional(),
+  more_lines: z.array(z.string()).optional(),
   extra_lines: z.array(z.string()).optional(),
   ts: z.number().optional(),
   resultType: z.string().optional(),
@@ -130,13 +133,15 @@ function pick(src: Record<string, unknown>, keys: string[]): Record<string, unkn
 }
 
 /** Pure: tool args → daemon cdc.verb {verb, args} or cdc.transact args. */
-export function toVerbCall(args: CdcArgs): { verb: string; args: Record<string, unknown> } | { raw: { cmd: string; expect?: string; timeout_s?: number } } {
+export function toVerbCall(args: CdcArgs): { verb: string; args: Record<string, unknown> } | { raw: { cmd: string; expect?: string; timeout_s?: number; follow?: boolean } } {
   const a = args as unknown as Record<string, unknown>;
   switch (args.verb) {
     case "raw": {
-      const raw: { cmd: string; expect?: string; timeout_s?: number } = { cmd: args.cmd };
+      const raw: { cmd: string; expect?: string; timeout_s?: number; follow?: boolean } = { cmd: args.cmd };
       if (args.expect !== undefined) raw.expect = args.expect;
       if (args.timeout_ms !== undefined) raw.timeout_s = args.timeout_ms / 1000;
+      // Only when asked: a daemon older than crosspad-hil#20 does not know it.
+      if (args.follow !== undefined) raw.follow = args.follow;
       return { raw };
     }
     case "app":
@@ -180,7 +185,7 @@ export function registerCdcTool(server: McpServer, ctx: ToolContext): Registered
     TOOL_NAME,
     {
       description:
-        "[ESP HW] Typed CDC control verbs (main/hil_control.cpp) through the crosspad-hil daemon. verb=app {list|start name|stop|destroy|self_close|versions}, kit {list|status|load kit_id}, pad {press idx vel|release idx|pressure idx val|stats [reset]|notes|info idx}, enc {rotate delta|press [ms]|group|focus|state|ui_state}, led state, mem {info|blocks}, audio {level|tasks on|smpl_peak}, ble {status|start mode|stop|scan ms|devices|connect addr|disconnect|send note vel|txoff semis}, system {cdc_stats|bootloader_request|stm_dfu}, raw {cmd, expect?, timeout_ms?}. Typed verbs return parsed objects; raw returns line + best-effort parsed. bootloader_request / stm_dfu are danger tier and need confirmation. For UI driving prefer crosspad_ui (it re-snapshots). USB profile switches go through crosspad_usb_mode, not raw USB_AUDIO.",
+        "[ESP HW] Typed CDC control verbs (main/hil_control.cpp) through the crosspad-hil daemon. verb=app {list|start name|stop|destroy|self_close|versions}, kit {list|status|load kit_id}, pad {press idx vel|release idx|pressure idx val|stats [reset]|notes|info idx}, enc {rotate delta|press [ms]|group|focus|state|ui_state}, led state, mem {info|blocks}, audio {level|tasks on|smpl_peak}, ble {status|start mode|stop|scan ms|devices|connect addr|disconnect|send note vel|txoff semis}, system {cdc_stats|bootloader_request|stm_dfu}, raw {cmd, expect?, timeout_ms?, follow?}. Typed verbs return parsed objects; raw returns line + best-effort parsed, plus more_lines (the lines the reply continues on, e.g. COREDUMP_INFO bt:/exc:, RESET_LOG #n rows). bootloader_request / stm_dfu are danger tier and need confirmation. For UI driving prefer crosspad_ui (it re-snapshots). USB profile switches go through crosspad_usb_mode, not raw USB_AUDIO.",
       inputSchema: CdcInputShape,
       outputSchema: O_Cdc,
       annotations: annotationsFor(tierOf(TOOL_NAME, { verb: "pad", action: "press" })),
@@ -220,7 +225,9 @@ export function registerCdcTool(server: McpServer, ctx: ToolContext): Registered
           const opArgs: Record<string, unknown> = { ...call.raw };
           if (args.device !== undefined) opArgs.device = args.device;
           const reply = ReplySchema.parse(await ctx.daemon().request("cdc.transact", opArgs, { signal: extra.signal, timeoutMs: (call.raw.timeout_s ?? 2) * 1000 + 5000 }));
-          return jsonResponse({ success: true, device: args.device, line: reply.line, parsed: reply.parsed, rtt_ms: reply.rtt_ms, extra_lines: reply.extra_lines, ts: Date.now() });
+          // more_lines: the reply's own continuation lines (" bt:", " exc:", RESET_LOG " #n");
+          // absent from a daemon older than crosspad-hil#20.
+          return jsonResponse({ success: true, device: args.device, line: reply.line, parsed: reply.parsed, rtt_ms: reply.rtt_ms, more_lines: reply.more_lines, extra_lines: reply.extra_lines, ts: Date.now() });
         }
         const opArgs: Record<string, unknown> = {};
         if (args.device !== undefined) opArgs.device = args.device;

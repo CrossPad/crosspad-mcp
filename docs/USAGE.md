@@ -3,9 +3,9 @@
 The complete reference for `crosspad-mcp-server`: every install path, every
 toolset and tool, resources, prompts, configuration, transports and the v10
 migration table. If you are new here, start with the [README](../README.md) —
-it explains what this thing is for before you meet 47 tools.
+it explains what this thing is for before you meet 52 tools.
 
-**49 tools in 8 toolsets (9 visible at start) · 15 resources · 6 prompts · 3 bundled Claude Code skills · stdio & HTTP transports**
+**52 tools in 8 toolsets (12 visible at start) · 15 resources · 6 prompts · 3 bundled Claude Code skills · stdio & HTTP transports**
 
 **Contents:** [Install](#install) · [Skills](#skills-start-here) ·
 [Tools + resources](#tools--resources) · [Configuration](#configuration) ·
@@ -105,7 +105,7 @@ Each tool is focused on a single action. Strict schema validation (ranges on MID
 
 | Toolset | Contains | On at start |
 |---|---|---|
-| `core` | `crosspad_devices`, `crosspad_doctor`, `crosspad_snapshot`, `crosspad_build`, `crosspad_flash`, `crosspad_repo_status`, `crosspad_toolsets`, `crosspad_task`, `crosspad_confirm` | yes |
+| `core` | `crosspad_devices`, `crosspad_doctor`, `crosspad_snapshot`, `crosspad_build`, `crosspad_flash`, `crosspad_repo_status`, `crosspad_toolsets`, `crosspad_task`, `crosspad_confirm`, `crosspad_bench_claim`, `crosspad_bench_release`, `crosspad_bench_status` | yes |
 | `device` | `crosspad_cdc`, `crosspad_console`, `crosspad_ui`, `crosspad_midi`, `crosspad_usb_mode`, `crosspad_audio_route`, `crosspad_diagnose_crash` | no |
 | `hil` | `crosspad_hil_run`, `crosspad_hil_triage`, `crosspad_capture`, `crosspad_analyze`, `crosspad_stimulus`, `crosspad_ble` | no |
 | `sim` | `crosspad_run`, `crosspad_kill`, `crosspad_check`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats`, `crosspad_settings_get`, `crosspad_settings_set`, `crosspad_test_run`, `crosspad_log` | no |
@@ -131,6 +131,31 @@ Danger-tier tools (`crosspad_flash`, bootloader/DFU requests, `crosspad_trace` w
 | `crosspad_devices` | Devices through the crosspad-hil daemon: USB mode, CDC + STM32-bridge ports, MIDI ports, UAC2 card, which one is selected |
 | `crosspad_trace` | Real-time SWD variable trace over ST-Link (non-halting RAM polling) |
 | `crosspad_audio_route` | Runtime codec routing on the physical device over MIDI SysEx (ADC inputs, DAC outputs, USB-mic source, volume/mute, query) |
+
+### Shared bench (toolset `core`)
+
+Several sessions share one board, and opening its CDC port for a moment, or
+flashing it, breaks whoever is mid-test. crosspad-hil keeps a **lease** per
+board — one holder, a queue behind it, what firmware the last holder left on
+it, expiry after a ttl without renewal — in one file every session's daemon
+shares (`~/.local/state/crosspad-hil/bench.json`).
+
+| Tool | Purpose |
+|------|---------|
+| `crosspad_bench_claim` | Take the board (`granted`) or join the queue (`position`, and who holds it until when). Claiming while holding renews. `force` takes it from a holder that is gone — logged |
+| `crosspad_bench_release` | Give it back with `firmware_left` (what is on the board now); the head of the queue has 10 minutes to claim |
+| `crosspad_bench_status` | Holder, ETA, queue, the firmware left on the board, recent history (releases, expiries, overrides) |
+
+Once a session has claimed, this server sends its holder name with every
+daemon op, so every tool that touches the board is checked against the lease
+and renews it; another session's call is refused with `BENCH_BUSY`, naming the
+holder and their ETA. `crosspad_flash` (uart, STM `swd`/`dfu`) and
+`crosspad_trace` (`start`/`write`/`call`/`device_state`) touch the board
+outside the daemon and ask `bench.check` first. A board nobody has claimed is
+not gated. Needs crosspad-hil ≥ 1.6.0; an older daemon has no lease and
+nothing is refused. For a first rollout, `CROSSPAD_BENCH_MODE=warn` in the
+server's environment (the daemon inherits it) logs refusals instead of acting
+on them; `off` checks nothing.
 
 ### Device (crosspad-hil daemon)
 

@@ -26,6 +26,7 @@ import { resolveBoard } from "../utils/board.js";
 import { resolveConfigValue } from "../utils/userConfig.js";
 import { crosspadIdfFlash } from "./idf-flash.js";
 import { crosspadStmFlash } from "./stm-flash.js";
+import { benchGate } from "./bench.js";
 import type { OnLine } from "../utils/exec.js";
 
 export const TOOL_NAME = "crosspad_flash";
@@ -563,6 +564,18 @@ export function registerFlashTool(server: McpServer, ctx: ToolContext): Register
                 : "Fix the cause, or re-issue with force=true if you are certain.",
             },
           });
+        }
+
+        // ── bench lease ───────────────────────────────────────────────
+        // Before the confirmation: a flash the lease refuses must not ask the
+        // user first. OTA is checked again by the daemon's ota.flash; uart and
+        // the STM methods never pass through a daemon op, so this is their check.
+        try {
+          const how = args.target === "stm" ? args.method : args.transport;
+          await benchGate(daemon, `crosspad_flash ${args.target} ${how}`, device?.id, extra.signal);
+        } catch (e) {
+          if (!(e instanceof HilError)) throw e;
+          return jsonResponse({ success: false, preflight, error: e.toJSON() });
         }
 
         // ── policy and confirmation ───────────────────────────────────

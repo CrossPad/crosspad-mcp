@@ -467,3 +467,23 @@ describe("HilDaemon idle recycle", () => {
     expect(h.children).toHaveLength(2);
   });
 });
+
+describe("HilDaemon bench holder", () => {
+  it("sends the claimed holder with every op that does not name one, but not with serve.*", async () => {
+    const h = makeDaemon();
+    const child = await started(h);
+    h.d.benchHolder = "pidf";
+    const a = h.d.request("cdc.transact", { device: "dev_1", cmd: "MEM" });
+    const b = h.d.request("bench.release", { holder: "other", firmware_left: "x" });
+    const c = h.d.request("serve.stats", {});
+    const reqs = await child.waitRequests(4);
+    for (const r of reqs.slice(1)) child.reply(r.id, {});
+    await Promise.all([a, b, c]);
+    expect(reqs[1].args).toEqual({ device: "dev_1", cmd: "MEM", holder: "pidf" });
+    expect(reqs[2].args.holder).toBe("other");
+    expect(reqs[3].args).toEqual({});
+    const stopped = h.d.stop();
+    child.exit(0);
+    await stopped;
+  });
+});

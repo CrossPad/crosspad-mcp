@@ -38,6 +38,7 @@ describe("toVerbCall", () => {
   it("maps raw to cdc.transact args with timeout_ms → timeout_s", () => {
     expect(toVerbCall({ verb: "raw", cmd: "KIT_STATUS", expect: "KITSTATUS:", timeout_ms: 2500 } as any)).toEqual({ raw: { cmd: "KIT_STATUS", expect: "KITSTATUS:", timeout_s: 2.5 } });
     expect(toVerbCall({ verb: "raw", cmd: "MEM" } as any)).toEqual({ raw: { cmd: "MEM" } });
+    expect(toVerbCall({ verb: "raw", cmd: "KIT_STATUS", follow: true } as any)).toEqual({ raw: { cmd: "KIT_STATUS", follow: true } });
   });
 });
 
@@ -62,6 +63,20 @@ describe("crosspad_cdc tool", () => {
     const res = await t.call({ verb: "raw", cmd: "MEM" });
     expect(t.daemon.calls[0]).toEqual({ op: "cdc.transact", args: { cmd: "MEM" } });
     expect(res.structuredContent).toMatchObject({ success: true, line: "MEM: free=18712 largest=4096", rtt_ms: 3.2 });
+  });
+  it("raw passes on the lines the reply continues on (COREDUMP_INFO bt:/exc:)", async () => {
+    const t = mk({ "cdc.transact": () => ({ line: "COREDUMP: seq=3 task=main pc=0x40381234 cause=28", parsed: null, rtt_ms: 4.1,
+      more_lines: ["bt: 0x40381234 0x40382000", "exc: tcb=0x3fc9a000 a0=0x80381234"], extra_lines: [] }) });
+    const res = await t.call({ verb: "raw", cmd: "COREDUMP_INFO" });
+    expect(t.daemon.calls[0]).toEqual({ op: "cdc.transact", args: { cmd: "COREDUMP_INFO" } });
+    expect(res.structuredContent).toMatchObject({ success: true, more_lines: ["bt: 0x40381234 0x40382000", "exc: tcb=0x3fc9a000 a0=0x80381234"] });
+  });
+  it("raw against a daemon without more_lines still answers", async () => {
+    const t = mk({ "cdc.transact": () => ({ line: "MEM: free=1", parsed: null, rtt_ms: 1, extra_lines: [] }) });
+    const res = await t.call({ verb: "raw", cmd: "MEM", follow: true });
+    expect(t.daemon.calls[0]).toEqual({ op: "cdc.transact", args: { cmd: "MEM", follow: true } });
+    expect((res.structuredContent as { success: boolean; more_lines?: string[] }).success).toBe(true);
+    expect((res.structuredContent as { more_lines?: string[] }).more_lines).toBeUndefined();
   });
   it("refuses a raw cmd with a newline or control bytes", async () => {
     // A newline would split into two device commands past a prefix-only tier

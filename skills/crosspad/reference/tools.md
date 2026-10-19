@@ -4,6 +4,17 @@
 Read-only tools (status/search/list) skip client confirmation prompts; destructive
 ones (commit, flash, clean build, apps_install) trigger one.
 
+## Shared bench — claim before touching the board
+| Tool | Use |
+|------|-----|
+| `crosspad_bench_claim` | `holder` (your session name), `purpose`, `ttl_min?` → `granted`, or the holder + ETA + your queue `position` |
+| `crosspad_bench_release` | `firmware_left` (what is on the board now) → next in queue gets it |
+| `crosspad_bench_status` | Holder, queue, firmware left on the board, history |
+
+Board-touching tools refuse with `BENCH_BUSY` while another session holds the
+board. CLI and scripts: `crosspad-hil bench claim|release|status --holder NAME`
+(or `CROSSPAD_BENCH_HOLDER`).
+
 ## Build & flash
 | Tool | Use |
 |------|-----|

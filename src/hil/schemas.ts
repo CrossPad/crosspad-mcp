@@ -83,6 +83,8 @@ export const ReplySchema = z.looseObject({
   line: z.string(),
   parsed: Rec.nullable(),
   rtt_ms: z.number(),
+  // The reply's continuation lines (sent starting with a space); crosspad-hil#20 on.
+  more_lines: z.array(z.string()).optional(),
   extra_lines: z.array(z.string()),
 });
 export type Reply = z.infer<typeof ReplySchema>;

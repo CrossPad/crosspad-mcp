@@ -7,6 +7,8 @@ All notable changes to crosspad-mcp-server. Format follows
 ## [Unreleased]
 
 ### Changed
+- **License: GPL-3.0-or-later** (was MIT), like the rest of CrossPad.
+  Releases up to 10.3.0 stay MIT.
 - **Simulator tools address one instance by its control port.** `crosspad_run`,
   `crosspad_kill`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats` and
   `crosspad_settings_get/set` take `port` (default `CROSSPAD_REMOTE_PORT`, else
@@ -16,6 +18,20 @@ All notable changes to crosspad-mcp-server. Format follows
   own simulator with a test instance. `crosspad_run` takes `port` and `no_midi`
   and starts the simulator with `CROSSPAD_REMOTE_REQUIRED=1`, so one that cannot
   bind exits instead of running un-drivable.
+
+### Added
+- **Bench lease: `crosspad_bench_claim`, `crosspad_bench_release`,
+  `crosspad_bench_status`** (toolset `core`). Several sessions share one
+  CrossPad, and a session opening its CDC port or flashing it broke whoever was
+  mid-test; the queue lived in a hand-edited `hil_logs/BENCH.md`. crosspad-hil
+  1.6.0 keeps a lease per board — one holder, a queue, the firmware left on the
+  board, expiry after a ttl without renewal — and refuses board ops of anyone
+  else with `BENCH_BUSY`, naming the holder and their ETA. The holder a session
+  claimed with is sent with every daemon op (`HilDaemon.benchHolder`), so the
+  hardware tools pass it without new parameters; `crosspad_flash` (uart, STM)
+  and `crosspad_trace` (start/write/call/device_state) check the lease
+  themselves before touching the board. The server instructions tell a session
+  to claim before any hardware call.
 - `crosspad_input action=drag` (x1,y1,x2,y2, space, ms, steps, rest_ms) and
   `crosspad_stats view=top_bar` expose the simulator's `drag` and `top_bar` verbs.
 
@@ -39,6 +55,13 @@ All notable changes to crosspad-mcp-server. Format follows
   flash token is bound to the image's SHA-256, re-checked right before
   writing (`FIRMWARE_CHANGED`). `CROSSPAD_MCP_CONFIRM=form` keeps every decline
   a decline, for a client that pre-approves tools.
+- **`crosspad_cdc raw` returns the lines a reply continues on.** The firmware
+  sends them starting with a space (`COREDUMP_INFO` ` bt:`/` exc:`, `RESET_LOG`
+  ` #n` rows). crosspad-hil#20 collects them into `more_lines`, and the tool now
+  passes that field on instead of dropping it. The new optional `follow` asks for
+  them on a verb the catalog does not mark `continuation`; it is sent only when
+  given, because a daemon older than crosspad-hil#20 does not know it. Against
+  such a daemon the reply simply has no `more_lines`.
 
 ## [10.3.0] — 2026-09-23
 

@@ -33,11 +33,12 @@ async function connect(server: McpServer) {
 }
 
 describe("TOOLSETS", () => {
-  it("has the spec §3.1 keys in order and core has 9 tools", () => {
+  it("has the spec §3.1 keys in order and core has 12 tools", () => {
     expect(Object.keys(TOOLSETS)).toEqual(["core", "device", "hil", "sim", "code", "git", "apps", "trace"]);
     expect(TOOLSETS.core).toEqual([
       "crosspad_devices", "crosspad_doctor", "crosspad_snapshot", "crosspad_build", "crosspad_flash",
       "crosspad_repo_status", "crosspad_toolsets", "crosspad_task", "crosspad_confirm",
+      "crosspad_bench_claim", "crosspad_bench_release", "crosspad_bench_status",
     ]);
     // P1 filled the hil toolset in.
     expect(TOOLSETS.hil).toEqual([
@@ -108,6 +109,7 @@ describe("ToolsetManager", () => {
     const names = await c.listNames();
     expect(names).toEqual([
       "crosspad_devices", "crosspad_doctor", "crosspad_snapshot", "crosspad_repo_status", "crosspad_toolsets", "crosspad_task",
+      "crosspad_bench_status",
       "crosspad_check", "crosspad_screenshot", "crosspad_stats", "crosspad_settings_get",
       "crosspad_repo_diff",
     ]);
