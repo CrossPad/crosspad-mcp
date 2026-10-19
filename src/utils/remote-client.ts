@@ -1,14 +1,16 @@
 /**
  * TCP client for communicating with the CrossPad simulator's remote control server.
- * Protocol: newline-delimited JSON over TCP on localhost:19840.
+ * Protocol: newline-delimited JSON over TCP on localhost:19840 (the simulator's
+ * CROSSPAD_REMOTE_PORT, or a per-call `port`).
  *
  * Two rules here are not style choices, they are defects this file exists to
  * not repeat (spec §3.8):
  *
- *  • One socket, one request at a time. The simulator parks every non-ping
- *    command on a single process-wide `s_responseReady` flag, so two requests
- *    in flight can each be handed the other's reply — and opening a second
- *    socket does not help, because the flag is shared by all of them.
+ *  • One socket, one request at a time. Newer simulators give every request
+ *    its own reply slot and serve several clients, but an older one parks all
+ *    non-ping commands on one process-wide flag, so two requests in flight can
+ *    each be handed the other's reply. Serializing costs nothing and is safe
+ *    against both.
  *  • Only reads are retried. v9 retried whatever timed out, so one slow
  *    `pad_press` became three presses the sim actually played.
  */
@@ -40,7 +42,8 @@ function parseRemoteResponse(raw: string): RemoteResponse {
 
 // Read at connect time rather than at import time so a test can point the
 // client at a fake server it started after loading the module.
-function remotePort(): number {
+export function simPort(port?: number): number {
+  if (port !== undefined) return port;
   const raw = process.env.CROSSPAD_REMOTE_PORT;
   if (!raw) return 19840;
   const n = parseInt(raw, 10);
@@ -60,6 +63,8 @@ export interface RemoteResponse {
 }
 
 export interface SendOptions {
+  /** Simulator control port. Default: CROSSPAD_REMOTE_PORT, else 19840. */
+  port?: number;
   /** Response timeout in ms. Default 15 s — a kit load parks the LVGL thread. */
   timeoutMs?: number;
   /** Force the retry decision. Defaults to "only if the command is a read". */
@@ -79,6 +84,7 @@ const READ_COMMANDS = new Set([
   "screenshot",
   "audio_level",
   "citest_status",
+  "top_bar",
 ]);
 
 /** Whether `cmd` may be re-sent when the first attempt times out. */
@@ -102,6 +108,7 @@ interface Waiter {
 }
 
 interface Conn {
+  port: number;
   socket: Socket;
   buffer: string;
   waiter: Waiter | null;
@@ -134,10 +141,10 @@ export function closeSimConnection(): void {
   dropConnection(new Error("Connection closed"));
 }
 
-function connect(): Promise<Conn> {
+function connect(port: number): Promise<Conn> {
   return new Promise((resolve, reject) => {
     const socket = new Socket();
-    const c: Conn = { socket, buffer: "", waiter: null };
+    const c: Conn = { port, socket, buffer: "", waiter: null };
     let settled = false;
 
     socket.setTimeout(CONNECT_TIMEOUT);
@@ -197,7 +204,7 @@ function connect(): Promise<Conn> {
       dropConnection(new Error("Connection closed without response"), c);
     });
 
-    socket.connect(remotePort(), remoteHost());
+    socket.connect(port, remoteHost());
   });
 }
 
@@ -216,8 +223,10 @@ function exchange(c: Conn, command: Record<string, unknown>, timeoutMs: number):
   });
 }
 
-async function sendOnce(command: Record<string, unknown>, timeoutMs: number): Promise<RemoteResponse> {
-  const c = conn ?? (await connect());
+async function sendOnce(command: Record<string, unknown>, timeoutMs: number, port: number): Promise<RemoteResponse> {
+  // One cached socket, to one simulator: asking another port drops it.
+  if (conn && conn.port !== port) dropConnection(new Error("Switching simulator port"));
+  const c = conn ?? (await connect(port));
   return exchange(c, command, timeoutMs);
 }
 
@@ -253,7 +262,7 @@ async function sendSerialized(command: Record<string, unknown>, options: SendOpt
   let lastError: Error | undefined;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await sendOnce(command, timeoutMs);
+      return await sendOnce(command, timeoutMs, simPort(options.port));
     } catch (err: any) {
       lastError = err;
       // Connection refused means the simulator is not there — a second try
@@ -270,9 +279,9 @@ async function sendSerialized(command: Record<string, unknown>, options: SendOpt
  * attempt: callers poll this in a loop, so a retry ladder here would only make
  * "not up yet" take a minute to answer.
  */
-export async function isSimulatorRunning(): Promise<boolean> {
+export async function isSimulatorRunning(port?: number): Promise<boolean> {
   try {
-    const resp = await sendRemoteCommand({ cmd: "ping" }, { timeoutMs: PROBE_TIMEOUT, retry: false });
+    const resp = await sendRemoteCommand({ cmd: "ping" }, { timeoutMs: PROBE_TIMEOUT, retry: false, port });
     return resp.ok === true;
   } catch {
     return false;

@@ -83,20 +83,21 @@ export function settingsCategories(): string[] {
  * @param category  "all" or one of `settingsCategories()`
  */
 export async function crosspadSettingsGet(
-  category: string = "all"
+  category: string = "all",
+  port?: number
 ): Promise<SettingsGetResult> {
   const known = settingsCategories();
   if (!known.includes(category)) {
     return { success: false, error: `Unknown settings category '${category}'. Known: ${known.join(", ")}.` };
   }
 
-  const running = await isSimulatorRunning();
+  const running = await isSimulatorRunning(port);
   if (!running) {
     return { success: false, error: "Simulator is not running. Use crosspad_run to start it." };
   }
 
   try {
-    const resp = await sendRemoteCommand({ cmd: "settings_get", category });
+    const resp = await sendRemoteCommand({ cmd: "settings_get", category }, { port });
     if (!resp.ok) {
       return { success: false, error: (resp.error as string) || "settings_get failed" };
     }
@@ -124,9 +125,10 @@ export async function crosspadSettingsGet(
  */
 export async function crosspadSettingsSet(
   key: string,
-  value: SettingsValue
+  value: SettingsValue,
+  port?: number
 ): Promise<SettingsSetResult> {
-  const running = await isSimulatorRunning();
+  const running = await isSimulatorRunning(port);
   if (!running) {
     return { success: false, error: "Simulator is not running. Use crosspad_run to start it." };
   }
@@ -135,7 +137,7 @@ export async function crosspadSettingsSet(
     // The simulator parses the value with std::stoi, so a boolean has to leave
     // here as 0 or 1; the caller still gets its own value back.
     const wire = typeof value === "boolean" ? (value ? 1 : 0) : value;
-    const resp = await sendRemoteCommand({ cmd: "settings_set", key, value: wire });
+    const resp = await sendRemoteCommand({ cmd: "settings_set", key, value: wire }, { port });
     if (!resp.ok) {
       return { success: false, error: (resp.error as string) || "settings_set failed" };
     }

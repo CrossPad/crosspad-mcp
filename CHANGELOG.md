@@ -9,6 +9,15 @@ All notable changes to crosspad-mcp-server. Format follows
 ### Changed
 - **License: GPL-3.0-or-later** (was MIT), like the rest of CrossPad.
   Releases up to 10.3.0 stay MIT.
+- **Simulator tools address one instance by its control port.** `crosspad_run`,
+  `crosspad_kill`, `crosspad_screenshot`, `crosspad_input`, `crosspad_stats` and
+  `crosspad_settings_get/set` take `port` (default `CROSSPAD_REMOTE_PORT`, else
+  19840). `crosspad_kill` stops the owner of that port, or an exact `pid`, and
+  leaves a port holder that is not a CrossPad binary alone; it no longer sweeps
+  every process running the binary (that is `all=true`), which took the user's
+  own simulator with a test instance. `crosspad_run` takes `port` and `no_midi`
+  and starts the simulator with `CROSSPAD_REMOTE_REQUIRED=1`, so one that cannot
+  bind exits instead of running un-drivable.
 
 ### Added
 - **Bench lease: `crosspad_bench_claim`, `crosspad_bench_release`,
@@ -23,6 +32,8 @@ All notable changes to crosspad-mcp-server. Format follows
   and `crosspad_trace` (start/write/call/device_state) check the lease
   themselves before touching the board. The server instructions tell a session
   to claim before any hardware call.
+- `crosspad_input action=drag` (x1,y1,x2,y2, space, ms, steps, rest_ms) and
+  `crosspad_stats view=top_bar` expose the simulator's `drag` and `top_bar` verbs.
 
 ### Fixed
 - **Danger-tier confirmations work in Claude Code.** Claude Code declares MCP

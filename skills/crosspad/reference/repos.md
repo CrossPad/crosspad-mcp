@@ -11,7 +11,7 @@ The crosspad-mcp server discovers these dynamically from `CROSSPAD_*_ROOT`
 | **crosspad-core** | `CROSSPAD_CORE_ROOT` | Shared, platform-independent logic + **interfaces** (the contract PC/IDF/Arduino implement). Browse with `crosspad_list_interfaces` / `crosspad_interface_implementations`. |
 | **crosspad-gui** | `CROSSPAD_GUI_ROOT` | Display/UI layer. |
 | **crosspad-apps** | (registry) | App package **registry**. Apps install into a platform repo as git submodules via `crosspad_apps_*` tools. |
-| **CrossPad_STM32_r20** | `CROSSPAD_STM_ROOT` | STM32G0B1 single-board firmware — the co-processor side (pad scan, charger, boot latches). Build with `crosspad_build platform=stm`, flash with `crosspad_flash target=stm method=swd\|dfu`, symbol search covers it too. Real-time RAM variable tracing over SWD lives in the separate **`swd-tracer`** skill. |
+| **CrossPad_STM32_r2** | `CROSSPAD_STM_ROOT` | STM32G0B1 single-board firmware — the co-processor side (pad scan, charger, boot latches). Build with `crosspad_build platform=stm`, flash with `crosspad_flash target=stm method=swd\|dfu`, symbol search covers it too. Real-time RAM variable tracing over SWD lives in the separate **`swd-tracer`** skill. |
 
 ## How they relate
 
@@ -21,7 +21,7 @@ The crosspad-mcp server discovers these dynamically from `CROSSPAD_*_ROOT`
   the **crosspad-apps** registry into a platform repo as submodules.
 - The **PC simulator** is the fast iteration loop — build/run/screenshot/input on
   the host before flashing real hardware.
-- **CrossPad_STM32_r20** and the ESP32-S3 side (platform-idf / ESP32-S3) are
+- **CrossPad_STM32_r2** and the ESP32-S3 side (platform-idf / ESP32-S3) are
   two separate MCUs talking over I2C1 (STM = slave `0x42`) + LPUART1, each
   with its own repo. A symptom can plausibly belong to either side (e.g. a
   wake-time LCD backlight glitch was first mis-diagnosed and fixed as an

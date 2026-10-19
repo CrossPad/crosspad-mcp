@@ -34,7 +34,7 @@ for a global install, or `<crosspad-mcp>/skills/crosspad/scripts/` in the repo/p
    (PC simulator) (ESP-IDF fw)   (Arduino fw)  (shared logic)   (display UI)
         └──────── apps installed as submodules from the crosspad-apps registry ┘
 
-   CrossPad_STM32_r20  — the STM32G0B1 board firmware (separate repo; SWD trace via swd-tracer skill)
+   CrossPad_STM32_r2  — the STM32G0B1 board firmware (separate repo; SWD trace via swd-tracer skill)
 ```
 
 ## Routing table — "I want to … → read this"

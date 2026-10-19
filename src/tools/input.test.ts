@@ -27,13 +27,13 @@ describe("crosspadInput click", () => {
   it("sends LCD space and the default hold unless told otherwise", async () => {
     const r = await crosspadInput({ action: "click", x: 49, y: 205 });
     expect(r.success).toBe(true);
-    expect(send).toHaveBeenCalledWith({ cmd: "click", x: 49, y: 205, space: "lcd", hold_ms: CLICK_HOLD_MS_DEFAULT });
+    expect(send).toHaveBeenCalledWith({ cmd: "click", x: 49, y: 205, space: "lcd", hold_ms: CLICK_HOLD_MS_DEFAULT }, { port: undefined });
     expect(CLICK_HOLD_MS_DEFAULT).toBe(120);
   });
 
   it("passes an explicit space and hold through", async () => {
     await crosspadInput({ action: "click", x: 134, y: 263, space: "window", hold_ms: 0 });
-    expect(send).toHaveBeenCalledWith({ cmd: "click", x: 134, y: 263, space: "window", hold_ms: 0 });
+    expect(send).toHaveBeenCalledWith({ cmd: "click", x: 134, y: 263, space: "window", hold_ms: 0 }, { port: undefined });
   });
 
   it("hands the hit report back to the caller", async () => {
@@ -69,6 +69,23 @@ describe("crosspadInput other actions", () => {
   it("does not attach click fields to the encoder", async () => {
     send.mockResolvedValue({ ok: true });
     await crosspadInput({ action: "encoder_press" });
-    expect(send).toHaveBeenCalledWith({ cmd: "encoder_press" });
+    expect(send).toHaveBeenCalledWith({ cmd: "encoder_press" }, { port: undefined });
+  });
+});
+
+describe("crosspadInput drag and port", () => {
+  it("sends a drag in LCD space, leaving unset timing to the simulator", async () => {
+    send.mockResolvedValue({ ok: true });
+    await crosspadInput({ action: "drag", x1: 160, y1: 4, x2: 160, y2: 120 });
+    expect(send).toHaveBeenCalledWith(
+      { cmd: "drag", x1: 160, y1: 4, x2: 160, y2: 120, space: "lcd" }, { port: undefined });
+  });
+
+  it("passes ms, steps and rest_ms through, and the port to the client", async () => {
+    send.mockResolvedValue({ ok: true });
+    await crosspadInput(
+      { action: "drag", x1: 1, y1: 2, x2: 3, y2: 4, space: "window", ms: 300, steps: 12, rest_ms: 400 }, 20001);
+    expect(send).toHaveBeenCalledWith(
+      { cmd: "drag", x1: 1, y1: 2, x2: 3, y2: 4, space: "window", ms: 300, steps: 12, rest_ms: 400 }, { port: 20001 });
   });
 });

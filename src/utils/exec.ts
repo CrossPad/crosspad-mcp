@@ -550,7 +550,8 @@ export function spawnDetached(
   exe: string,
   args: string[],
   cwd: string,
-  logPath?: string
+  logPath?: string,
+  env?: NodeJS.ProcessEnv
 ): number | null {
   let fd: number | undefined;
   if (logPath) {
@@ -561,6 +562,7 @@ export function spawnDetached(
   }
   const opts: SpawnOptions = {
     cwd,
+    env,
     detached: true,
     stdio: fd === undefined ? "ignore" : ["ignore", fd, fd],
   };

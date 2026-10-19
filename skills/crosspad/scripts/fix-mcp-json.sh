@@ -19,8 +19,13 @@ GIT_DIR="${CROSSPAD_GIT_DIR:-$HOME/GIT}"
 FIX=0
 [ "${1:-}" = "--fix" ] && FIX=1
 
+# STM32 repo: GitHub name (what `git clone` creates) is CrossPad_STM32_r2;
+# older clones used CrossPad_STM32_r20 — fall back to it only if it alone exists.
+STM_DIR=CrossPad_STM32_r2
+[ ! -d "$GIT_DIR/$STM_DIR" ] && [ -d "$GIT_DIR/CrossPad_STM32_r20" ] && STM_DIR=CrossPad_STM32_r20
+
 # Known CrossPad repos that carry their own project-scoped .mcp.json.
-REPOS=(crosspad-pc platform-idf ESP32-S3 crosspad-apps CrossPad_STM32_r20 crosspad-mcp)
+REPOS=(crosspad-pc platform-idf ESP32-S3 crosspad-apps "$STM_DIR" crosspad-mcp)
 
 ok()   { printf '  \033[32mOK\033[0m   %s\n' "$1"; }
 bad()  { printf '  \033[31mNPX\033[0m  %s\n' "$1"; }

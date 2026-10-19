@@ -5,7 +5,7 @@ memory (the `superpowers` plugin's `feedback_*.md` / `project_*.md` /
 `reference_*.md` notes under `~/.claude/projects/<project path>/memory/`).
 That's genuinely valuable — real hard-won debugging results accumulate
 there automatically — but it's keyed to the literal directory a session was
-launched from, so a note written while working in `CrossPad_STM32_r20`
+launched from, so a note written while working in `CrossPad_STM32_r2`
 is invisible to a session in `ESP32-S3`, is not in git, and won't exist on
 another machine or for anyone else. Several `CLAUDE.md` files in this
 ecosystem used to reference notes that only existed in that local memory —

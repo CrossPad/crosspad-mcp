@@ -1,6 +1,6 @@
 /**
  * MCP tool: send input events to the running CrossPad simulator.
- * Supports: click, pad_press/release, encoder_rotate/press/release, key.
+ * Supports: click, drag, pad_press/release, encoder_rotate/press/release, key.
  */
 
 import { sendRemoteCommand, isSimulatorRunning, RemoteResponse } from "../utils/remote-client.js";
@@ -15,6 +15,7 @@ export const CLICK_HOLD_MS_DEFAULT = 120;
 
 export type InputAction =
   | { action: "click"; x: number; y: number; space?: ClickSpace; hold_ms?: number }
+  | { action: "drag"; x1: number; y1: number; x2: number; y2: number; space?: ClickSpace; ms?: number; steps?: number; rest_ms?: number }
   | { action: "pad_press"; pad: number; velocity?: number }
   | { action: "pad_release"; pad: number }
   | { action: "encoder_rotate"; delta: number }
@@ -32,8 +33,8 @@ export interface InputResult {
 /**
  * Send a single input event to the simulator.
  */
-export async function crosspadInput(input: InputAction): Promise<InputResult> {
-  const running = await isSimulatorRunning();
+export async function crosspadInput(input: InputAction, port?: number): Promise<InputResult> {
+  const running = await isSimulatorRunning(port);
   if (!running) {
     return {
       success: false,
@@ -55,6 +56,14 @@ export async function crosspadInput(input: InputAction): Promise<InputResult> {
           hold_ms: input.hold_ms ?? CLICK_HOLD_MS_DEFAULT,
         };
         break;
+      case "drag": {
+        // Optional fields are left off the wire so the simulator's own defaults apply.
+        cmd = { cmd: "drag", x1: input.x1, y1: input.y1, x2: input.x2, y2: input.y2, space: input.space ?? "lcd" };
+        if (input.ms !== undefined) cmd.ms = input.ms;
+        if (input.steps !== undefined) cmd.steps = input.steps;
+        if (input.rest_ms !== undefined) cmd.rest_ms = input.rest_ms;
+        break;
+      }
       case "pad_press":
         cmd = { cmd: "pad_press", pad: input.pad, velocity: input.velocity ?? 127 };
         break;
@@ -77,7 +86,7 @@ export async function crosspadInput(input: InputAction): Promise<InputResult> {
         return { success: false, action: "unknown", error: "Unknown action" };
     }
 
-    const resp = await sendRemoteCommand(cmd);
+    const resp = await sendRemoteCommand(cmd, { port });
 
     // A simulator that predates coordinate spaces ignores `space` and clicks
     // the window pixel — silently, at the wrong place. It also does not echo

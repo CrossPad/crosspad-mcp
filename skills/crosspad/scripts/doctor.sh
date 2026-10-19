@@ -36,7 +36,11 @@ repo_check CROSSPAD_ARDUINO_ROOT ESP32-S3            "ESP32-S3 (Arduino)"
 repo_check CROSSPAD_CORE_ROOT    crosspad-core       "crosspad-core"
 repo_check CROSSPAD_HIL_ROOT     crosspad-hil        "crosspad-hil (Python host tooling)"
 repo_check CROSSPAD_GUI_ROOT     crosspad-gui        "crosspad-gui"
-repo_check CROSSPAD_STM_ROOT     CrossPad_STM32_r20  "CrossPad_STM32_r20 (STM32)"
+# STM32 repo: GitHub name (what `git clone` creates) is CrossPad_STM32_r2;
+# older clones used CrossPad_STM32_r20 — fall back to it only if it alone exists.
+STM_DIR=CrossPad_STM32_r2
+[ ! -d "$GIT_DIR/$STM_DIR" ] && [ -d "$GIT_DIR/CrossPad_STM32_r20" ] && STM_DIR=CrossPad_STM32_r20
+repo_check CROSSPAD_STM_ROOT     "$STM_DIR"          "CrossPad_STM32_r2 (STM32)"
 
 # 3. Toolchains (best-effort, informational)
 command -v cmake  >/dev/null 2>&1 && ok "cmake present" || info "cmake not found (needed for PC build)"

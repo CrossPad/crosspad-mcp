@@ -3,7 +3,8 @@ import path from "path";
 import { spawnSync } from "child_process";
 import { CROSSPAD_PC_ROOT, BUILD_DIR, BIN_EXE, VCPKG_TOOLCHAIN } from "../config.js";
 import { runBuild, runBuildStream, spawnDetached, OnLine } from "../utils/exec.js";
-import { isSimulatorRunning, closeSimConnection } from "../utils/remote-client.js";
+import { isSimulatorRunning, closeSimConnection, simPort } from "../utils/remote-client.js";
+import { findPortOwnerPids } from "../utils/port-owner.js";
 
 export interface BuildResult {
   success: boolean;
@@ -150,6 +151,8 @@ export interface RunResult {
   pid: number | null;
   exe_path: string;
   already_running?: boolean;
+  /** The control port this instance was asked to bind. */
+  port?: number;
   responsive?: boolean;
   /** Where the simulator's stdout and stderr are being appended. */
   log_path?: string;
@@ -212,17 +215,29 @@ export function processAlive(pid: number): boolean {
  * its last lines back with it: a failed probe on its own reports that nothing
  * answered, never that the vcpkg SDL2 was missing or the kit JSON was unreadable.
  */
-export async function crosspadRun(force: boolean = false): Promise<RunResult> {
+export interface RunOptions {
+  /** Spawn even if something already answers on the port (only useful with a different `port`). */
+  force?: boolean;
+  /** Control port for this instance (CROSSPAD_REMOTE_PORT). Default: the server's own env, else 19840. */
+  port?: number;
+  /** Open no MIDI port (CROSSPAD_NO_MIDI=1) — a scripted run must not play a real CrossPad on USB. */
+  noMidi?: boolean;
+}
+
+export async function crosspadRun(opts: RunOptions | boolean = {}): Promise<RunResult> {
+  const { force = false, port: portOpt, noMidi = false } = typeof opts === "boolean" ? { force: opts } : opts;
+  const port = simPort(portOpt);
+
   if (!fs.existsSync(BIN_EXE)) {
     return { pid: null, exe_path: BIN_EXE };
   }
 
-  if (!force && (await isSimulatorRunning())) {
+  if (!force && (await isSimulatorRunning(port))) {
     return {
       pid: null,
       exe_path: BIN_EXE,
       already_running: true,
-      error: "Simulator already running on port 19840. Pass force=true to spawn another instance anyway.",
+      error: `Something already answers on control port ${port}. Pick another port (a second instance cannot share it), or stop that one with crosspad_kill.`,
     };
   }
 
@@ -230,8 +245,18 @@ export async function crosspadRun(force: boolean = false): Promise<RunResult> {
   // about to be replaced.
   closeSimConnection();
 
+  // REMOTE_REQUIRED: a simulator that cannot bind its port exits (code 3)
+  // instead of running un-drivable, which the probe below then reports with
+  // the log tail.
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CROSSPAD_REMOTE_PORT: String(port),
+    CROSSPAD_REMOTE_REQUIRED: "1",
+  };
+  if (noMidi) env.CROSSPAD_NO_MIDI = "1";
+
   const logPath = simLogPath();
-  const pid = spawnDetached(BIN_EXE, [], CROSSPAD_PC_ROOT, logPath);
+  const pid = spawnDetached(BIN_EXE, [], CROSSPAD_PC_ROOT, logPath, env);
   if (pid === null) return { pid, exe_path: BIN_EXE, log_path: logPath };
 
   // Poll for TCP readiness so callers know if the sim actually came up. A
@@ -240,21 +265,22 @@ export async function crosspadRun(force: boolean = false): Promise<RunResult> {
   let alive = true;
   for (let i = 0; i < 6; i++) {
     await delay(500);
-    if (await isSimulatorRunning()) { responsive = true; break; }
+    if (await isSimulatorRunning(port)) { responsive = true; break; }
     if (!processAlive(pid)) { alive = false; break; }
   }
 
-  if (responsive) return { pid, exe_path: BIN_EXE, responsive, log_path: logPath };
+  if (responsive) return { pid, exe_path: BIN_EXE, port, responsive, log_path: logPath };
 
   return {
     pid,
     exe_path: BIN_EXE,
+    port,
     responsive,
     log_path: logPath,
     log_tail: tailFile(logPath, RUN_LOG_TAIL_LINES),
     error: alive
       ? undefined
-      : `Simulator process ${pid} exited before the control port answered.`,
+      : `Simulator process ${pid} exited before the control port answered (port ${port} taken by another instance? exit code 3).`,
   };
 }
 
@@ -380,24 +406,88 @@ function trySignal(pid: number, signal: NodeJS.Signals): string | undefined {
   }
 }
 
+export interface KillOptions {
+  /** Control port of the instance to stop. Default: the server's own env, else 19840. */
+  port?: number;
+  /** Stop this exact PID (an instance that never got its port, say). */
+  pid?: number;
+  /** Stop every process running the built binary, ignoring ports. */
+  all?: boolean;
+}
+
+/** /proc/<pid>/exe, canonical and without the " (deleted)" suffix; null when gone. */
+function exeOf(pid: number): string | null {
+  if (process.platform === "linux") {
+    try {
+      return canonicalize(stripDeletedSuffix(fs.readlinkSync(`/proc/${pid}/exe`)));
+    } catch {
+      return null;
+    }
+  }
+  // No /proc: ask the OS for the process's image. Unknown means null, and
+  // null means "not ours" below -- a PID from the caller is never signalled
+  // on trust.
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === "win32") {
+    const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8" });
+    const m = r.status === 0 ? /^"([^"]+)"/.exec((r.stdout ?? "").trim()) : null;
+    return m ? m[1] : null;
+  }
+  const r = spawnSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8" });
+  const name = r.status === 0 ? (r.stdout ?? "").trim() : "";
+  return name || null;
+}
+
 /**
- * Kill the running PC simulator. SIGTERM matched PIDs, poll up to 3s for
- * graceful exit, SIGKILL stragglers. Detection uses both /proc and the TCP
- * control port — either signal alone has been observed to lie (TCP port
- * occasionally lingers after the binary exits, and a crashed process may
- * keep its socket past the syscall return).
- *
- * Per-PID kill errors (EPERM, EUNKNOWN) are aggregated and surfaced in
- * `error` so the caller sees *why* a kill didn't take, not just "still
- * running" — historically this was the hardest kill failure to debug
- * because Node swallowed EPERM and the user just saw success=false.
+ * Is `pid` a CrossPad simulator? Same binary file name as the built one: a
+ * test instance from a worktree runs its own copy, so the full path cannot be
+ * compared, but a port held by some other program must never be signalled.
  */
-export async function crosspadKill(): Promise<KillResult> {
+function isSimProcess(pid: number): boolean {
+  const exe = exeOf(pid);
+  return exe !== null && path.basename(exe).replace(/\.exe$/i, "") === path.basename(BIN_EXE).replace(/\.exe$/i, "");
+}
+
+/** Still the process we meant (a recycled PID has another exe, a zombie none). */
+function stillThere(pid: number): boolean {
+  return process.platform === "linux" ? isSimProcess(pid) : processAlive(pid);
+}
+
+/**
+ * Stop one PC simulator: the owner of the control port (default 19840, or
+ * `port`), or the exact `pid`. Never "every CrossPad": a test instance and the
+ * one somebody is playing are the same binary, told apart only by their port.
+ * `all` is the explicit opt-in to the old sweep over every process whose
+ * /proc/<pid>/exe is the built binary.
+ *
+ * SIGTERM, poll up to 3s for a graceful exit, SIGKILL stragglers. A process
+ * that holds the port but is not a simulator is reported and left alone.
+ * Per-PID kill errors (EPERM, EUNKNOWN) are aggregated and surfaced in
+ * `error` so the caller sees *why* a kill didn't take.
+ */
+export async function crosspadKill(opts: KillOptions = {}): Promise<KillResult> {
+  const port = simPort(opts.port);
   // Whatever we were talking to is the thing being killed; keeping the socket
   // would hand the next caller a half-open connection instead of a reconnect.
   closeSimConnection();
-  const initialPids = findCrosspadPids();
-  const tcpAliveInitial = await isSimulatorRunning();
+
+  let candidates: number[];
+  if (opts.pid !== undefined) candidates = [opts.pid];
+  else if (opts.all) candidates = findCrosspadPids();
+  else candidates = findPortOwnerPids(port);
+
+  const foreign = candidates.filter((pid) => !isSimProcess(pid));
+  const initialPids = candidates.filter((pid) => !foreign.includes(pid));
+  if (foreign.length > 0 && initialPids.length === 0) {
+    return {
+      success: false,
+      killed_pids: [],
+      was_running: true,
+      error: `pid ${foreign.join(", ")} is not a CrossPad simulator (${exeOf(foreign[0]) ?? "unknown exe"}); not touching it.`,
+    };
+  }
+
+  const tcpAliveInitial = opts.all || opts.pid !== undefined ? false : await isSimulatorRunning(port);
   const wasRunning = initialPids.length > 0 || tcpAliveInitial;
 
   if (!wasRunning) {
@@ -416,25 +506,22 @@ export async function crosspadKill(): Promise<KillResult> {
     }
   }
 
-  // Poll up to 3s for SIGTERM to take effect. The first poll runs after a
-  // single 150 ms beat; this is enough for a Qt event loop to acknowledge
-  // SIGTERM in the common case so the kill returns fast.
+  // Poll up to 3s for SIGTERM to take effect.
   const deadline = Date.now() + 3000;
   let stillAlive: number[] = initialPids;
   while (Date.now() < deadline) {
     await delay(150);
-    stillAlive = findCrosspadPids();
+    stillAlive = initialPids.filter(stillThere);
     if (stillAlive.length === 0) {
-      // /proc is clean — confirm the TCP port is gone too. We only pay the
-      // TCP probe in this branch to avoid stretching the polling deadline:
-      // isSimulatorRunning can take seconds when the sim is hung.
-      if (!(await isSimulatorRunning())) break;
+      // Confirm the TCP port is gone too. We only pay the TCP probe in this
+      // branch to avoid stretching the polling deadline: isSimulatorRunning
+      // can take seconds when the sim is hung.
+      if (opts.all || opts.pid !== undefined || !(await isSimulatorRunning(port))) break;
     }
   }
 
-  // Force-kill anything that survived SIGTERM. Re-check /proc/<pid>/exe by
-  // way of findCrosspadPids (already done above) — guards against PID
-  // recycling in the gap between SIGTERM and SIGKILL.
+  // Force-kill anything that survived SIGTERM. stillThere re-checks the exe,
+  // which guards against PID recycling in the gap between SIGTERM and SIGKILL.
   if (stillAlive.length > 0) {
     for (const pid of stillAlive) {
       const errCode = trySignal(pid, "SIGKILL");
@@ -447,8 +534,8 @@ export async function crosspadKill(): Promise<KillResult> {
     await delay(300);
   }
 
-  const finalAlive = findCrosspadPids();
-  const tcpAliveFinal = await isSimulatorRunning();
+  const finalAlive = initialPids.filter(stillThere);
+  const tcpAliveFinal = opts.all || opts.pid !== undefined ? false : await isSimulatorRunning(port);
   const stillRunning = finalAlive.length > 0 || tcpAliveFinal;
 
   let errorMsg: string | undefined;

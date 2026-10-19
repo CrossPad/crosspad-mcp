@@ -164,4 +164,59 @@ describe("config module", () => {
       }
     });
   });
+
+  describe("resolveStmRoot", () => {
+    const G = "/g";
+    const existing = (...names: string[]) => {
+      const set = new Set(names.map((n) => path.join(G, n)));
+      return (p: string) => set.has(p);
+    };
+
+    it("CROSSPAD_STM_ROOT env var wins over any folder on disk", async () => {
+      const { resolveStmRoot } = await import("./config.js");
+      expect(
+        resolveStmRoot({ CROSSPAD_STM_ROOT: "/custom/stm" }, G, existing("CrossPad_STM32_r2", "CrossPad_STM32_r20")),
+      ).toBe("/custom/stm");
+    });
+
+    it("defaults to the GitHub name CrossPad_STM32_r2 when nothing exists", async () => {
+      const { resolveStmRoot } = await import("./config.js");
+      expect(resolveStmRoot({}, G, existing())).toBe(path.join(G, "CrossPad_STM32_r2"));
+    });
+
+    it("uses CrossPad_STM32_r2 when it exists", async () => {
+      const { resolveStmRoot } = await import("./config.js");
+      expect(resolveStmRoot({}, G, existing("CrossPad_STM32_r2"))).toBe(path.join(G, "CrossPad_STM32_r2"));
+    });
+
+    it("prefers CrossPad_STM32_r2 when both folders exist", async () => {
+      const { resolveStmRoot } = await import("./config.js");
+      expect(resolveStmRoot({}, G, existing("CrossPad_STM32_r2", "CrossPad_STM32_r20"))).toBe(
+        path.join(G, "CrossPad_STM32_r2"),
+      );
+    });
+
+    it("falls back to legacy CrossPad_STM32_r20 when only it exists", async () => {
+      const { resolveStmRoot } = await import("./config.js");
+      expect(resolveStmRoot({}, G, existing("CrossPad_STM32_r20"))).toBe(path.join(G, "CrossPad_STM32_r20"));
+    });
+
+    it("CROSSPAD_STM_ROOT constant picks up the legacy folder via fs", async () => {
+      if (process.env.CROSSPAD_STM_ROOT || process.env.CROSSPAD_GIT_DIR) return;
+      const legacy = path.join(GIT_DIR, "CrossPad_STM32_r20");
+      vi.doMock("fs", () => ({
+        default: {
+          existsSync: (p: string) => p === legacy,
+          readFileSync: vi.fn(),
+          readdirSync: vi.fn(() => []),
+          lstatSync: vi.fn(),
+          rmSync: vi.fn(),
+        },
+        existsSync: (p: string) => p === legacy,
+      }));
+      const { CROSSPAD_STM_ROOT, getRepos } = await import("./config.js");
+      expect(CROSSPAD_STM_ROOT).toBe(legacy);
+      expect(getRepos()["stm32-r20"]).toBe(legacy);
+    });
+  });
 });

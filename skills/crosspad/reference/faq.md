@@ -81,7 +81,7 @@ GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=all`.
 A: It refuses on merge conflicts and never pushes. Resolve conflicts, re-stage, retry.
 
 **Q: I want to trace firmware variables live.**
-A: That's the separate `swd-tracer` skill (`crosspad_trace`) for CrossPad_STM32_r20 over
+A: That's the separate `swd-tracer` skill (`crosspad_trace`) for CrossPad_STM32_r2 over
 ST-Link. Run its `doctor` action first.
 
 **Q: `crosspad_trace action=start` (or `action=ui`) drops the MCP connection.**
@@ -102,7 +102,7 @@ A configured `build/Debug` has the resolved compiler path cached in
 `CMakeCache.txt`, so incremental builds work; a clean/reconfigure re-resolves
 the compiler from `PATH` and fails. Export that bundle's `bin/` onto `PATH`
 before a clean build, or just avoid `mode=clean`/wiping `build/Debug` — see
-`CrossPad_STM32_r20/docs/gotchas.md` for the exact export line.
+`CrossPad_STM32_r2/docs/gotchas.md` for the exact export line.
 
 **Q: How do I see everything at a glance?**
 A: `bash scripts/doctor.sh` (env), `crosspad_repo_status` (git), and the

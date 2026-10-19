@@ -45,7 +45,7 @@ import { crosspadSearchSymbols } from "./tools/symbols.js";
 import { crosspadInterfaces, crosspadApps } from "./tools/architecture.js";
 import { crosspadScreenshot } from "./tools/screenshot.js";
 import { crosspadInput } from "./tools/input.js";
-import { crosspadStats } from "./tools/stats.js";
+import { crosspadStats, crosspadTopBar } from "./tools/stats.js";
 import { crosspadSettingsGet, crosspadSettingsSet, settingsCategories } from "./tools/settings.js";
 import {
   crosspadAppList,
@@ -278,11 +278,17 @@ export const O_Build = {
   ...ErrorField,
 };
 
+// Which simulator: its control port (the simulator reads CROSSPAD_REMOTE_PORT, default 19840).
+// Two instances — one being played, one under test — are told apart by nothing else.
+const SimPort = z.number().int().min(1).max(65535).optional()
+  .describe("Simulator control port (default: CROSSPAD_REMOTE_PORT of this server, else 19840). Needed to address a second instance.");
+
 const O_Run = {
   success: z.boolean(),
   pid: z.number().int().nullable().optional(),
   exe_path: z.string(),
   already_running: z.boolean().optional(),
+  port: z.number().int().optional(),
   responsive: z.boolean().optional(),
   log_path: z.string().optional(),
   log_tail: z.array(z.string()).optional(),
@@ -551,17 +557,20 @@ registerLegacy(
 registerLegacy(
   "crosspad_run",
   {
-    description: "[PC] Launch the built simulator binary in the background. Returns pid + exe_path. Refuses to spawn a duplicate if one is already responding on the TCP control port (use force=true to override). Fails if binary not built — call crosspad_build first. Currently PC-only (IDF firmware doesn't run on the host).",
+    description: "[PC] Launch the built simulator binary in the background. Returns pid + exe_path + port. Refuses to spawn a duplicate if one is already responding on the control port; a second instance needs its own `port` (the simulator exits with code 3 when it cannot bind, and the reply carries its log tail). Fails if binary not built — call crosspad_build first. The simulator manipulates the desktop's audio sinks on start; do not launch one beside a user's session without need. Currently PC-only (IDF firmware doesn't run on the host).",
     inputSchema: {
       platform: PlatformPcOnly,
       force: z.boolean().default(false)
-        .describe("Spawn another instance even if one is already running. Default: false."),
+        .describe("Spawn even if something already answers on the port. Only useful together with a different `port`. Default: false."),
+      port: SimPort,
+      no_midi: z.boolean().default(false)
+        .describe("Open no MIDI port (CROSSPAD_NO_MIDI=1). A scripted run should, or it can play a real CrossPad on USB."),
     },
     outputSchema: O_Run,
     annotations: ANN_SIDE_EFFECT,
   },
-  async ({ force }) => {
-    const result = await crosspadRun(force);
+  async ({ force, port, no_midi }) => {
+    const result = await crosspadRun({ force, port, noMidi: no_midi });
     if (result.already_running) {
       return err(result.error ?? "Simulator already running.", { exe_path: result.exe_path, already_running: true });
     }
@@ -584,7 +593,7 @@ registerLegacy(
       );
     }
     return withSimLog(
-      ok({ pid: result.pid, exe_path: result.exe_path, responsive: result.responsive, log_path: result.log_path }),
+      ok({ pid: result.pid, exe_path: result.exe_path, port: result.port, responsive: result.responsive, log_path: result.log_path }),
       result.log_path,
     );
   }
@@ -593,14 +602,19 @@ registerLegacy(
 registerLegacy(
   "crosspad_kill",
   {
-    description: "[PC sim] Stop the running PC simulator. Identifies the process by /proc/<pid>/exe match against the built binary (Linux) or pgrep -x basename (macOS/Windows), sends SIGTERM, waits up to 3s, then SIGKILL stragglers. Returns killed PIDs and whether anything still answers on the TCP control port. Currently PC-only.",
+    description: "[PC sim] Stop ONE PC simulator: the process that listens on the control port (`port`, default 19840 / CROSSPAD_REMOTE_PORT), or the exact `pid`. Never matches by name; a process holding the port that is not a CrossPad binary is reported and left alone, so another instance (the user's own) survives. `all=true` is the explicit sweep over every process running the built binary. SIGTERM, waits up to 3s, then SIGKILL stragglers. Returns killed PIDs and whether anything still answers on the port. Currently PC-only.",
     inputSchema: {
       platform: PlatformPcOnly,
+      port: SimPort,
+      pid: z.number().int().positive().optional()
+        .describe("Stop exactly this PID (it must be a CrossPad simulator). For an instance that never got its control port."),
+      all: z.boolean().default(false)
+        .describe("Stop every process running the built simulator binary, whatever its port. Default false — it takes the user's instance too."),
     },
     outputSchema: O_Kill,
     annotations: ANN_DESTRUCTIVE,
   },
-  async () => jsonResponse(await crosspadKill())
+  async ({ port, pid, all }) => jsonResponse(await crosspadKill({ port, pid, all }))
 );
 
 registerLegacy(
@@ -1034,12 +1048,13 @@ registerLegacy(
         .describe("false (default) = save to disk, return file_path (token-cheap). true = return base64 image content for the LLM to view (token-expensive — only when the image must be analyzed)."),
       region: z.enum(["full", "lcd"]).default("full")
         .describe("'full' (default) = the whole emulator window. 'lcd' = only the 320x240 screen, cropped by this server (the simulator's own lcd crop is 18 px stale)."),
+      port: SimPort,
     },
     outputSchema: O_Screenshot,
     annotations: ANN_SIDE_EFFECT,
   },
-  async ({ filename, return_inline, region }) => {
-    const result = await crosspadScreenshot(!return_inline, filename, region);
+  async ({ filename, return_inline, region, port }) => {
+    const result = await crosspadScreenshot(!return_inline, filename, region, port);
     if (!result.success) return jsonResponse({ ...result });
 
     if (return_inline) {
@@ -1090,6 +1105,7 @@ registerLegacy(
       "  • encoder_press        → (none)\n" +
       "  • encoder_release      → (none)\n" +
       "  • click                → x, y (space optional, default 'lcd'; hold_ms optional, default 120)\n" +
+      "  • drag                 → x1, y1, x2, y2 (space optional, default 'lcd'; ms = time to travel, steps, rest_ms = held still at the end before release — longer than LVGL's momentum window lets go without a flick). The reply comes at once; the drag then takes ms+rest_ms. Swipes (the top bar, the drawer) are drags; read the result with crosspad_stats view=top_bar.\n" +
       "  • key                  → keycode (SDL keycode int)\n" +
       "click coordinates are in LCD space by default — the 320x240 panel, i.e. what crosspad_screenshot region='lcd' shows and what ENC_GROUP labels use. " +
       "Pass space='window' for pixels of a region='full' capture. The reply's `response` reports where the click landed in both spaces (`window`, `lcd`, `in_lcd`) " +
@@ -1099,8 +1115,8 @@ registerLegacy(
       action: z.enum([
         "pad_press", "pad_release",
         "encoder_rotate", "encoder_press", "encoder_release",
-        "click", "key",
-      ]).describe("Which input event to dispatch. Required params — pad_press: pad (velocity?); pad_release: pad; encoder_rotate: delta; encoder_press/encoder_release: (none); click: x,y; key: keycode."),
+        "click", "drag", "key",
+      ]).describe("Which input event to dispatch. Required params — pad_press: pad (velocity?); pad_release: pad; encoder_rotate: delta; encoder_press/encoder_release: (none); click: x,y; drag: x1,y1,x2,y2; key: keycode."),
       pad: PadIndex.optional().describe("Required for action=pad_press|pad_release. Pad index 0-15."),
       velocity: Velocity.optional().describe("Optional for action=pad_press (default 127). Ignored for other actions."),
       delta: z.number().int().optional().describe("Required for action=encoder_rotate. Positive=CW, negative=CCW. Typical range -10..10."),
@@ -1110,12 +1126,20 @@ registerLegacy(
         .describe("For action=click: which space x,y are in. 'lcd' (default) = the 320x240 panel, as in a region='lcd' screenshot. 'window' = the whole emulator window, as in a region='full' screenshot."),
       hold_ms: z.number().int().min(0).max(5000).default(120)
         .describe("For action=click: how long the button stays down. The simulator polls the pointer every ~30 ms, so 0 (press and release in one tick) is usually not seen as a click at all."),
+      x1: z.number().int().min(0).optional().describe("Required for action=drag. Start X in `space`."),
+      y1: z.number().int().min(0).optional().describe("Required for action=drag. Start Y in `space`."),
+      x2: z.number().int().min(0).optional().describe("Required for action=drag. End X in `space`."),
+      y2: z.number().int().min(0).optional().describe("Required for action=drag. End Y in `space`."),
+      ms: z.number().int().min(0).max(10000).optional().describe("For action=drag: how long the pointer takes from start to end (simulator default applies when omitted)."),
+      steps: z.number().int().min(1).max(200).optional().describe("For action=drag: how many intermediate moves."),
+      rest_ms: z.number().int().min(0).max(10000).optional().describe("For action=drag: how long the pointer rests at the end before release."),
+      port: SimPort,
       keycode: z.number().int().optional().describe("Required for action=key. SDL keycode (e.g. 27=ESC, 32=SPACE, 13=RETURN)."),
     },
     outputSchema: O_Input,
     annotations: ANN_SIDE_EFFECT,
   },
-  async ({ action, pad, velocity, delta, x, y, keycode, space, hold_ms }) => {
+  async ({ action, pad, velocity, delta, x, y, x1, y1, x2, y2, ms, steps, rest_ms, port, keycode, space, hold_ms }) => {
     // Per-action required-field validation. Cleaner than letting the sim reject
     // because the error here cites the missing field by name.
     const need = (field: string, val: unknown): string | null =>
@@ -1130,6 +1154,8 @@ registerLegacy(
         missing = need("delta", delta); break;
       case "click":
         missing = need("x", x) ?? need("y", y); break;
+      case "drag":
+        missing = need("x1", x1) ?? need("y1", y1) ?? need("x2", x2) ?? need("y2", y2); break;
       case "key":
         missing = need("keycode", keycode); break;
     }
@@ -1144,10 +1170,12 @@ registerLegacy(
         ? { action, delta: delta! }
         : action === "click"
         ? { action, x: x!, y: y!, space, hold_ms }
+        : action === "drag"
+        ? { action, x1: x1!, y1: y1!, x2: x2!, y2: y2!, space, ms, steps, rest_ms }
         : action === "key"
         ? { action, keycode: keycode! }
         : { action };
-    return jsonResponse((await crosspadInput(params)));
+    return jsonResponse((await crosspadInput(params, port)));
   }
 );
 
@@ -1158,12 +1186,16 @@ registerLegacy(
 registerLegacy(
   "crosspad_stats",
   {
-    description: "[PC sim] Read runtime statistics from the running PC simulator: pad state, capabilities, heap, registered apps, active pad logic.",
-    inputSchema: {},
+    description: "[PC sim] Read runtime state from the running PC simulator. view='stats' (default): pad state, capabilities, heap, registered apps, active pad logic. view='top_bar': which of the transport/status bars is the page, the row's scroll, the drawer, where the encoder's focus is and the last screen-wide swipe — the read-back for crosspad_input action=drag.",
+    inputSchema: {
+      view: z.enum(["stats", "top_bar"]).default("stats")
+        .describe("Which state to read."),
+      port: SimPort,
+    },
     outputSchema: O_Stats,
     annotations: ANN_READ_ONLY,
   },
-  async () => jsonResponse((await crosspadStats()))
+  async ({ view, port }) => jsonResponse(view === "top_bar" ? await crosspadTopBar(port) : await crosspadStats(port))
 );
 
 // The categories come from CrosspadSettings itself rather than being typed out
@@ -1178,6 +1210,7 @@ registerLegacy(
 // time a call notices it has drifted.
 function settingsCategoryParams(cats: string[]) {
   return {
+    port: SimPort,
     category: z.string()
       .default("all")
       .describe(`Settings category, one per group CrosspadSettings declares — currently ${cats.join(", ")}. Use 'all' to fetch everything.`),
@@ -1193,13 +1226,13 @@ const settingsGetTool = registerLegacy(
     outputSchema: O_SettingsGet,
     annotations: ANN_READ_ONLY,
   },
-  async ({ category }) => {
+  async ({ category, port }) => {
     const live = settingsCategories();
     if (live.join(" ") !== publishedSettingsCategories.join(" ")) {
       publishedSettingsCategories = live;
       settingsGetTool.update({ paramsSchema: settingsCategoryParams(live) });
     }
-    return jsonResponse(await crosspadSettingsGet(category));
+    return jsonResponse(await crosspadSettingsGet(category, port));
   }
 );
 
@@ -1210,13 +1243,14 @@ registerLegacy(
     inputSchema: {
       key: z.string().min(1)
         .describe("Setting key. Either a flat name ('lcd_brightness') or dotted category.field ('keypad.eco_mode', 'vibration.enable'). Use crosspad_settings_get to discover valid keys."),
+      port: SimPort,
       value: z.union([z.number(), z.boolean()])
         .describe("The value, matching the field's type in the CrosspadSettings schema: a number, or true/false for a bool field (encoded as 1/0 on the wire for you)."),
     },
     outputSchema: O_SettingsSet,
     annotations: ANN_DESTRUCTIVE,
   },
-  async ({ key, value }) => jsonResponse((await crosspadSettingsSet(key, value)))
+  async ({ key, value, port }) => jsonResponse((await crosspadSettingsSet(key, value, port)))
 );
 
 // ═══════════════════════════════════════════════════════════════════════

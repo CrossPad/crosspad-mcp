@@ -27,7 +27,7 @@ across repos instead of raw shell.
   a given build target actually compiles. Check this *before* concluding a
   change "isn't taking effect."
 - **You're often working across a hardware boundary, not just a software
-  one.** CrossPad_STM32_r20 (STM32) and platform-idf/ESP32-S3 (ESP32) are
+  one.** CrossPad_STM32_r2 (STM32) and platform-idf/ESP32-S3 (ESP32) are
   two separate MCUs — a symptom that looks like it's on "your" side may
   actually be owned by the other. If you're not sure which repo owns a
   symptom, check both repos' `CLAUDE.md` before fixing anything; guessing
@@ -59,5 +59,5 @@ on merge conflicts (never pushes). Use it instead of raw `git commit`.
 
 ## Real-time variable tracing
 
-For live RAM-variable plots on the STM32 board (CrossPad_STM32_r20), use the
+For live RAM-variable plots on the STM32 board (CrossPad_STM32_r2), use the
 **`swd-tracer`** skill (`crosspad_trace` tool) — not covered here.
