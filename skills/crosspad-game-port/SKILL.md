@@ -7,12 +7,14 @@ description: Port a free game to CrossPad, or write a small one for it, as a fir
 
 A game on CrossPad is a **firmware kit with one app**: the Firmware app's
 Library installs its package into the slot that is not running and restarts
-into it; the game's own Quit switches back. DOOM is the worked example --
-read it before starting, everything below was learnt there:
+into it; the game's own Quit switches back. DOOM (a port) and Pong (written
+from scratch) are the worked examples -- read the one closer to your game
+before starting; everything below was learnt there:
 
 | What | Where |
 |---|---|
-| The app | `CrossPad/crosspad-doom` (`src/DoomApp.cpp`, `port/`, `third_party/`, `crosspad_pc.cmake`, `CMakeLists.txt`, `linker.lf`) |
+| A port | `CrossPad/crosspad-doom` (`src/DoomApp.cpp`, `port/`, `third_party/`, `crosspad_pc.cmake`, `CMakeLists.txt`, `linker.lf`) |
+| A game from scratch | `crosspad-pong` (`src/PongGame.*` model + host test, `src/PongApp.cpp` LVGL objects on an `lv_timer`, `src/PongSynth.hpp` voices) |
 | Simulator: kits, slots, library | `crosspad-pc` `src/fw/`, `config/fw_kits/`, `scripts/make_fw_package.py`, CLAUDE.md "Firmware kits" |
 | Board: kit profile, single-app boot | `platform-idf` `config/profiles/doom.json`, `CMakeLists.txt` (profile keys), `main/gui/gui.cpp`, `main/app/CMakeLists.txt` |
 
@@ -44,8 +46,13 @@ read it before starting, everything below was learnt there:
 Good fits: 320x240 or less (or scales to it), C/C++, no threads of its own or
 easy to put on one task, input that maps onto 16 pads + an encoder + a power
 click, a few MB of RAM at most. For a game written from scratch (Pong,
-Piano Tiles, Tetris...) keep it in one app with a plain-C++ model that a host
-test could drive, and the LVGL/pads/audio around it.
+Piano Tiles, Tetris...) keep the rules in a plain-C++ model (`src/<Game>Game.{hpp,cpp}`,
+no LVGL, no FreeRTOS) with a host test (`tests/test_<game>.cpp`, a few cases
+and a `main`, built with `c++ -std=c++17`), and the LVGL/pads/audio around it.
+A game with difficulty levels gets a **balance run** in that test: an
+autopilot playing perfectly over a few seeds must still reach the end in
+finite time (Pong's first predicting CPU never missed, and a perfect player
+rallied forever from level 5), and a do-nothing player must lose.
 
 Decide before coding: the pad map (draw it, see 3), what the encoder does in
 a menu and in play, what power does (open/close the game's menu), and where
@@ -61,6 +68,7 @@ linker.lf              (board, when needed) big zero-initialised globals to PSRA
 src/<Game>App.cpp      the app (C++): LVGL, pads, encoder, power, audio node, Quit
 port/                  C glue the third-party code calls, and the C API it asks of the app
 third_party/<upstream> pinned upstream, patches marked crosspad:
+tests/                 host test of the game's model (no LVGL)
 assets/<game>.png      48x48 launcher icon
 data/                  only free data
 README.md              controls, data on the card, layout, licences
@@ -90,20 +98,27 @@ README.md              controls, data on the card, layout, licences
   flash), plain `xTaskCreate` elsewhere (stack in *words* there, *bytes* on
   ESP-IDF). Sleep with `vTaskDelay`, never busy-wait: the simulator's
   FreeRTOS runs one task at a time.
-- **Frame**: game renders into its own buffer; convert to RGB565 into a
+- **Frame, small game**: a handful of LVGL objects (rects, labels) moved
+  from an `lv_timer` (~16 ms) is simpler than any buffer -- Pong has no
+  frame buffer and no task. Use the buffer below for a game that draws its
+  own pixels.
+- **Frame, a game with its own renderer**: it renders into its own buffer; convert to RGB565 into a
   triple buffer (atomic index + dirty bit, no lock); an `lv_timer` (~15 ms)
   copies the newest into the buffer of one `lv_image` (`LV_COLOR_FORMAT_RGB565`,
   `lv_image_dsc_t` you own) and invalidates it. Big buffers with `std::malloc`
   (PSRAM on the board), never `lv_malloc` (LVGL's heap is 1 MB on the PC).
-  Stretch to the height the app gets (`lv_obj_get_content_height(parent)`,
-  up to 240): a kit without a top bar gets all 240 (236 in the simulator's
-  bezel).
+  Size everything from what the app gets (`lv_obj_update_layout(parent);
+  lv_obj_get_content_height(parent)`, never a constant): a kit without a top
+  bar gets the whole panel (240 on the board; the simulator's bezel may take
+  a few lines).
 - **Pads**: `IPadLogicHandler` -- index 0 = bottom left ("PAD 1"), 15 = top
   right ("PAD 16"). Press/release into a FreeRTOS queue the game task drains.
   Colour the pads by role in `onActivate` and on press/release
-  (`pm.setPadColor`); black is "off". Implement every pure virtual
-  (`onPadPressure` too).
-- **Encoder**: an `lv_group` with one focusable object kept in edit mode
+  (`pm.setPadColor`); black is "off". Do not use white for a role: the
+  simulator draws an unlit pad cream and a white LED grey, so it reads as
+  off. Implement every pure virtual (`onPadPressure` too).
+- **Encoder**: an `lv_group` with one focusable object (any `lv_obj_create`
+  -- scrollable by default, so LVGL treats it as editable; 1x1 is enough) kept in edit mode
   (`lv_group_set_editing(g, true)`, re-asserted in the frame timer -- a long
   press drops it); `LV_EVENT_KEY | LV_EVENT_PREPROCESS`: `LV_KEY_LEFT`/`RIGHT`
   for turns (wheel up = LEFT), `LV_KEY_ENTER` for the click. Make a *tap*
@@ -121,6 +136,10 @@ README.md              controls, data on the card, layout, licences
   = back to the other firmware; never `exit()` -- it ends the whole firmware.
 - **No keyboard**: anything asking for text gets a sensible default (DOOM's
   save names are the map's).
+- **Log the game's events** (`printf("[<Game>] level 3\n")`: level, point,
+  game over, menu choice) from the GUI thread, never the audio thread: a
+  test script reads them from the simulator's log instead of guessing from
+  pixels.
 - **Data**: `crosspad_gui::getGuiPlatform().storagePath("/crosspad/<game>")`
   is the card directory on every platform. Config and saves go there too.
 
@@ -135,7 +154,9 @@ atomic the audio thread sets. Sample rate from `onPrepare`. Music engines
 that need their own timing (DOOM's OPL) render inside `mix()` and run their
 callbacks there; their mutex is a `std::mutex` (the audio thread is no
 FreeRTOS task on every platform). For a melody game, a small synth of your
-own in the node (square/triangle + envelope) is enough and portable.
+own in the node (square/triangle + envelope, a few voices fed by the same
+ring) is enough and portable; notes as MIDI numbers, converted with
+`440 * 2^((n-69)/12)`.
 
 ## 5. The kit and the package
 
@@ -143,19 +164,26 @@ Simulator (`crosspad-pc`):
 
 1. `src/apps/crosspad-<game>` as a submodule (`.gitmodules` url
    `https://github.com/CrossPad/crosspad-<game>.git`). Before the GitHub repo
-   exists: develop in `~/GIT/crosspad-<game>`, `git -c protocol.file.allow=always
-   submodule add ~/GIT/crosspad-<game> src/apps/crosspad-<game>`, then set the
-   url in `.gitmodules` to the GitHub one (do not create or push GitHub repos
-   without the user's go-ahead).
+   exists (do not create or push one without the user's go-ahead):
+   `git init -b main ~/GIT/crosspad-<game>` and **commit something first**;
+   `git -c protocol.file.allow=always submodule add ~/GIT/crosspad-<game>
+   src/apps/crosspad-<game>`; set the url in `.gitmodules` to the GitHub one
+   and run `git submodule sync`; in the submodule checkout add the local repo
+   as a remote (`git remote add local ~/GIT/crosspad-<game>`). Edit and
+   commit in the submodule checkout, then `git pull` it into
+   `~/GIT/crosspad-<game>`.
 2. `config/fw_kits/<kit>.json`: `kit`, `display_name`, `version`,
    `"apps": ["crosspad-<game>"]`, `"standalone": "<App>"` (the REGISTER name),
    `"top_bar": false`, `description`; icon `config/fw_kits/icons/<kit>.png`
-   64x64 (`python3 scripts/fw_icon.py check`).
-3. `config/fw_kits/full.json` `exclude`: add `crosspad-<game>`.
-4. Build: `cmake -B build-<kit> -G Ninja -DCMAKE_BUILD_TYPE=Debug
+   64x64 (`python3 scripts/fw_icon.py check`). The app's `crosspad-app.json`
+   `"kits": ["<kit>"]` keeps it out of every other kit (compiled and
+   registered only in its own), on the board and in the simulator alike.
+3. Build: `cmake -B build-<kit> -G Ninja -DCMAKE_BUILD_TYPE=Debug
    -DCROSSPAD_FW_KIT=<kit> -DBUILD_TESTING=OFF && cmake --build build-<kit>`
    -> `bin/CrossPad-<kit>`; the full sim is `cmake -B build ... -DBUILD_TESTING=OFF`.
-5. Package: `python3 scripts/make_fw_package.py bin/CrossPad-<kit> --card <card>`.
+4. Package onto the test card: `sim_drive.py pkg bin/CrossPad-<kit>` (it
+   passes `--card $SIM_DIR/card`; `make_fw_package.py` alone writes to the
+   card of the user's own profile).
 
 Board (`platform-idf`, on the 2.x branch the user names):
 `config/profiles/<kit>.json` (`name`, `display_name`, `icon`
@@ -181,15 +209,30 @@ port (`CROSSPAD_PROFILE_DIR`, `CROSSPAD_REMOTE_PORT`, `CROSSPAD_NO_MIDI=1`):
 D=<this skill>/scripts/sim_drive.py
 export SIM_DIR=<scratch dir> SIM_PORT=19851 SIM_PC=<crosspad-pc worktree>
 python3 $D setup --card-data <path to data files>   # profile, card, data under crosspad/<game>/
-python3 $D launch bin/CrossPad-<kit>                 # waits for the control port
+python3 $D launch bin/CrossPad-<kit>                 # waits for the port and the boot splash
 python3 $D shot <name> [--full]                      # PNG in $SIM_DIR/shots/
 python3 $D pad 5 [--hold 0.3]  |  enc -1  |  click  |  power
-python3 $D level                                     # audio peak, to prove sound
+python3 $D level --n 40 --interval 0.05             # max audio peak: dense, the meter holds no peak
+python3 $D leds                                      # the pads' LED colours -- proof, not a screenshot
+python3 $D app Firmware                              # the Library, straight away
+python3 $D pkg bin/CrossPad-<kit>                    # the package onto this card
 python3 $D slots                                     # boot slot and both slots' state
 python3 $D kill                                      # this simulator only
 ```
 
-Look at every screenshot you take (Read the PNG). Prove, in this order:
+Look at every screenshot you take (Read the PNG). LED colours are proven
+with `leds`, not by a `--full` screenshot. After a `click X Y`, trust the next
+screenshot rather than the reply's `hit` (it names the container, not the
+button). In the Firmware app the Library's first tile is the running slot,
+the packages follow; the card's buttons sit at the bottom and move with the
+text.
+
+To *play* (a level change, a melody to its end), drive the game from a
+Python script that imports `sim_drive` (see its docstring): an LCD
+screenshot takes ~20 ms, so a loop can find the ball or the tile with PIL
+and answer with `encoder_rotate`/`pad_press` -- and watch the log lines of 3.
+
+Prove, in this order:
 the game renders full-panel; every pad/encoder/power action does what the
 README says; sound (`level` > 0 while it should play); the full kit's
 Library shows the package (icon, text) -> **Install and run** -> the game's
@@ -203,6 +246,8 @@ Traps:
 - The simulator's process is named `Scheduler`; find it by its exe path.
 - A switch ends the process: a control request sent then may get no answer.
 - Dialog buttons move with their text: take a screenshot before clicking.
+- `launch` returns once the boot splash has played (`--settle`); after a
+  slot switch use `wait`.
 - `cmake --build` of a kit dir writes `bin/`: two kits never share a name.
 
 ## 7. Done

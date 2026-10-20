@@ -10,19 +10,28 @@ Environment:
 
 Commands:
   setup [--card-data DIR --game NAME]   profile + card; DIR's files -> card/crosspad/NAME/
-  launch EXE [ARGS...]                  start a simulator binary, wait for its port
-  wait                                  wait for the port (after a slot switch)
+  launch EXE [ARGS...] [--settle S]     start a simulator binary, wait for its port and the boot
+                                        splash (S seconds after the port, default 7)
+  wait [--settle S]                     the same after a slot switch
+  cmd JSON                              any control request, e.g. '{"cmd":"led_state"}'
+  leds                                  the 16 pads' LED colours (index 0 = bottom left), as a 4x4 grid
+  pkg EXE                               make_fw_package.py onto THIS card (never the user's)
   shot NAME [--full]                    screenshot (LCD, or the whole window) -> shots/NAME.png
   pad N [--hold S]                      press and release pad N (0 = bottom left)
   press N | release N                   pad down / up
   enc DELTA                             encoder turns (+1 = wheel up = LV_KEY_LEFT)
   click [X Y]                           encoder click, or a touch at LCD X,Y
   power                                 power click
-  level [--n N]                         audio peak of OUT1, N samples
+  level [--n N] [--interval S]          audio peak of OUT1: N samples, then their max (the meter
+                                        holds no peak: sample densely to catch a blip)
   app NAME                              start an app by name
   slots                                 boot slot and both slots (profile/fw/slots.json)
   log [PATTERN]                         lines of sim.log (all, or containing PATTERN)
   kill                                  stop the simulators started from SIM_DIR/SIM_PC binaries
+
+As a module (an autoplay or a long test): sys.path.insert(0, <this dir>);
+import sim_drive as sd; sd.cmd(cmd="encoder_rotate", delta=1); sd.shot_png("x")
+-> path of the LCD PNG (~20 ms), readable with PIL to find what is on screen.
 """
 import argparse
 import json
@@ -52,11 +61,13 @@ def port_up():
         return False
 
 
-def wait_port(timeout=90):
+def wait_port(timeout=90, settle=7.0):
+    """The port opens when the boot is done, but the splash plays on for a few
+    seconds over the launcher or the app: `settle` covers it."""
     end = time.time() + timeout
     while time.time() < end:
         if port_up():
-            time.sleep(1.5)   # the launcher (or the app) is built right after the port opens
+            time.sleep(settle)
             return True
         time.sleep(0.3)
     return False
@@ -76,6 +87,15 @@ def cmd(**kw):
         return None
 
 
+def shot_png(name, full=False):
+    """A screenshot; returns its path (None when the simulator did not answer)."""
+    path = SIM_DIR / "shots" / f"{name}.png"
+    kw = {"cmd": "screenshot", "file": str(path)}
+    if not full:
+        kw["region"] = "lcd"
+    return path if cmd(**kw) else None
+
+
 def out(r):
     print(json.dumps(r) if r is not None else "no answer")
 
@@ -85,7 +105,11 @@ def main():
     sub = ap.add_subparsers(dest="c", required=True)
     p = sub.add_parser("setup"); p.add_argument("--card-data"); p.add_argument("--game")
     p = sub.add_parser("launch"); p.add_argument("exe"); p.add_argument("args", nargs="*")
-    sub.add_parser("wait")
+    p.add_argument("--settle", type=float, default=7.0)
+    p = sub.add_parser("wait"); p.add_argument("--settle", type=float, default=7.0)
+    p = sub.add_parser("cmd"); p.add_argument("json")
+    sub.add_parser("leds")
+    p = sub.add_parser("pkg"); p.add_argument("exe")
     p = sub.add_parser("shot"); p.add_argument("name"); p.add_argument("--full", action="store_true")
     p = sub.add_parser("pad"); p.add_argument("n", type=int); p.add_argument("--hold", type=float, default=0.15)
     p = sub.add_parser("press"); p.add_argument("n", type=int)
@@ -94,6 +118,7 @@ def main():
     p = sub.add_parser("click"); p.add_argument("xy", nargs="*", type=int)
     sub.add_parser("power")
     p = sub.add_parser("level"); p.add_argument("--n", type=int, default=5)
+    p.add_argument("--interval", type=float, default=0.3)
     p = sub.add_parser("app"); p.add_argument("name")
     sub.add_parser("slots")
     p = sub.add_parser("log"); p.add_argument("pattern", nargs="?")
@@ -121,9 +146,19 @@ def main():
         log = open(SIM_DIR / "sim.log", "ab")
         subprocess.Popen(["stdbuf", "-oL", "-eL", str(exe), *a.args], env=env(), stdout=log, stderr=log,
                          cwd=SIM_DIR, start_new_session=True)
-        print("up" if wait_port() else "port never opened: see sim.log")
+        print("up" if wait_port(settle=a.settle) else "port never opened: see sim.log")
     elif a.c == "wait":
-        print("up" if wait_port() else "port never opened")
+        print("up" if wait_port(settle=a.settle) else "port never opened")
+    elif a.c == "cmd":
+        out(cmd(**json.loads(a.json)))
+    elif a.c == "leds":
+        r = cmd(cmd="led_state")
+        print(json.dumps(r, indent=1) if r else "no answer")
+    elif a.c == "pkg":
+        exe = Path(a.exe)
+        exe = exe if exe.is_absolute() else PC / exe
+        subprocess.run([sys.executable, str(PC / "scripts" / "make_fw_package.py"), str(exe), "--card",
+                        str(SIM_DIR / "card")], check=True)
     elif a.c == "shot":
         kw = {"cmd": "screenshot", "file": str(SIM_DIR / "shots" / f"{a.name}.png")}
         if not a.full:
@@ -153,10 +188,13 @@ def main():
     elif a.c == "power":
         out(cmd(cmd="power_click"))
     elif a.c == "level":
+        peak = 0.0
         for _ in range(a.n):
             r = cmd(cmd="audio_level")
-            print(f"{r['left']:.4f} {r['right']:.4f}" if r else "no answer")
-            time.sleep(0.3)
+            if r:
+                peak = max(peak, r["left"], r["right"])
+            time.sleep(a.interval)
+        print(f"max {peak:.4f} over {a.n} samples")
     elif a.c == "app":
         out(cmd(cmd="app_start", name=a.name))
     elif a.c == "slots":
