@@ -276,6 +276,22 @@ Traps:
   `SIM_DIR`.
 - `cmake --build` of a kit dir writes `bin/`: two kits never share a name.
 
+## 6b. On the board (when it is free -- the bench rules in `~/GIT/hil_logs/BENCH.md`)
+
+Claim the bench ("Teraz") first. `tools/bench.py flash --assets` puts the
+full kit in a slot; `tools/make_fw_package.py --build build_<kit> --name
+<kit>-<ver> --profile config/profiles/<kit>.json --out <dir>`, then
+`tools/fs_transfer.py mkdir/push` each file into
+`/sdcard/crosspad/firmware/<kit>-<ver>/`; `bench.py hil cdc "FW_INSTALL
+<pkg>"` (poll `FW_INSTALL` until `phase=done`), `FW_SWITCH`, `FW_SLOTS`,
+`APP_LIST` (the game must be `running=`). Drive it with `PWR_GESTURE
+CLICK`, `ENC_ROTATE N` (**+N = clockwise = LV_KEY_RIGHT = down a list**, the
+opposite sign of the simulator's wheel), `ENC_PRESS`, `bench.py hil pad
+press/release I`; see it with `SCREENSHOT` (`--expect OK --timeout 20000`)
+then `fs_transfer.py pull /sdcard/crosspad/screen.bmp`; `led state`,
+`audio level` (`amp=True` = the speakers heard it), `mem`. Quit back to the
+full kit before you release the bench, and log what is in each slot.
+
 ## 7. Done
 
 - README: controls (pad table by printed label), data on the card, layout,
