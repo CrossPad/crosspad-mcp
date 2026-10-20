@@ -17,17 +17,22 @@ Commands:
   leds                                  the 16 pads' LED colours (index 0 = bottom left), as a 4x4 grid
   pkg EXE                               make_fw_package.py onto THIS card (never the user's)
   shot NAME [--full]                    screenshot (LCD, or the whole window) -> shots/NAME.png
+                                        (the LCD shot is 320x240; in the simulator the app's area
+                                        is 316x236 from (2,2), inside the panel's bezel)
+  snap NAME                             shot NAME plus shots/NAME.leds (the pads' colours, same moment)
   pad N [--hold S]                      press and release pad N (0 = bottom left)
   press N | release N                   pad down / up
-  enc DELTA                             encoder turns (+1 = wheel up = LV_KEY_LEFT)
+  enc DELTA                             encoder turns: +N = wheel up = LV_KEY_LEFT = UP a list,
+                                        -N = DOWN a list. Check the selection before clicking.
   click [X Y]                           encoder click, or a touch at LCD X,Y
   power                                 power click
   level [--n N] [--interval S]          audio peak of OUT1: N samples, then their max (the meter
                                         holds no peak: sample densely to catch a blip)
   app NAME                              start an app by name
   slots                                 boot slot and both slots (profile/fw/slots.json)
-  log [PATTERN]                         lines of sim.log (all, or containing PATTERN)
-  kill                                  stop the simulators started from SIM_DIR/SIM_PC binaries
+  log [PATTERN] [--all]                 lines of sim.log since the last launch (--all: every run)
+  kill                                  stop the simulator this script launched (its PID, and the slot
+                                        binaries under SIM_DIR it switched to) -- never anyone else's
 
 As a module (an autoplay or a long test): sys.path.insert(0, <this dir>);
 import sim_drive as sd; sd.cmd(cmd="encoder_rotate", delta=1); sd.shot_png("x")
@@ -87,6 +92,23 @@ def cmd(**kw):
         return None
 
 
+LAUNCH_MARK = "==== sim_drive launch ===="
+
+
+def leds():
+    """The 16 pads' colours as setPadColor() left them (`colors`), index 0 =
+    bottom left; the strip's own values are `strip`."""
+    r = cmd(cmd="led_state")
+    return r.get("colors") if r else None
+
+
+def leds_grid(colors):
+    rows = []
+    for row in range(3, -1, -1):
+        rows.append(" ".join(f"{c:06X}" if isinstance(c, int) else str(c) for c in colors[row * 4:row * 4 + 4]))
+    return "\n".join(rows)
+
+
 def shot_png(name, full=False):
     """A screenshot; returns its path (None when the simulator did not answer)."""
     path = SIM_DIR / "shots" / f"{name}.png"
@@ -111,6 +133,7 @@ def main():
     sub.add_parser("leds")
     p = sub.add_parser("pkg"); p.add_argument("exe")
     p = sub.add_parser("shot"); p.add_argument("name"); p.add_argument("--full", action="store_true")
+    p = sub.add_parser("snap"); p.add_argument("name")
     p = sub.add_parser("pad"); p.add_argument("n", type=int); p.add_argument("--hold", type=float, default=0.15)
     p = sub.add_parser("press"); p.add_argument("n", type=int)
     p = sub.add_parser("release"); p.add_argument("n", type=int)
@@ -121,7 +144,7 @@ def main():
     p.add_argument("--interval", type=float, default=0.3)
     p = sub.add_parser("app"); p.add_argument("name")
     sub.add_parser("slots")
-    p = sub.add_parser("log"); p.add_argument("pattern", nargs="?")
+    p = sub.add_parser("log"); p.add_argument("pattern", nargs="?"); p.add_argument("--all", action="store_true")
     sub.add_parser("kill")
     a = ap.parse_args()
 
@@ -144,16 +167,23 @@ def main():
         exe = Path(a.exe)
         exe = exe if exe.is_absolute() else PC / exe
         log = open(SIM_DIR / "sim.log", "ab")
-        subprocess.Popen(["stdbuf", "-oL", "-eL", str(exe), *a.args], env=env(), stdout=log, stderr=log,
-                         cwd=SIM_DIR, start_new_session=True)
+        log.write(f"{LAUNCH_MARK} {exe}\n".encode())
+        log.flush()
+        proc = subprocess.Popen(["stdbuf", "-oL", "-eL", str(exe), *a.args], env=env(), stdout=log, stderr=log,
+                                cwd=SIM_DIR, start_new_session=True)
+        (SIM_DIR / "sim.pid").write_text(str(proc.pid))
         print("up" if wait_port(settle=a.settle) else "port never opened: see sim.log")
     elif a.c == "wait":
         print("up" if wait_port(settle=a.settle) else "port never opened")
     elif a.c == "cmd":
         out(cmd(**json.loads(a.json)))
     elif a.c == "leds":
-        r = cmd(cmd="led_state")
-        print(json.dumps(r, indent=1) if r else "no answer")
+        c = leds()
+        print(leds_grid(c) if c else "no answer")
+    elif a.c == "snap":
+        out(cmd(cmd="screenshot", file=str(SIM_DIR / "shots" / f"{a.name}.png"), region="lcd"))
+        c = leds()
+        (SIM_DIR / "shots" / f"{a.name}.leds").write_text((leds_grid(c) if c else "no answer") + "\n")
     elif a.c == "pkg":
         exe = Path(a.exe)
         exe = exe if exe.is_absolute() else PC / exe
@@ -201,19 +231,29 @@ def main():
         f = SIM_DIR / "profile" / "fw" / "slots.json"
         print(f.read_text() if f.exists() else "no slots yet")
     elif a.c == "log":
-        for line in (SIM_DIR / "sim.log").read_text(errors="replace").splitlines():
+        lines = (SIM_DIR / "sim.log").read_text(errors="replace").splitlines()
+        if not a.all:
+            marks = [i for i, l in enumerate(lines) if l.startswith(LAUNCH_MARK)]
+            lines = lines[marks[-1] + 1:] if marks else lines
+        for line in lines:
             if not a.pattern or a.pattern in line:
                 print(line)
     elif a.c == "kill":
-        # Anchored on the binaries' paths: never this script, never another
-        # session's simulator started from elsewhere.
-        pats = [f"^{PC}/bin/CrossPad", f"^{SIM_DIR}/profile/fw/slot_"]
+        # The PID this script launched, and the slot binaries a switch started
+        # under this SIM_DIR's profile -- anchored, so never this script and
+        # never another session's simulator, even one from the same worktree.
         killed = []
-        for pat in pats:
-            pids = subprocess.run(["pgrep", "-f", pat], capture_output=True, text=True).stdout.split()
-            for pid in pids:
-                subprocess.run(["kill", pid])
-            killed += pids
+        pidfile = SIM_DIR / "sim.pid"
+        if pidfile.exists():
+            pid = pidfile.read_text().strip()
+            if subprocess.run(["kill", pid], capture_output=True).returncode == 0:
+                killed.append(pid)
+            pidfile.unlink()
+        pids = subprocess.run(["pgrep", "-f", f"^{SIM_DIR}/profile/fw/slot_"], capture_output=True,
+                              text=True).stdout.split()
+        for pid in pids:
+            subprocess.run(["kill", pid])
+        killed += pids
         print("killed", killed or "none")
 
 

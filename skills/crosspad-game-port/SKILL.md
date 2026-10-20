@@ -15,6 +15,7 @@ before starting; everything below was learnt there:
 |---|---|
 | A port | `CrossPad/crosspad-doom` (`src/DoomApp.cpp`, `port/`, `third_party/`, `crosspad_pc.cmake`, `CMakeLists.txt`, `linker.lf`) |
 | A game from scratch | `crosspad-pong` (`src/PongGame.*` model + host test, `src/PongApp.cpp` LVGL objects on an `lv_timer`, `src/PongSynth.hpp` voices) |
+| A rhythm game | `crosspad-pianotiles` (song clock, press timestamps, holds, LEDs as the field, progress on the card from a task) |
 | Simulator: kits, slots, library | `crosspad-pc` `src/fw/`, `config/fw_kits/`, `scripts/make_fw_package.py`, CLAUDE.md "Firmware kits" |
 | Board: kit profile, single-app boot | `platform-idf` `config/profiles/doom.json`, `CMakeLists.txt` (profile keys), `main/gui/gui.cpp`, `main/app/CMakeLists.txt` |
 
@@ -48,7 +49,8 @@ easy to put on one task, input that maps onto 16 pads + an encoder + a power
 click, a few MB of RAM at most. For a game written from scratch (Pong,
 Piano Tiles, Tetris...) keep the rules in a plain-C++ model (`src/<Game>Game.{hpp,cpp}`,
 no LVGL, no FreeRTOS) with a host test (`tests/test_<game>.cpp`, a few cases
-and a `main`, built with `c++ -std=c++17`), and the LVGL/pads/audio around it.
+and a `main`, built with `c++ -std=c++17 -I <crosspad-core>/include` when it
+touches a core header, e.g. a synth that is an `IAudioNode`), and the LVGL/pads/audio around it.
 A game with difficulty levels gets a **balance run** in that test: an
 autopilot playing perfectly over a few seeds must still reach the end in
 finite time (Pong's first predicting CPU never missed, and a perfect player
@@ -123,7 +125,8 @@ README.md              controls, data on the card, layout, licences
   press drops it); `LV_EVENT_KEY | LV_EVENT_PREPROCESS`: `LV_KEY_LEFT`/`RIGHT`
   for turns (wheel up = LEFT), `LV_KEY_ENTER` for the click. Make a *tap*
   (down now, up ~60 ms later) so a game reading key state per tick sees it.
-  Restore the previous group with `lv_indev_restore_group()` on destroy.
+  Restore the previous group with `lv_indev_restore_group()`
+  (`crosspad-gui/widgets/gui_helpers.h`, global namespace) on destroy.
 - **Power click**: `crosspad_gui::ui_back_push(fn, nullptr)` in create (it
   runs before the encoder's edit-mode step of `powerBack()`), remove it in
   destroy. Power = the game's menu / pause.
@@ -136,12 +139,25 @@ README.md              controls, data on the card, layout, licences
   = back to the other firmware; never `exit()` -- it ends the whole firmware.
 - **No keyboard**: anything asking for text gets a sensible default (DOOM's
   save names are the map's).
+- **Timing games** (rhythm, reaction): stamp every press with
+  `crosspad::getClock()` when it arrives and judge it against the song's own
+  clock -- presses come on the LVGL thread in the simulator and from another
+  task on the board, and a frame is no clock.
+- **Text on screen in ASCII** (`Fur Elise`) unless you checked the font has
+  the letter on both platforms: the simulator's fonts and the board's do not
+  cover the same characters.
 - **Log the game's events** (`printf("[<Game>] level 3\n")`: level, point,
   game over, menu choice) from the GUI thread, never the audio thread: a
   test script reads them from the simulator's log instead of guessing from
   pixels.
 - **Data**: `crosspad_gui::getGuiPlatform().storagePath("/crosspad/<game>")`
   is the card directory on every platform. Config and saves go there too.
+  Directories with `crosspad::getFileSystem().makeDir()` (core, one level a
+  call), never `mkdir`/`_mkdir`. **Never write the card on the LVGL thread**
+  (a write waits on the card): a long-lived FreeRTOS task woken with
+  `xTaskNotifyGive`, the newest text handed over under a FreeRTOS mutex
+  (not `std::mutex`: the simulator's FreeRTOS runs one task at a time) --
+  Piano Tiles' `saveProgress()`. A small read at app start is fine.
 
 ## 4. Sound
 
@@ -165,16 +181,18 @@ Simulator (`crosspad-pc`):
 1. `src/apps/crosspad-<game>` as a submodule (`.gitmodules` url
    `https://github.com/CrossPad/crosspad-<game>.git`). Before the GitHub repo
    exists (do not create or push one without the user's go-ahead):
-   `git init -b main ~/GIT/crosspad-<game>` and **commit something first**;
+   `git init -b main ~/GIT/crosspad-<game>` and **commit something first**
+   (never amend it afterwards: the two copies would part ways);
    `git -c protocol.file.allow=always submodule add ~/GIT/crosspad-<game>
    src/apps/crosspad-<game>`; set the url in `.gitmodules` to the GitHub one
    and run `git submodule sync`; in the submodule checkout add the local repo
    as a remote (`git remote add local ~/GIT/crosspad-<game>`). Edit and
-   commit in the submodule checkout, then `git pull` it into
+   commit in the submodule checkout, then `git pull --ff-only` it into
    `~/GIT/crosspad-<game>`.
 2. `config/fw_kits/<kit>.json`: `kit`, `display_name`, `version`,
    `"apps": ["crosspad-<game>"]`, `"standalone": "<App>"` (the REGISTER name),
-   `"top_bar": false`, `description`; icon `config/fw_kits/icons/<kit>.png`
+   `"top_bar": false`, `description` (at most 160 characters, the board's
+   profile limit); icon `config/fw_kits/icons/<kit>.png`
    64x64 (`python3 scripts/fw_icon.py check`). The app's `crosspad-app.json`
    `"kits": ["<kit>"]` keeps it out of every other kit (compiled and
    registered only in its own), on the board and in the simulator alike.
@@ -211,13 +229,15 @@ export SIM_DIR=<scratch dir> SIM_PORT=19851 SIM_PC=<crosspad-pc worktree>
 python3 $D setup --card-data <path to data files>   # profile, card, data under crosspad/<game>/
 python3 $D launch bin/CrossPad-<kit>                 # waits for the port and the boot splash
 python3 $D shot <name> [--full]                      # PNG in $SIM_DIR/shots/
-python3 $D pad 5 [--hold 0.3]  |  enc -1  |  click  |  power
+python3 $D pad 5 [--hold 0.3]  |  enc -1 (down a list)  |  click  |  power
 python3 $D level --n 40 --interval 0.05             # max audio peak: dense, the meter holds no peak
-python3 $D leds                                      # the pads' LED colours -- proof, not a screenshot
+python3 $D leds                                      # the pads' colours (setPadColor's) -- proof, not a screenshot
+python3 $D snap <name>                               # a shot and the LED grid of the same moment
 python3 $D app Firmware                              # the Library, straight away
 python3 $D pkg bin/CrossPad-<kit>                    # the package onto this card
 python3 $D slots                                     # boot slot and both slots' state
-python3 $D kill                                      # this simulator only
+python3 $D log "[<Game>]"                            # this run's lines only (--all: every run)
+python3 $D kill                                      # the simulator this script launched, by PID
 ```
 
 Look at every screenshot you take (Read the PNG). LED colours are proven
@@ -228,9 +248,12 @@ the packages follow; the card's buttons sit at the bottom and move with the
 text.
 
 To *play* (a level change, a melody to its end), drive the game from a
-Python script that imports `sim_drive` (see its docstring): an LCD
-screenshot takes ~20 ms, so a loop can find the ball or the tile with PIL
-and answer with `encoder_rotate`/`pad_press` -- and watch the log lines of 3.
+Python script that imports `sim_drive` (see its docstring): a control round
+trip takes ~11 ms and an LCD screenshot ~25 ms, so a loop can find the ball
+or the tile with PIL (the app's area is 316x236 from (2,2) of the 320x240
+shot) or read the LEDs, and answer with `encoder_rotate`/`pad_press` -- and
+watch the log lines of 3. Check a menu's selection (shot or log) before
+each click: `enc +1` goes UP a list.
 
 Prove, in this order:
 the game renders full-panel; every pad/encoder/power action does what the
@@ -248,6 +271,9 @@ Traps:
 - Dialog buttons move with their text: take a screenshot before clicking.
 - `launch` returns once the boot splash has played (`--settle`); after a
   slot switch use `wait`.
+- A binary launched by hand becomes slot A of the profile, and a slot
+  switch fills B: proving "Quit with no other firmware" needs a fresh
+  `SIM_DIR`.
 - `cmake --build` of a kit dir writes `bin/`: two kits never share a name.
 
 ## 7. Done
