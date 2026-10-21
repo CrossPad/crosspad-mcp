@@ -54,6 +54,7 @@ for a global install, or `<crosspad-mcp>/skills/crosspad/scripts/` in the repo/p
 | I just learned something non-obvious — where do I record it? | `reference/memory.md` |
 | Trace firmware variables in real time over SWD (ST-Link) | use the **`swd-tracer`** skill |
 | Did a change move the UI or cost frames? (screenshots per app + an LVGL_STATS benchmark, before vs after) | use the **`before-after`** skill |
+| Port a game to CrossPad, or make one, as a firmware kit of its own | use the **`crosspad-game-port`** skill |
 
 ## Conventions
 

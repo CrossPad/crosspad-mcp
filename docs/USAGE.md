@@ -87,6 +87,11 @@ This package ships three Claude Code skills (bundled in the `crosspad` plugin):
   over ST-Link (see the SWD tracing section below).
 - **`before-after`** — proof that a change did or did not move the UI or cost
   frames: per-app simulator screenshots plus an `LVGL_STATS` benchmark on the board.
+- **`crosspad-game-port`** — a game (ported or written from scratch) as a
+  firmware kit of its own: the app repo, pads/encoder/power, the frame, sound
+  through the audio module, Quit back to the other slot, the simulator test
+  loop (`scripts/sim_drive.py`) and the board's. Worked examples: DOOM, Pong,
+  Piano Tiles.
 
 Install them as a plugin:
 
