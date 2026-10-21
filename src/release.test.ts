@@ -32,6 +32,13 @@ describe("release metadata", () => {
     expect(pkg.scripts["typecheck:eval"]).toBe("tsc -p tsconfig.eval.json --noEmit");
   });
 
+  it("ships the crosspad-trace bin, built from src/trace-cli.ts with a node shebang", () => {
+    const bin = (pkg as unknown as { bin: Record<string, string> }).bin;
+    expect(bin["crosspad-mcp-server"]).toBe("dist/index.js");
+    expect(bin["crosspad-trace"]).toBe("dist/trace-cli.js");
+    expect(read("src/trace-cli.ts").startsWith("#!/usr/bin/env node\n")).toBe(true);
+  });
+
   it("CHANGELOG's newest released entry is 10.3.0", () => {
     const firstHeading = changelog
       .split("\n")

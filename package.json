@@ -6,7 +6,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "crosspad-mcp-server": "dist/index.js"
+    "crosspad-mcp-server": "dist/index.js",
+    "crosspad-trace": "dist/trace-cli.js"
   },
   "files": [
     "dist/",

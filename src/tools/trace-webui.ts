@@ -140,6 +140,9 @@ export class Dashboard {
       // loopback Origin (the local UI) or no Origin at all (non-browser clients,
       // e.g. the headless test harness, which never send an Origin header).
       this.wss = new WebSocketServer({ server: this.server, verifyClient: originIsLoopback });
+      // ws re-emits the server's listen error on itself; unheard, it throws before
+      // the server's own listener runs and a taken port left this promise pending.
+      this.wss.on("error", reject);
       this.wss.on("connection", (ws) => {
         this.clients.add(ws);
         // §12.2: hello now carries whether a trace is active + its signal set so
