@@ -12,6 +12,7 @@ describe("plugin manifests", () => {
     expect(pj.name).toBe("crosspad");
     expect(pj.description).toMatch(/swd-tracer/);
     expect(pj.description).toMatch(/before-after/);
+    expect(pj.description).toMatch(/crosspad-game-port/);
     expect(pj.description).toMatch(/onboard|help|getting started/i);
   });
 
@@ -91,5 +92,22 @@ describe("before-after skill", () => {
       expect(existsSync(p)).toBe(true);
       expect(statSync(p).mode & 0o100).toBeTruthy();
     }
+  });
+});
+
+describe("crosspad-game-port skill", () => {
+  const dir = "skills/crosspad-game-port";
+
+  it("SKILL.md names itself and says when to fire", () => {
+    const md = read(`${dir}/SKILL.md`);
+    expect(md).toMatch(/^---[\s\S]*?\nname:\s*crosspad-game-port\s*\n[\s\S]*?---/);
+    expect(md).toMatch(/description:[^\n]*port[^\n]*game/i);
+    expect(md).toMatch(/scripts\/sim_drive\.py/);
+  });
+
+  it("ships the simulator driver, executable", () => {
+    const p = resolve(root, dir, "scripts", "sim_drive.py");
+    expect(existsSync(p)).toBe(true);
+    expect(statSync(p).mode & 0o100).toBeTruthy();
   });
 });
