@@ -7,7 +7,7 @@ import {
 describe("hil schemas mirror the crosspad_hil contract dicts", () => {
   it("DeviceSchema accepts Device.to_dict() with null ports and extra keys", () => {
     const d = DeviceSchema.parse({
-      id: "dev_3f2a", serial: "A1B2C3", usb_mode: "default", board_rev: null,
+      id: "dev_a001", serial: "A1B2C3", usb_mode: "default", board_rev: null,
       ports: {
         cdc: { path: "/dev/ttyACM0", vid: 0x303a, pid: 0x3456, serial: "A1B2C3", product: "Crosspad", location: "1-3.2" },
         console: { path: "/dev/ttyACM1", vid: 0x0483, pid: 0x5740, serial: null, product: "CrossPad MIDI+Serial", location: "1-3.1" },
@@ -16,7 +16,7 @@ describe("hil schemas mirror the crosspad_hil contract dicts", () => {
       },
       firmware: { version: "1.2.3" },
     });
-    expect(d.id).toBe("dev_3f2a");
+    expect(d.id).toBe("dev_a001");
     expect(d.ports.cdc?.path).toBe("/dev/ttyACM0");
     expect(d.ports.uac2).toBeNull();
     expect((d as Record<string, unknown>).firmware).toEqual({ version: "1.2.3" });
@@ -28,7 +28,7 @@ describe("hil schemas mirror the crosspad_hil contract dicts", () => {
 
   it("SnapshotSchema accepts a snapshot with null sections", () => {
     const s = SnapshotSchema.parse({
-      snapshot_id: "snap_41", device: "dev_3f2a", usb_mode: "default",
+      snapshot_id: "snap_41", device: "dev_a001", usb_mode: "default",
       apps: { running: "Sampler", available: ["Sampler"] }, ui: null, kit: { current: 3, name: "DRUMS", loading: false, pending: -1 },
       leds: null, pads: null, mem: null, ble: null, console: null, ts: 1756100000.5, changed: ["kit"],
     });

@@ -12,9 +12,9 @@ const argvOf = (call: number) => vi.mocked(execFile).mock.calls[call][1] as unkn
 
 describe("resolveBoard", () => {
   it("passes --board and --device through to the resolver", async () => {
-    const d = await resolveBoard(undefined, "dev_31ea");
+    const d = await resolveBoard(undefined, "dev_a003");
     expect(d.build_dir).toBe("build_v2");
-    expect(argvOf(0)).toEqual(expect.arrayContaining(["--json", "--device", "dev_31ea"]));
+    expect(argvOf(0)).toEqual(expect.arrayContaining(["--json", "--device", "dev_a003"]));
     expect(argvOf(0)).not.toContain("--board");
     await resolveBoard("v1");
     expect(argvOf(1)).toEqual(expect.arrayContaining(["--board", "v1"]));

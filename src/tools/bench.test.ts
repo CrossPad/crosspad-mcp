@@ -22,15 +22,15 @@ function ctxFor(daemon: ReturnType<typeof fakeDaemon>, policy: Policy = LAB): To
 }
 
 const busy = () => new HilError("BENCH_BUSY",
-  "dev_1ede is claimed by pidf (firmware_app) since 23:45; the lease runs to 00:15 (in 25 min) unless renewed; you (twin) may not run crosspad_flash esp uart",
-  "claim it to join the queue", { holder: "pidf", device: "dev_1ede", queue: [] });
+  "dev_a002 is claimed by pidf (firmware_app) since 23:45; the lease runs to 00:15 (in 25 min) unless renewed; you (twin) may not run crosspad_flash esp uart",
+  "claim it to join the queue", { holder: "pidf", device: "dev_a002", queue: [] });
 
 describe("crosspad_bench_claim", () => {
   let fs: ReturnType<typeof fakeServer>;
   beforeEach(() => { fs = fakeServer(); });
 
   it("granted: forwards ttl in seconds and remembers the holder for later calls", async () => {
-    const d = fakeDaemon({ "bench.claim": () => ({ granted: true, holder: "pidf", device: "dev_1ede", lease: LEASE, queue: [], firmware: null, history: [], message: "pidf holds dev_1ede" }) });
+    const d = fakeDaemon({ "bench.claim": () => ({ granted: true, holder: "pidf", device: "dev_a002", lease: LEASE, queue: [], firmware: null, history: [], message: "pidf holds dev_a002" }) });
     registerBenchClaimTool(fs.server, ctxFor(d));
     const r = await fs.tools.get(CLAIM_TOOL)!.cb({ holder: "pidf", purpose: "firmware_app", ttl_min: 45 }, fakeExtra());
     const sc = r.structuredContent as Record<string, any>;
@@ -41,7 +41,7 @@ describe("crosspad_bench_claim", () => {
   });
 
   it("queued: reports the holder and position, and tells the caller not to touch the board", async () => {
-    const d = fakeDaemon({ "bench.claim": () => ({ granted: false, holder: "twin", device: "dev_1ede", lease: LEASE, position: 2, queue: [{ holder: "stm", position: 1 }, { holder: "twin", position: 2 }], firmware: null, history: [], message: "dev_1ede is claimed by pidf … you are #2 in the queue" }) });
+    const d = fakeDaemon({ "bench.claim": () => ({ granted: false, holder: "twin", device: "dev_a002", lease: LEASE, position: 2, queue: [{ holder: "stm", position: 1 }, { holder: "twin", position: 2 }], firmware: null, history: [], message: "dev_a002 is claimed by pidf … you are #2 in the queue" }) });
     registerBenchClaimTool(fs.server, ctxFor(d));
     const r = await fs.tools.get(CLAIM_TOOL)!.cb({ holder: "twin", purpose: "smoke", force: false }, fakeExtra());
     const sc = r.structuredContent as Record<string, any>;
@@ -51,10 +51,10 @@ describe("crosspad_bench_claim", () => {
   });
 
   it("force is passed as bench_force", async () => {
-    const d = fakeDaemon({ "bench.claim": () => ({ granted: true, holder: "twin", device: "dev_1ede", lease: LEASE, queue: [], firmware: null, history: [], message: "" }) });
+    const d = fakeDaemon({ "bench.claim": () => ({ granted: true, holder: "twin", device: "dev_a002", lease: LEASE, queue: [], firmware: null, history: [], message: "" }) });
     registerBenchClaimTool(fs.server, ctxFor(d));
-    await fs.tools.get(CLAIM_TOOL)!.cb({ holder: "twin", purpose: "x", force: true, device: "dev_1ede" }, fakeExtra());
-    expect(d.calls[0].args).toMatchObject({ bench_force: true, device: "dev_1ede" });
+    await fs.tools.get(CLAIM_TOOL)!.cb({ holder: "twin", purpose: "x", force: true, device: "dev_a002" }, fakeExtra());
+    expect(d.calls[0].args).toMatchObject({ bench_force: true, device: "dev_a002" });
   });
 
   it("is hidden under --read-only, while status stays", async () => {
@@ -71,7 +71,7 @@ describe("crosspad_bench_release", () => {
   beforeEach(() => { fs = fakeServer(); });
 
   it("defaults the holder to the name this session claimed with", async () => {
-    const d = fakeDaemon({ "bench.release": () => ({ released: true, left_queue: false, device: "dev_1ede", lease: null, queue: [], firmware: { desc: "pidf abc" }, history: [] }) });
+    const d = fakeDaemon({ "bench.release": () => ({ released: true, left_queue: false, device: "dev_a002", lease: null, queue: [], firmware: { desc: "pidf abc" }, history: [] }) });
     (d as HolderSlot).benchHolder = "pidf";
     registerBenchReleaseTool(fs.server, ctxFor(d));
     const r = await fs.tools.get(RELEASE_TOOL)!.cb({ firmware_left: "pidf abc" }, fakeExtra());
@@ -101,7 +101,7 @@ describe("crosspad_bench_release", () => {
 describe("crosspad_bench_status", () => {
   it("returns the daemon's view plus this session's holder", async () => {
     const fs = fakeServer();
-    const d = fakeDaemon({ "bench.status": () => ({ now: 5, now_at: "x", path: "/s/bench.json", devices: [{ device: "dev_1ede", lease: LEASE, queue: [], history: [], firmware: null }] }) });
+    const d = fakeDaemon({ "bench.status": () => ({ now: 5, now_at: "x", path: "/s/bench.json", devices: [{ device: "dev_a002", lease: LEASE, queue: [], history: [], firmware: null }] }) });
     (d as HolderSlot).benchHolder = "twin";
     registerBenchStatusTool(fs.server, ctxFor(d, { mode: "readonly", rules: [] }));
     const r = await fs.tools.get(STATUS_TOOL)!.cb({ history: 3 }, fakeExtra());
@@ -115,8 +115,8 @@ describe("crosspad_bench_status", () => {
 describe("benchGate", () => {
   it("passes when the daemon allows, and names the op and device", async () => {
     const d = fakeDaemon({ "bench.check": () => ({ allowed: true }) });
-    await benchGate(d, "crosspad_flash esp uart", "dev_1ede");
-    expect(d.calls[0]).toEqual({ op: "bench.check", args: { op: "crosspad_flash esp uart", device: "dev_1ede" } });
+    await benchGate(d, "crosspad_flash esp uart", "dev_a002");
+    expect(d.calls[0]).toEqual({ op: "bench.check", args: { op: "crosspad_flash esp uart", device: "dev_a002" } });
   });
 
   it("throws the daemon's BENCH_BUSY", async () => {

@@ -15,7 +15,7 @@ vi.mock("../utils/remote-client.js", () => ({
 import { isSimulatorRunning, sendRemoteCommand } from "../utils/remote-client.js";
 import { registerSnapshotTool, simStatsToSnapshot, SnapshotStore, snapshots, O_Snapshot } from "./snapshot.js";
 
-const snapA = { snapshot_id: "snap_1", device: "dev_3f2a", usb_mode: "default", apps: { running: null, available: ["Sampler"] }, ui: null, kit: { current: 1, name: "A", loading: false, pending: -1 }, leds: null, pads: null, mem: null, ble: null, console: null, ts: 1, changed: [] };
+const snapA = { snapshot_id: "snap_1", device: "dev_a001", usb_mode: "default", apps: { running: null, available: ["Sampler"] }, ui: null, kit: { current: 1, name: "A", loading: false, pending: -1 }, leds: null, pads: null, mem: null, ble: null, console: null, ts: 1, changed: [] };
 const snapB = { ...snapA, snapshot_id: "snap_2", kit: { current: 2, name: "B", loading: false, pending: -1 }, changed: ["kit"] };
 
 const SIM_STATS = {
@@ -71,19 +71,19 @@ describe("simStatsToSnapshot", () => {
 describe("crosspad_snapshot device", () => {
   it("calls snapshot.take with include and registers a snap handle", async () => {
     const t = mk({ "snapshot.take": () => snapA });
-    const res = await t.call({ target: "device", device: "dev_3f2a", include: ["kit", "apps"] });
-    expect(t.daemon.calls[0]).toEqual({ op: "snapshot.take", args: { device: "dev_3f2a", include: ["kit", "apps"] } });
-    expect(res.structuredContent).toMatchObject({ success: true, snapshot_id: "snap_1", device: "dev_3f2a" });
-    expect(t.handles.get("snap_1")).toMatchObject({ kind: "snapshot", device: "dev_3f2a" });
+    const res = await t.call({ target: "device", device: "dev_a001", include: ["kit", "apps"] });
+    expect(t.daemon.calls[0]).toEqual({ op: "snapshot.take", args: { device: "dev_a001", include: ["kit", "apps"] } });
+    expect(res.structuredContent).toMatchObject({ success: true, snapshot_id: "snap_1", device: "dev_a001" });
+    expect(t.handles.get("snap_1")).toMatchObject({ kind: "snapshot", device: "dev_a001" });
     expect(snapshots.get("snap_1")).toBeDefined();
   });
   it("passes the stored snapshot as previous for diff_from, full snapshot when unknown", async () => {
     const t = mk({ "snapshot.take": (a) => (a.previous ? snapB : snapA) });
-    await t.call({ target: "device", device: "dev_3f2a" });
-    const res = await t.call({ target: "device", device: "dev_3f2a", diff_from: "snap_1" });
+    await t.call({ target: "device", device: "dev_a001" });
+    const res = await t.call({ target: "device", device: "dev_a001", diff_from: "snap_1" });
     expect(t.daemon.calls[1].args.previous).toMatchObject({ snapshot_id: "snap_1" });
     expect(res.structuredContent.changed).toEqual(["kit"]);
-    await t.call({ target: "device", device: "dev_3f2a", diff_from: "snap_nope" });
+    await t.call({ target: "device", device: "dev_a001", diff_from: "snap_nope" });
     expect(t.daemon.calls[2].args.previous).toBeUndefined();
   });
 });

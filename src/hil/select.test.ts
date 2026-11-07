@@ -7,7 +7,7 @@ function port(path: string, vid = 0x303a, pid = 0x3456) {
 }
 
 const ESP = {
-  id: "dev_3f2a",
+  id: "dev_a001",
   serial: "AABB",
   usb_mode: "default" as const,
   ports: { cdc: port("/dev/ttyACM0"), console: port("/dev/ttyACM1", 0x0483, 0x5740), esp_midi: null, stm_midi: null, uac2: null, bootloader: null },
@@ -32,14 +32,14 @@ describe("listHilDevices", () => {
     };
     const rows = await listHilDevices(daemon);
     expect(calls).toEqual([{ op: "devices.list", args: {} }]);
-    expect(rows.map((d) => d.id)).toEqual(["dev_3f2a", "dev_9911"]);
+    expect(rows.map((d) => d.id)).toEqual(["dev_a001", "dev_9911"]);
     expect(rows[0].board_rev).toBe("v2");
   });
 });
 
 describe("pickDevice", () => {
   it("with no argument picks the only device that has an ESP side", () => {
-    expect(pickDevice([ESP, CONSOLE_ONLY]).id).toBe("dev_3f2a");
+    expect(pickDevice([ESP, CONSOLE_ONLY]).id).toBe("dev_a001");
   });
 
   it("raises NO_DEVICE when nothing has an ESP side", () => {
@@ -62,14 +62,14 @@ describe("pickDevice", () => {
       const h = e as HilError;
       expect(h.code).toBe("AMBIGUOUS_DEVICE");
       expect(h.hint).toContain("device=");
-      expect(h.details.candidates).toEqual(["dev_3f2a", "dev_7c01"]);
+      expect(h.details.candidates).toEqual(["dev_a001", "dev_7c01"]);
     }
   });
 
   it("matches by id and by any port path", () => {
     expect(pickDevice([ESP, CONSOLE_ONLY], "dev_9911").id).toBe("dev_9911");
     expect(pickDevice([ESP, CONSOLE_ONLY], "/dev/ttyACM3").id).toBe("dev_9911");
-    expect(pickDevice([ESP, CONSOLE_ONLY], "/dev/ttyACM1").id).toBe("dev_3f2a");
+    expect(pickDevice([ESP, CONSOLE_ONLY], "/dev/ttyACM1").id).toBe("dev_a001");
   });
 
   it("an unknown id is NO_DEVICE and lists what is there", () => {
@@ -79,7 +79,7 @@ describe("pickDevice", () => {
     } catch (e) {
       const h = e as HilError;
       expect(h.code).toBe("NO_DEVICE");
-      expect(h.details.candidates).toEqual(["dev_3f2a"]);
+      expect(h.details.candidates).toEqual(["dev_a001"]);
     }
   });
 });

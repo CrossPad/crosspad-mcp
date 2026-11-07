@@ -73,7 +73,7 @@ python3 scripts/esp_scroll_fps.py --rounds 8 --label after1 --out /tmp/ab/after1
 ```
 
 Flash the other build, run it again, then **flash back and run both again**.
-One A/B is not enough: the run-to-run spread on this bench is around 5 %, so a
+One A/B is not enough: the run-to-run spread on a board is around 5 %, so a
 single pair can show either sign. A/B/A/B costs two extra OTA flashes (~30 s
 each) and turns a guess into a measurement.
 

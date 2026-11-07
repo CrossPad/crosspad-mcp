@@ -10,7 +10,7 @@ import { HilError } from "../hil/daemon.js";
 const cdc = { path: "/dev/ttyACM0", vid: 0x303a, pid: 0x3456, serial: "AABBCCDD", product: "Crosspad", location: "1-2.1" };
 const con = { path: "/dev/ttyACM1", vid: 0x0483, pid: 0x5740, serial: "STM001", product: "CrossPad MIDI+Serial", location: "1-2.2" };
 const devA = {
-  id: "dev_3f2a", serial: "AABBCCDD", usb_mode: "default", board_rev: null,
+  id: "dev_a001", serial: "AABBCCDD", usb_mode: "default", board_rev: null,
   ports: { cdc, console: con, esp_midi: null, stm_midi: null, uac2: null, bootloader: null },
 };
 const devB = {
@@ -30,7 +30,7 @@ describe("toV10DeviceRow", () => {
     expect(row.vid).toBe(0x303a);
     expect(row.pid).toBe(0x3456);
     expect(row.is_crosspad).toBe(true);
-    expect(row.id).toBe("dev_3f2a");
+    expect(row.id).toBe("dev_a001");
   });
   it("tags an ESP-only device as esp-native", () => {
     expect(toV10DeviceRow(devB as any).kind).toBe("esp-native");
@@ -45,7 +45,7 @@ describe("toV10DeviceRow", () => {
 
 describe("selectedId", () => {
   it("is the single device with an ESP side", () => {
-    expect(selectedId([toV10DeviceRow(devA as any)])).toBe("dev_3f2a");
+    expect(selectedId([toV10DeviceRow(devA as any)])).toBe("dev_a001");
   });
   it("is undefined with two candidates or none", () => {
     expect(selectedId([toV10DeviceRow(devA as any), toV10DeviceRow(devB as any)])).toBeUndefined();
@@ -73,7 +73,7 @@ describe("crosspad_devices tool", () => {
     const fs = fakeServer();
     registerDevicesTool(fs.server, ctxWith(daemon));
     const res = await fs.tools.get("crosspad_devices")!.cb({}, fakeExtra());
-    expect(res.structuredContent.selected).toBe("dev_3f2a");
+    expect(res.structuredContent.selected).toBe("dev_a001");
   });
   it("maps a daemon error into the error envelope", async () => {
     const daemon = fakeDaemon({ "devices.list": () => { throw new HilError("ENV", "pyserial missing", "pip install pyserial"); } });

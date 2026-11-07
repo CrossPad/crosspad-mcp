@@ -11,7 +11,7 @@ const group = [
   { ref: "e1", index: 1, ptr: "0x3fc4", label: "Kit: DRUMS" },
   { ref: "e2", index: 2, ptr: "0x3fc8", label: "Load" },
 ];
-const snap = { snapshot_id: "snap_7", device: "dev_3f2a", usb_mode: "default", apps: { running: "Sampler", available: ["Sampler"] }, ui: { focus: { ref: "e2", index: 2, label: "Load" }, group, drawer: false, theme: 1, app: "Sampler" }, kit: null, leds: null, pads: null, mem: null, ble: null, console: null, ts: 1, changed: [] };
+const snap = { snapshot_id: "snap_7", device: "dev_a001", usb_mode: "default", apps: { running: "Sampler", available: ["Sampler"] }, ui: { focus: { ref: "e2", index: 2, label: "Load" }, group, drawer: false, theme: 1, app: "Sampler" }, kit: null, leds: null, pads: null, mem: null, ble: null, console: null, ts: 1, changed: [] };
 
 function mk(handlers: Record<string, (a: Record<string, unknown>) => unknown>) {
   const daemon = fakeDaemon(handlers);
@@ -45,10 +45,10 @@ describe("crosspad_ui", () => {
       },
       "snapshot.take": () => snap,
     });
-    const res = await t.call({ action: "focus", ref: "e2", device: "dev_3f2a" });
+    const res = await t.call({ action: "focus", ref: "e2", device: "dev_a001" });
     const verbs = t.daemon.calls.map((c) => (c.op === "cdc.verb" ? c.args.verb : c.op));
     expect(verbs).toEqual(["enc_group", "enc_focus", "enc_rotate", "snapshot.take"]);
-    expect(t.daemon.calls[2].args).toEqual({ device: "dev_3f2a", verb: "enc_rotate", args: { delta: 2 } });
+    expect(t.daemon.calls[2].args).toEqual({ device: "dev_a001", verb: "enc_rotate", args: { delta: 2 } });
     expect(res.structuredContent).toMatchObject({ success: true, action: "focus", delta: 2, snapshot: { snapshot_id: "snap_7" } });
   });
   it("focus with delta 0 does not rotate", async () => {

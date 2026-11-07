@@ -14,7 +14,7 @@ const STRICT: Policy = { mode: "strict", rules: [] };
 
 const port = (path: string, vid = 0x303a, pid = 0x3456) => ({ path, vid, pid, serial: null, product: null, location: "1-1.2" });
 const DEV = {
-  id: "dev_3f2a", serial: "AABB", usb_mode: "default", board_rev: "v2",
+  id: "dev_a001", serial: "AABB", usb_mode: "default", board_rev: "v2",
   ports: { cdc: port("/dev/ttyACM0"), console: port("/dev/ttyACM1", 0x0483, 0x5740), esp_midi: null, stm_midi: null, uac2: null, bootloader: null },
 };
 
@@ -22,7 +22,7 @@ function goodProbe(over: Partial<FlashProbe> = {}): FlashProbe {
   return {
     async exists() { return true; },
     async mtimeMs() { return 9_000; },
-    async binVersion() { return "v20-3f2a"; },
+    async binVersion() { return "v20-a001"; },
     async stmDescriptor() { return { version: "1.4", proto: 0x000F, pcb: 20 }; },
     async newestSource() { return { path: "/idf/main/main.cpp", mtimeMs: 1_000 }; },
     async buildBoardRev() { return "v2"; },
@@ -46,7 +46,7 @@ describe("crosspad_flash", () => {
     const sc = r.structuredContent as Record<string, any>;
     expect(sc.resultType).toBe("confirmation_required");
     expect(sc.confirmation.token).toMatch(/^cfm_/);
-    expect(sc.preflight).toMatchObject({ ok: true, device: "dev_3f2a", firmware_version: "v20-3f2a", board_rev_match: true });
+    expect(sc.preflight).toMatchObject({ ok: true, device: "dev_a001", firmware_version: "v20-a001", board_rev_match: true });
     expect(d.calls.map((c) => c.op)).toEqual(["devices.list", "bench.check"]);
   });
 
@@ -54,8 +54,8 @@ describe("crosspad_flash", () => {
     const d = fakeDaemon({
       "devices.list": () => ({ devices: [DEV] }),
       "bench.check": () => {
-        throw new HilError("BENCH_BUSY", "dev_3f2a is claimed by pidf (firmware_app) since 23:45; the lease runs to 00:40 (in 25 min) unless renewed",
-          "claim it to join the queue", { holder: "pidf", device: "dev_3f2a" });
+        throw new HilError("BENCH_BUSY", "dev_a001 is claimed by pidf (firmware_app) since 23:45; the lease runs to 00:40 (in 25 min) unless renewed",
+          "claim it to join the queue", { holder: "pidf", device: "dev_a001" });
       },
     });
     registerFlashTool(fs.server, ctxFor(d));
@@ -66,7 +66,7 @@ describe("crosspad_flash", () => {
     expect(sc.error.details.holder).toBe("pidf");
     expect(sc.preflight.ok).toBe(true);
     expect(sc.resultType).toBeUndefined();
-    expect(d.calls.find((c) => c.op === "bench.check")!.args).toEqual({ op: "crosspad_flash esp uart", device: "dev_3f2a" });
+    expect(d.calls.find((c) => c.op === "bench.check")!.args).toEqual({ op: "crosspad_flash esp uart", device: "dev_a001" });
   });
 
   it("a blocked preflight refuses before the confirmation and still returns the preflight", async () => {
@@ -109,7 +109,7 @@ describe("crosspad_flash", () => {
     const d = fakeDaemon({
       "devices.list": () => ({ devices: [DEV] }),
       "ota.flash": () => ({ task: "task_9" }),
-      "task.status": () => ({ task: "task_9", status: "completed", result: { bytes: 1_200_000, seconds: 9.4, kbps: 128, version: "v20-3f2a", mode: "full" } }),
+      "task.status": () => ({ task: "task_9", status: "completed", result: { bytes: 1_200_000, seconds: 9.4, kbps: 128, version: "v20-a001", mode: "full" } }),
     });
     registerFlashTool(fs.server, ctxFor(d));
     const first = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota" }, fakeExtra());
@@ -123,10 +123,10 @@ describe("crosspad_flash", () => {
     expect(sc.success).toBe(true);
     expect(sc.task).toMatch(/^task_\d+$/);
     expect(sc.status.status).toBe("completed");
-    expect(sc.status.result.flash).toMatchObject({ bytes: 1_200_000, version: "v20-3f2a" });
+    expect(sc.status.result.flash).toMatchObject({ bytes: 1_200_000, version: "v20-a001" });
     expect(sc.status.result.boot).toBeNull();
     const ota = d.calls.find((c) => c.op === "ota.flash")!;
-    expect(ota.args).toMatchObject({ device: "dev_3f2a", wait_boot: false });
+    expect(ota.args).toMatchObject({ device: "dev_a001", wait_boot: false });
     expect(String(ota.args.firmware)).toContain("CrossPad.bin");
   });
 
@@ -237,10 +237,10 @@ describe("crosspad_flash", () => {
       ports: { ...DEV.ports, cdc: port("/dev/ttyACM2"), console: port("/dev/ttyACM3", 0x0483, 0x5740) } };
     const d = fakeDaemon({ "devices.list": () => ({ devices: [v1, DEV] }) });
     registerFlashTool(fs.server, ctxFor(d));
-    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", device: "dev_3f2a", dry_run: true }, fakeExtra());
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ target: "esp", transport: "ota", device: "dev_a001", dry_run: true }, fakeExtra());
     const sc = r.structuredContent as Record<string, any>;
-    expect(asked).toEqual(["dev_3f2a"]);
-    expect(sc.preflight).toMatchObject({ device: "dev_3f2a", build_dir: "/idf/build_v2", ok: true });
+    expect(asked).toEqual(["dev_a001"]);
+    expect(sc.preflight).toMatchObject({ device: "dev_a001", build_dir: "/idf/build_v2", ok: true });
   });
 
   it("a board with no known revision is refused, and force does not clear it", async () => {

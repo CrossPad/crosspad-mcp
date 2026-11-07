@@ -276,9 +276,9 @@ Traps:
   `SIM_DIR`.
 - `cmake --build` of a kit dir writes `bin/`: two kits never share a name.
 
-## 6b. On the board (when it is free -- the bench rules in `~/GIT/hil_logs/BENCH.md`)
+## 6b. On the board
 
-Claim the bench ("Teraz") first. `tools/bench.py flash --assets` puts the
+Claim the bench lease (`crosspad_bench_claim`) first. `tools/bench.py flash --assets` puts the
 full kit in a slot; `tools/make_fw_package.py --build build_<kit> --name
 <kit>-<ver> --profile config/profiles/<kit>.json --out <dir>`, then
 `tools/fs_transfer.py mkdir/push` each file into
