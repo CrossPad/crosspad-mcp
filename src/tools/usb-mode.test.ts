@@ -14,7 +14,7 @@ const ctxFor = (d: ReturnType<typeof fakeDaemon>): ToolContext => ({ daemon: () 
 const port = (path: string, vid = 0x303a, pid = 0x3456) => ({ path, vid, pid, serial: null, product: null, location: "1-1.2" });
 
 const DEFAULT_MODE = {
-  id: "dev_3f2a", serial: "AABB", usb_mode: "default", board_rev: "v2",
+  id: "dev_a001", serial: "AABB", usb_mode: "default", board_rev: "v2",
   ports: {
     cdc: port("/dev/ttyACM0"),
     console: port("/dev/ttyACM1", 0x0483, 0x5740),
@@ -31,7 +31,7 @@ const AUDIO_MODE = {
 describe("usbModeRow", () => {
   it("flattens the ports a mode switch changes", () => {
     expect(usbModeRow(DEFAULT_MODE as never)).toEqual({
-      device: "dev_3f2a", usb_mode: "default", cdc: "/dev/ttyACM0", console: "/dev/ttyACM1",
+      device: "dev_a001", usb_mode: "default", cdc: "/dev/ttyACM0", console: "/dev/ttyACM1",
       uac2: null, esp_midi: "hw:4,0,0", board_rev: "v2",
     });
     expect(usbModeRow(AUDIO_MODE as never)).toMatchObject({ usb_mode: "audio", cdc: null, uac2: "Crosspad Audio" });
@@ -47,7 +47,7 @@ describe("crosspad_usb_mode", () => {
     registerUsbModeTool(fs.server, ctxFor(d));
     const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "get" }, fakeExtra());
     expect(d.calls.map((c) => c.op)).toEqual(["devices.list"]);
-    expect(r.structuredContent).toMatchObject({ success: true, action: "get", mode: "default", device: "dev_3f2a" });
+    expect(r.structuredContent).toMatchObject({ success: true, action: "get", mode: "default", device: "dev_a001" });
     expect((r.structuredContent as { ports: Record<string, unknown> }).ports).toMatchObject({ cdc: "/dev/ttyACM0", uac2: null });
   });
 
@@ -58,7 +58,7 @@ describe("crosspad_usb_mode", () => {
     const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "get" }, fakeExtra());
     expect(r.isError).toBe(true);
     expect(r.structuredContent.error).toMatchObject({ code: "AMBIGUOUS_DEVICE" });
-    expect((r.structuredContent as { details: { candidates: string[] } }).details.candidates).toEqual(["dev_3f2a", "dev_7c01"]);
+    expect((r.structuredContent as { details: { candidates: string[] } }).details.candidates).toEqual(["dev_a001", "dev_7c01"]);
   });
 
   it("action=set forwards mode and wait to usbmode.set and reports the refreshed device", async () => {
@@ -67,18 +67,18 @@ describe("crosspad_usb_mode", () => {
       "usbmode.set": () => AUDIO_MODE,
     });
     registerUsbModeTool(fs.server, ctxFor(d));
-    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "audio", device: "dev_3f2a" }, fakeExtra());
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "audio", device: "dev_a001" }, fakeExtra());
     expect(d.calls.map((c) => c.op)).toEqual(["usbmode.set"]);
-    expect(d.calls[0].args).toEqual({ device: "dev_3f2a", mode: "audio", wait: true });
-    expect(r.structuredContent).toMatchObject({ success: true, action: "set", mode: "audio", device: "dev_3f2a" });
+    expect(d.calls[0].args).toEqual({ device: "dev_a001", mode: "audio", wait: true });
+    expect(r.structuredContent).toMatchObject({ success: true, action: "set", mode: "audio", device: "dev_a001" });
     expect((r.structuredContent as { ports: Record<string, unknown> }).ports).toMatchObject({ cdc: null, uac2: "Crosspad Audio" });
   });
 
   it("action=set honours wait=false", async () => {
     const d = fakeDaemon({ "usbmode.set": () => ({ ...DEFAULT_MODE, usb_mode: "unknown" }) });
     registerUsbModeTool(fs.server, ctxFor(d));
-    await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "default", device: "dev_3f2a", wait: false }, fakeExtra());
-    expect(d.calls[0].args).toEqual({ device: "dev_3f2a", mode: "default", wait: false });
+    await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "default", device: "dev_a001", wait: false }, fakeExtra());
+    expect(d.calls[0].args).toEqual({ device: "dev_a001", mode: "default", wait: false });
   });
 
   it("action=set without mode is refused before the daemon is touched", async () => {
@@ -94,7 +94,7 @@ describe("crosspad_usb_mode", () => {
     const { HilError } = await import("../hil/daemon.js");
     const d = fakeDaemon({ "usbmode.set": () => { throw new HilError("TIMEOUT", "device did not re-enumerate as audio within 20.0 s", "unplug/replug, then crosspad_devices"); } });
     registerUsbModeTool(fs.server, ctxFor(d));
-    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "audio", device: "dev_3f2a" }, fakeExtra());
+    const r = await fs.tools.get(TOOL_NAME)!.cb({ action: "set", mode: "audio", device: "dev_a001" }, fakeExtra());
     expect(r.isError).toBe(true);
     expect(r.structuredContent.error).toMatchObject({ code: "TIMEOUT" });
   });

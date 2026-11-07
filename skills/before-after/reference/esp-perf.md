@@ -23,13 +23,13 @@ LVGLSTATS: refr=66 refr_max_us=142212 refr_avg_us=44686 render_us=2881070
 
 ## Why time per drawn pixel
 
-Frames per second on this bench is misleading twice over. The scroll is driven
+Frames per second on the board is misleading twice over. The scroll is driven
 by `ENC_ROTATE` over CDC, so the frame count follows the command rate; and the
 number of pixels redrawn varies run to run with scroll position and animation.
 `render_us / flush_px` divides out both, which is what makes two runs
 comparable.
 
-Measured spread on the bench board, kit selector, eight rounds: about 2 500 to
+Measured spread on a board, kit selector, eight rounds: about 2 500 to
 3 200 ns per drawn pixel, i.e. roughly ±10 % around the median. Anything inside
 that is not a finding. Report a range, not a point.
 

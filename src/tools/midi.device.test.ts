@@ -42,12 +42,12 @@ describe("crosspad_midi target=device", () => {
     const d = fakeDaemon({ "midi.note": () => ({ ok: true }) });
     registerMidiTool(fs.server, ctxFor(d));
     const r = await fs.tools.get(TOOL_NAME)!.cb(
-      { target: "device", action: "note", on: true, note: 36, vel: 100, device: "dev_3f2a" },
+      { target: "device", action: "note", on: true, note: 36, vel: 100, device: "dev_a001" },
       fakeExtra(),
     );
     expect(d.calls[0].op).toBe("midi.note");
-    expect(d.calls[0].args).toEqual({ device: "dev_3f2a", on: true, note: 36, vel: 100 });
-    expect(r.structuredContent).toMatchObject({ success: true, target: "device", action: "note", device: "dev_3f2a" });
+    expect(d.calls[0].args).toEqual({ device: "dev_a001", on: true, note: 36, vel: 100 });
+    expect(r.structuredContent).toMatchObject({ success: true, target: "device", action: "note", device: "dev_a001" });
   });
 
   it("passes the role through to the daemon", async () => {

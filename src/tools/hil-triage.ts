@@ -93,8 +93,8 @@ const O_HilTriage = {
 
 /**
  * The bench's known failure signatures, as facts the model judges against.
- * Each one cost a session on this bench (platform-idf CLAUDE.md, "Driving the
- * Bench"); the model cannot know them from a log alone.
+ * They come from platform-idf CLAUDE.md, "Driving the Bench"; the model cannot
+ * know them from a log alone.
  */
 export const KNOWN_SIGNATURES: readonly string[] = [
   "SerialException 'could not open port /dev/ttyACMx' or 'No such file or directory' right after a reset: the ESP re-enumerated and the port moved; a bench timing problem, not the firmware.",
@@ -184,7 +184,7 @@ export function buildQuestions(): Record<string, unknown> {
       type: "choice",
       instructions: {
         question:
-          "What caused this hardware-in-the-loop scenario to end the way it did? Judge from `summary`, `error`, `data` and `console_tail`, using `known_bench_signatures` as established facts about this bench. `exit_code` is the tool's own attribution; it can be wrong when a scenario crashed on a bench problem.",
+          "What caused this hardware-in-the-loop scenario to end the way it did? Judge from `summary`, `error`, `data` and `console_tail`, using `known_bench_signatures` as established facts about this test setup. `exit_code` is the tool's own attribution; it can be wrong when a scenario crashed on a bench problem.",
       },
       criteria: {
         passed_clean: "The scenario passed, its checks ran against real stimulus, and the console shows no error, panic or unrequested reset.",

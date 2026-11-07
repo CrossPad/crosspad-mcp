@@ -19,7 +19,7 @@ kill_all() {
 start() {
   local bin="$1" log="$2"
   kill_all
-  ( cd /home/matixan/GIT/crosspad-pc && setsid nohup "$bin" > "$log" 2>&1 & )
+  ( cd "${CROSSPAD_PC_ROOT:-$HOME/GIT/crosspad-pc}" && setsid nohup "$bin" > "$log" 2>&1 & )
   for i in $(seq 1 20); do
     sleep 1
     pid=$(ss -tnlpH 'sport = :19840' 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)

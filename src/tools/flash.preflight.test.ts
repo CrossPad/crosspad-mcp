@@ -5,11 +5,11 @@ import { HilError } from "../hil/daemon.js";
 const port = (path: string, vid = 0x303a, pid = 0x3456) => ({ path, vid, pid, serial: null, product: null, location: "1-1.2" });
 
 const DEV_V2 = {
-  id: "dev_3f2a", serial: "AABB", usb_mode: "default" as const, board_rev: "v2",
+  id: "dev_a001", serial: "AABB", usb_mode: "default" as const, board_rev: "v2",
   ports: { cdc: port("/dev/ttyACM0"), console: port("/dev/ttyACM1", 0x0483, 0x5740), esp_midi: null, stm_midi: null, uac2: null, bootloader: null },
 };
 const DEV_BOOTLOADER = {
-  id: "dev_3f2a", serial: "AABB", usb_mode: "bootloader" as const, board_rev: "v2",
+  id: "dev_a001", serial: "AABB", usb_mode: "bootloader" as const, board_rev: "v2",
   ports: { cdc: null, console: null, esp_midi: null, stm_midi: null, uac2: null, bootloader: port("/dev/ttyACM0", 0x303a, 0x1001) },
 };
 
@@ -48,13 +48,13 @@ describe("normalizeRev", () => {
 
 describe("espPreflight", () => {
   it("passes on a fresh matching build and reports every field", async () => {
-    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20-3f2a", newest: { path: "/idf/main/main.cpp", mtimeMs: 1000 }, rev: "v2" });
+    const probe = probeFor({ [FW]: 2000, [BUILD]: 2000 }, { version: "v20-a001", newest: { path: "/idf/main/main.cpp", mtimeMs: 1000 }, rev: "v2" });
     const pf = await espPreflight(probe, DEV_V2 as never, { transport: "ota", firmware_path: FW, build_dir: BUILD });
     expect(pf.ok).toBe(true);
     expect(pf.blockers).toEqual([]);
     expect(pf).toMatchObject({
-      target: "esp", device: "dev_3f2a", usb_mode: "default", transport: "ota",
-      firmware_path: FW, firmware_exists: true, firmware_version: "v20-3f2a",
+      target: "esp", device: "dev_a001", usb_mode: "default", transport: "ota",
+      firmware_path: FW, firmware_exists: true, firmware_version: "v20-a001",
       stale: false, build_board_rev: "v2", device_board_rev: "v2", board_rev_match: true,
       bootloader_pid: false, port: "/dev/ttyACM0", port_role: "cdc",
     });
@@ -146,7 +146,7 @@ describe("espPreflight", () => {
     const probe = probeFor({}, { defaultBuildDir: async (_root, device) => { asked.push(device); return "/idf/build_v2"; } });
     await espPreflight(probe, DEV_V2 as never, { transport: "ota" });
     await espPreflight(probe, null, { transport: "ota" });
-    expect(asked).toEqual(["dev_3f2a", null]);
+    expect(asked).toEqual(["dev_a001", null]);
   });
 
   it("blocks when no revision is known, without falling back to build/", async () => {
@@ -155,7 +155,7 @@ describe("espPreflight", () => {
     expect(pf.blockers.map((b) => b.code)).toEqual(["NO_BOARD"]);
     expect(pf.build_dir).toBeNull();
     expect(pf.firmware_path).toBe("");
-    expect(pf.blockers[0].message).toMatch(/dev_3f2a/);
+    expect(pf.blockers[0].message).toMatch(/dev_a001/);
     expect(pf.blockers[0].message).toMatch(/build_dir/);
   });
 });

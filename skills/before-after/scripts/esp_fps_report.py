@@ -57,13 +57,13 @@ def main() -> int:
 
     # The question is whether it got worse, so the test is one-sided: a worst
     # case that stays under the old worst case, and a median that did not rise,
-    # is as much as this bench can establish. Anything else needs more runs
+    # is as much as these runs can establish. Anything else needs more runs
     # before it is called either way.
     if amed <= bmed and max(an) <= max(bn):
         print("every after round stayed under the slowest before round and the "
               "median did not rise — no regression this benchmark can see")
     elif abs(delta) < 5:
-        print("inside the run-to-run spread this bench shows (~5%): inconclusive, "
+        print("inside the run-to-run spread of a board (~5%): inconclusive, "
               "take more runs before calling it either way")
     else:
         print("slower than the spread explains — run another A/B cycle to confirm "

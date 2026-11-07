@@ -25,7 +25,7 @@ function registerDanger(server: McpServer, ran: Array<Record<string, unknown>>):
     outputSchema: { success: z.boolean(), flashed: z.string().optional(), ...CONFIRMATION_OUTPUT },
   }, async (args: any, extra: any) => {
     const c = await requireConfirmation(server, extra, "crosspad_fake_flash", args,
-      `Flash ${args.file} to dev_1ede`, "dev_1ede");
+      `Flash ${args.file} to dev_a002`, "dev_a002");
     if (c.status === "token") return c.result as any;
     if (c.status === "declined") return { content: [], structuredContent: { success: false } } as any;
     ran.push({ ...args });
@@ -60,7 +60,7 @@ describe("crosspad_confirm", () => {
     const r = await fs.tools.get("crosspad_fake_flash")!.cb({ file: "a.bin" }, fakeExtra());
     const sc = r.structuredContent as any;
     expect(sc.resultType).toBe("confirmation_required");
-    expect(sc.confirmation.summary).toBe("Flash a.bin to dev_1ede");
+    expect(sc.confirmation.summary).toBe("Flash a.bin to dev_a002");
     expect(sc.hint).toMatch(/crosspad_confirm/);
     expect(sc.elicitation).toMatchObject({ declared: false });
     expect(ran).toEqual([]);
@@ -82,7 +82,7 @@ describe("crosspad_confirm", () => {
     const r = await fs.tools.get("crosspad_fake_flash")!.cb({ file: "a.bin" }, fakeExtra());
     vi.setSystemTime(Date.now() + (CONFIRM_TTL_S + 1) * 1000);
     const late = await fs.tools.get(TOOL_NAME)!.cb(
-      { token: (r.structuredContent as any).confirmation.token, summary: "Flash a.bin to dev_1ede" },
+      { token: (r.structuredContent as any).confirmation.token, summary: "Flash a.bin to dev_a002" },
       fakeExtra());
     expect((late.structuredContent as any).error.code).toBe("UNKNOWN_TOKEN");
     expect(ran).toEqual([]);

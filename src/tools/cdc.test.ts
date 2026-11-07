@@ -54,9 +54,9 @@ describe("isDangerVerb", () => {
 describe("crosspad_cdc tool", () => {
   it("calls cdc.verb with device passthrough and returns the parsed result", async () => {
     const t = mk({ "cdc.verb": () => ({ current: 3, loading: false, pending: -1, name: "DRUMS" }) });
-    const res = await t.call({ verb: "kit", action: "status", device: "dev_3f2a" });
-    expect(t.daemon.calls[0]).toEqual({ op: "cdc.verb", args: { device: "dev_3f2a", verb: "kit_status", args: {} } });
-    expect(res.structuredContent).toMatchObject({ success: true, verb: "kit_status", result: { current: 3, name: "DRUMS" }, device: "dev_3f2a" });
+    const res = await t.call({ verb: "kit", action: "status", device: "dev_a001" });
+    expect(t.daemon.calls[0]).toEqual({ op: "cdc.verb", args: { device: "dev_a001", verb: "kit_status", args: {} } });
+    expect(res.structuredContent).toMatchObject({ success: true, verb: "kit_status", result: { current: 3, name: "DRUMS" }, device: "dev_a001" });
   });
   it("raw goes through cdc.transact and returns line + parsed", async () => {
     const t = mk({ "cdc.transact": () => ({ line: "MEM: free=18712 largest=4096", parsed: { kind: "mem", free: 18712, largest: 4096 }, rtt_ms: 3.2, extra_lines: [] }) });
@@ -88,17 +88,17 @@ describe("crosspad_cdc tool", () => {
   });
   it("system bootloader_request under strict policy returns a confirmation token and performs nothing", async () => {
     const t = mk({ "cdc.verb": () => ({ sent: true }) }, { mode: "strict", rules: [] });
-    const res = await t.call({ verb: "system", action: "bootloader_request", device: "dev_3f2a" });
+    const res = await t.call({ verb: "system", action: "bootloader_request", device: "dev_a001" });
     expect(res.structuredContent.resultType).toBe("confirmation_required");
     expect(String((res.structuredContent.confirmation as any).token)).toMatch(/^cfm_/);
     expect(t.daemon.calls.length).toBe(0);
   });
   it("system bootloader_request with a valid confirm_token runs", async () => {
     const t = mk({ "cdc.verb": () => ({ sent: true }) }, { mode: "strict", rules: [] });
-    const first = await t.call({ verb: "system", action: "bootloader_request", device: "dev_3f2a" });
+    const first = await t.call({ verb: "system", action: "bootloader_request", device: "dev_a001" });
     const token = (first.structuredContent.confirmation as any).token as string;
-    const res = await t.call({ verb: "system", action: "bootloader_request", device: "dev_3f2a", confirm_token: token });
-    expect(t.daemon.calls[0]).toEqual({ op: "cdc.verb", args: { device: "dev_3f2a", verb: "bootloader_request", args: {} } });
+    const res = await t.call({ verb: "system", action: "bootloader_request", device: "dev_a001", confirm_token: token });
+    expect(t.daemon.calls[0]).toEqual({ op: "cdc.verb", args: { device: "dev_a001", verb: "bootloader_request", args: {} } });
     expect(res.structuredContent).toMatchObject({ success: true, result: { sent: true } });
   });
   it("a lab rule with confirm:false pre-approves stm_dfu", async () => {

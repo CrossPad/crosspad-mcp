@@ -5,8 +5,8 @@ describe("HandleRegistry", () => {
   it("registers, gets, touches, drops", () => {
     let t = 1000;
     const r = new HandleRegistry(() => t);
-    r.register("con_1", { kind: "console", device: "dev_3f2a" });
-    expect(r.get("con_1")).toEqual({ kind: "console", device: "dev_3f2a", createdAt: 1000, lastTouch: 1000 });
+    r.register("con_1", { kind: "console", device: "dev_a001" });
+    expect(r.get("con_1")).toEqual({ kind: "console", device: "dev_a001", createdAt: 1000, lastTouch: 1000 });
     t = 2000;
     r.touch("con_1");
     expect(r.get("con_1")?.lastTouch).toBe(2000);

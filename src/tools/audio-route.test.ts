@@ -84,7 +84,7 @@ describe("audio-route module", () => {
 
   describe("crosspadAudioRouteSet over the daemon", () => {
     const DEV = {
-      id: "dev_3f2a", serial: "AABB", usb_mode: "default", board_rev: "v2",
+      id: "dev_a001", serial: "AABB", usb_mode: "default", board_rev: "v2",
       ports: {
         cdc: { path: "/dev/ttyACM0", vid: 0x303a, pid: 0x3456, serial: null, product: null, location: "1-1.2" },
         console: null,
@@ -106,7 +106,7 @@ describe("audio-route module", () => {
       expect(r.sent).toEqual(["F0 7D 1D 01 01 01 F7", "F0 7D 1D 04 01 5A F7"]);
       expect(r.port).toBe("hw:4,0,0");
       expect(calls.map((c) => c.op)).toEqual(["devices.list", "midi.sysex", "midi.sysex"]);
-      expect(calls[1].args).toEqual({ device: "dev_3f2a", frame: "F0 7D 1D 01 01 01 F7" });
+      expect(calls[1].args).toEqual({ device: "dev_a001", frame: "F0 7D 1D 01 01 01 F7" });
     });
 
     it("refuses an invalid set before contacting the daemon", async () => {
@@ -135,7 +135,7 @@ describe("audio-route module", () => {
 
   describe("crosspadAudioRouteQuery over the daemon", () => {
     const DEV = {
-      id: "dev_3f2a", serial: "AABB", usb_mode: "default", board_rev: null,
+      id: "dev_a001", serial: "AABB", usb_mode: "default", board_rev: null,
       ports: {
         cdc: { path: "/dev/ttyACM0", vid: 0x303a, pid: 0x3456, serial: null, product: null, location: "1-1.2" },
         console: null,
@@ -151,7 +151,7 @@ describe("audio-route module", () => {
           return { mic_src: 1, adc: [1, 1], out: [1, 1], vol: [100, 100], mute: [0, 0] } as unknown as T;
         },
       };
-      const r = await crosspadAudioRouteQuery(daemon, "dev_3f2a");
+      const r = await crosspadAudioRouteQuery(daemon, "dev_a001");
       expect(r).toEqual({
         success: true,
         port: "Crosspad",

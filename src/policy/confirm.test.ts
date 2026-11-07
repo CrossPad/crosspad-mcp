@@ -7,7 +7,7 @@ import {
 import type { Policy } from "./policy.js";
 
 const T0 = 1_700_000_000_000;
-const ARGS = { target: "esp", transport: "ota", device: "dev_3f2a", delta: { base_fw: "old.bin" } };
+const ARGS = { target: "esp", transport: "ota", device: "dev_a001", delta: { base_fw: "old.bin" } };
 
 function fakeServer(caps: Record<string, unknown> | undefined, elicit?: (p: unknown) => Promise<unknown>) {
   const elicitInput = vi.fn(elicit ?? (async () => ({ action: "decline" })));
@@ -39,7 +39,7 @@ describe("token round-trip", () => {
   });
   it("ignores key order and a confirm_token inside args", () => {
     const tok = mintToken("crosspad_flash", ARGS, null, T0);
-    const reordered = { delta: { base_fw: "old.bin" }, device: "dev_3f2a", transport: "ota", target: "esp", confirm_token: tok };
+    const reordered = { delta: { base_fw: "old.bin" }, device: "dev_a001", transport: "ota", target: "esp", confirm_token: tok };
     expect(verifyToken(tok, "crosspad_flash", reordered, null, T0 + 1000)).toBe(true);
   });
   it("rejects tampered args, another tool, and a forged hex", () => {
@@ -115,7 +115,7 @@ describe("a confirmation approves exactly one call", () => {
 describe("requireConfirmation — token path (no elicitation capability)", () => {
   it("returns a confirmation_required result and performs nothing", async () => {
     const { server, elicitInput } = fakeServer({});
-    const r = await requireConfirmation(server, extra, "crosspad_flash", ARGS, "Flash esp over OTA on dev_3f2a");
+    const r = await requireConfirmation(server, extra, "crosspad_flash", ARGS, "Flash esp over OTA on dev_a001");
     expect(r.status).toBe("token");
     if (r.status !== "token") return;
     expect(elicitInput).not.toHaveBeenCalled();
@@ -123,7 +123,7 @@ describe("requireConfirmation — token path (no elicitation capability)", () =>
     const sc = r.result.structuredContent as { resultType: string; confirmation: { token: string; expires_in_s: number; summary: string } };
     expect(sc.resultType).toBe("confirmation_required");
     expect(sc.confirmation.expires_in_s).toBe(120);
-    expect(sc.confirmation.summary).toBe("Flash esp over OTA on dev_3f2a");
+    expect(sc.confirmation.summary).toBe("Flash esp over OTA on dev_a001");
     expect(sc.confirmation.token).toMatch(/^cfm_/);
     expect(JSON.parse((r.result.content[0] as { text: string }).text).resultType).toBe("confirmation_required");
     // the token it handed out approves the identical call
@@ -147,11 +147,11 @@ describe("requireConfirmation — token path (no elicitation capability)", () =>
 describe("requireConfirmation — elicitation path", () => {
   it("accept with approve=true → approved", async () => {
     const { server, elicitInput } = fakeServer({ elicitation: {} }, async () => ({ action: "accept", content: { approve: true } }));
-    const r = await requireConfirmation(server, extra, "crosspad_flash", ARGS, "Flash esp over OTA on dev_3f2a");
+    const r = await requireConfirmation(server, extra, "crosspad_flash", ARGS, "Flash esp over OTA on dev_a001");
     expect(r.status).toBe("approved");
     expect(elicitInput).toHaveBeenCalledTimes(1);
     const params = elicitInput.mock.calls[0][0] as { message: string; requestedSchema: { properties: Record<string, unknown>; required: string[] } };
-    expect(params.message).toContain("Flash esp over OTA on dev_3f2a");
+    expect(params.message).toContain("Flash esp over OTA on dev_a001");
     expect(params.requestedSchema.required).toEqual(["approve"]);
   });
   it("decline / accept without approve → declined", async () => {

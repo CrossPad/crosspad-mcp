@@ -23,13 +23,13 @@ describe("pumpDaemonTask", () => {
     const d = scriptedDaemon([
       { task: "task_9", status: "working", progress: 4096, total: 1_200_000, message: "0%" },
       { task: "task_9", status: "working", progress: 600_000, total: 1_200_000, message: "50%" },
-      { task: "task_9", status: "completed", result: { bytes: 1_200_000, seconds: 9.4, kbps: 128, version: "v20-3f2a", mode: "full" } },
+      { task: "task_9", status: "completed", result: { bytes: 1_200_000, seconds: 9.4, kbps: 128, version: "v20-a001", mode: "full" } },
     ]);
     const seen: Array<[number, number | undefined, string]> = [];
     const progress: ProgressFn = (p, t, m) => seen.push([p, t, m]);
     const promise = pumpDaemonTask(d, "task_9", new AbortController().signal, progress, 10);
     await vi.advanceTimersByTimeAsync(50);
-    await expect(promise).resolves.toMatchObject({ bytes: 1_200_000, version: "v20-3f2a" });
+    await expect(promise).resolves.toMatchObject({ bytes: 1_200_000, version: "v20-a001" });
     expect(seen[0]).toEqual([4096, 1_200_000, "0%"]);
     expect(seen[1]).toEqual([600_000, 1_200_000, "50%"]);
   });
