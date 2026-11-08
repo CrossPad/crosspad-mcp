@@ -3,6 +3,7 @@
   "owner": {
     "name": "CrossPad"
   },
+  "description": "CrossPad's Claude Code plugin: the crosspad-mcp server and the CrossPad skills.",
   "plugins": [
     {
       "name": "crosspad",

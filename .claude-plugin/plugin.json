@@ -1,14 +1,11 @@
 {
   "name": "crosspad",
-  "description": "CrossPad development toolkit: the crosspad-mcp server plus four Claude Code skills \u2014 `crosspad` (onboarding/help: ecosystem map, install & config, per-role guides, tool cheat-sheet, FAQ \u2014 use this first), `swd-tracer` (real-time SWD variable tracing for CrossPad r20 / STM32G0B1 firmware over ST-Link), `before-after` (prove a change did or did not move the UI or cost frames: per-app simulator screenshots plus an LVGL_STATS benchmark on the board) and `crosspad-game-port` (port a free game, or write one, as a CrossPad firmware kit of its own: pads, encoder, sound, Quit back to the other slot; simulator first, then the board).",
+  "description": "CrossPad development toolkit: the crosspad-mcp server plus four Claude Code skills — `crosspad` (onboarding/help: ecosystem map, install & config, per-role guides, tool cheat-sheet, FAQ — use this first), `swd-tracer` (real-time SWD variable tracing for CrossPad r20 / STM32G0B1 firmware over ST-Link), `before-after` (prove a change did or did not move the UI or cost frames: per-app simulator screenshots plus an LVGL_STATS benchmark on the board) and `crosspad-game-port` (port a free game, or write one, as a CrossPad firmware kit of its own: pads, encoder, sound, Quit back to the other slot; simulator first, then the board).",
   "version": "10.3.0",
   "author": {
     "name": "Mateusz Czarnecki"
   },
   "homepage": "https://github.com/CrossPad/crosspad-mcp",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/CrossPad/crosspad-mcp.git"
-  },
+  "repository": "https://github.com/CrossPad/crosspad-mcp",
   "license": "GPL-3.0-or-later"
 }
