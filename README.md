@@ -38,25 +38,31 @@ never have to call them yourself.
 
 ## Quick start
 
+One plugin brings the server and the skills (the ecosystem map, per-role
+guides, hardware traps, the game/kit port guide). In a terminal:
+
 ```bash
-claude mcp add crosspad -- npx -y crosspad-mcp-server
+claude plugin marketplace add CrossPad/crosspad-mcp
+claude plugin install crosspad@crosspad
 ```
 
-Restart Claude Code, then ask:
+(or `/plugin marketplace add CrossPad/crosspad-mcp` and
+`/plugin install crosspad@crosspad` inside Claude Code). The plugin starts the
+server through `plugin/launch.mjs`, which installs the matching
+`crosspad-mcp-server` from npm into `~/.local/crosspad-mcp` on first start and
+finds your platform-idf checkout itself: the folder you opened Claude in, so a
+fork anywhere on disk works. Node.js 18 or newer is all it needs.
+
+Open Claude Code in your platform-idf folder, then ask:
 
 > *is my CrossPad connected, and is the toolchain set up?*
 
-That runs `crosspad_doctor`. Every failed check comes with a `fix`. The server
-assumes your repos live side by side under `~/GIT/` — if they don't,
-[set the paths](docs/USAGE.md#configuration) once.
+That runs `crosspad_doctor`. Every failed check comes with a `fix`.
 
-Installing the bundled `crosspad` skill gives Claude the ecosystem map, the
-per-role guides and the hardware traps up front:
-
-```
-/plugin marketplace add CrossPad/crosspad-mcp
-/plugin install crosspad@crosspad
-```
+Without the plugin: `claude mcp add crosspad -- npx -y crosspad-mcp-server`.
+That server assumes your repos live side by side under `~/GIT/` — if they
+don't, [set the paths](docs/USAGE.md#configuration) once. Use one of the two,
+never both: they would register the server twice.
 
 ## How it is organised
 

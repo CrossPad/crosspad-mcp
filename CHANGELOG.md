@@ -6,6 +6,20 @@ All notable changes to crosspad-mcp-server. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- **The Claude Code plugin starts its server.** Its `.mcp.json` ran
+  `dist/index.js` from the plugin's checkout, which has no `dist/` (built
+  files are not in git), so the plugin brought skills and no tools.
+  `plugin/launch.mjs` now installs the plugin's version of
+  `crosspad-mcp-server` from npm into `~/.local/crosspad-mcp` on first start
+  (npm's output on stderr, stdout stays the MCP channel) and starts it. It
+  fills in `CROSSPAD_IDF_ROOT` from the project Claude was opened in when that
+  is a platform-idf checkout (or `idf_root` in the user config), `IDF_PATH`
+  from `idf_path`, and crosspad-hil's python from `<idf_root>/.venv` (the
+  configured checkout only: an opened project's `.venv` is never run). npm
+  runs from its own `npm-cli.js` without a shell, so an `npm.cmd` in the
+  project cannot stand in for it on Windows.
+
 ### Changed
 - **License: GPL-3.0-or-later** (was MIT), like the rest of CrossPad.
   Releases up to 10.3.0 stay MIT.

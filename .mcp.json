@@ -3,7 +3,7 @@
     "crosspad": {
       "type": "stdio",
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/index.js"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/launch.mjs"]
     }
   }
 }

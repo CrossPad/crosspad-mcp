@@ -15,6 +15,7 @@
     "skills/",
     "vscode-extension/",
     ".claude-plugin/",
+    "plugin/",
     ".mcp.json"
   ],
   "keywords": [

@@ -12,7 +12,25 @@ with no clear cause, go straight to "Stable local install" below rather
 than debugging npx — `bash scripts/setup.sh` (this skill) does this
 automatically now instead of defaulting to npx.
 
-## Fastest path
+## Fastest path: the plugin
+
+```bash
+claude plugin marketplace add CrossPad/crosspad-mcp
+claude plugin install crosspad@crosspad
+```
+
+Server and skills in one step. `plugin/launch.mjs` installs the
+`crosspad-mcp-server` version of the plugin into `~/.local/crosspad-mcp`
+(npm's output on stderr, so the npx problem above cannot happen), takes the
+platform-idf checkout Claude was opened in (`CLAUDE_PROJECT_DIR`) or
+`idf_root` from `~/.config/crosspad-mcp/config.json`, `IDF_PATH` from
+`idf_path` there, and `<idf_root>/.venv`'s python for crosspad-hil (only
+the configured checkout's: an opened project's `.venv` is never run). The
+CrossPad installer (crosspad-apps `install/`) installs the plugin and writes
+that file. Remove any `crosspad` registered by hand first (see "Plugin
+install" below).
+
+## Without the plugin
 
 ```bash
 claude mcp add crosspad -- npx -y crosspad-mcp-server
